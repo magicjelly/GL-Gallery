@@ -1,43 +1,42 @@
 @Composable
-fun FlickableBoxWithBoundsAndContinuousMovement() {
+fun FlickableBoxCombinedMotion() {
     val boxSize = 100.dp
     val boxPxSize = with(LocalDensity.current) { boxSize.toPx() }
+    val parentSize = remember { mutableStateOf(IntSize.Zero) }
     
-    // Parent bounds
-    val parentWidth = remember { mutableStateOf(0f) }
-    val parentHeight = remember { mutableStateOf(0f) }
+    // Use one Animatable holding both x and y together.
+    val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     
-    // Animatables for position
-    val offsetX = remember { Animatable(0f) }
-    val offsetY = remember { Animatable(0f) }
+    // Create a decay animation spec for Offset. This uses the VectorConverter behind the scenes.
+    // (It ensures that both axes are animated together.)
+    val decay = rememberSplineBasedDecay<Offset>()
     
-    // Decay animation and decay factor:
-    val decay = rememberSplineBasedDecay<Float>()
-    val decayFactor = 1.0f // Adjusts the strength of the decay by scaling the velocity
-    
-    // Spring spec for spring-back with adjustable feel.
-    // (These values can be modified/controlled by additional UI if needed.)
-    val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+    // Spring spec for the spring-back phase.
+    val springSpec = spring<Offset>(
+        dampingRatio = Spring.DampingRatioMediumBouncy,
+        stiffness = Spring.StiffnessMedium
+    )
     
     val scope = rememberCoroutineScope()
-    
-    // Flick detection threshold (in pixels per second)
-    val flickVelocityThreshold = 1000f
-    
     var velocityTracker by remember { mutableStateOf<VelocityTracker?>(null) }
     
+    // Threshold for flick detection (in pixels per second)
+    val flickVelocityThreshold = 1000f
+
     Box(
-        Modifier
+        modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { coordinates ->
-                parentWidth.value = coordinates.size.width.toFloat()
-                parentHeight.value = coordinates.size.height.toFloat()
+                parentSize.value = coordinates.size
             }
             .background(Color.LightGray)
     ) {
         Box(
-            Modifier
-                .offset { IntOffset(offsetX.value.roundToInt(), offsetY.value.roundToInt()) }
+            modifier = Modifier
+                .offset {
+                    // The unified offset controls both x and y
+                    IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt())
+                }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = {
@@ -46,67 +45,42 @@ fun FlickableBoxWithBoundsAndContinuousMovement() {
                         onDrag = { change, dragAmount ->
                             change.consume()
                             velocityTracker?.addPosition(change.uptimeMillis, change.position)
-    
                             scope.launch {
-                                offsetX.snapTo(
-                                    (offsetX.value + dragAmount.x).coerceIn(
-                                        0f,
-                                        parentWidth.value - boxPxSize
-                                    )
-                                )
-                                offsetY.snapTo(
-                                    (offsetY.value + dragAmount.y).coerceIn(
-                                        0f,
-                                        parentHeight.value - boxPxSize
-                                    )
-                                )
+                                // Compute the new offset and clamp it within the parent's bounds.
+                                val newOffset = offset.value + dragAmount
+                                val clampedX = newOffset.x.coerceIn(0f, parentSize.value.width - boxPxSize)
+                                val clampedY = newOffset.y.coerceIn(0f, parentSize.value.height - boxPxSize)
+                                offset.snapTo(Offset(clampedX, clampedY))
                             }
                         },
                         onDragEnd = {
                             velocityTracker?.let { tracker ->
                                 val velocity = tracker.calculateVelocity()
+                                // Convert the velocity into an Offset.
+                                val initialVelocity = Offset(velocity.x, velocity.y)
+                                // Determine if it qualifies as a flick.
                                 val isFlick =
-                                    velocity.x.absoluteValue > flickVelocityThreshold ||
-                                    velocity.y.absoluteValue > flickVelocityThreshold
-    
-                                // Scale the velocity using the decay factor
-                                val adjustedVelocityX = velocity.x * decayFactor
-                                val adjustedVelocityY = velocity.y * decayFactor
-    
-                                // Animate along X axis
+                                    (velocity.x.absoluteValue > flickVelocityThreshold) ||
+                                    (velocity.y.absoluteValue > flickVelocityThreshold)
+                                
                                 scope.launch {
                                     if (isFlick) {
                                         try {
-                                            // Run decay: this will use the adjusted velocity until the decay naturally slows
-                                            offsetX.animateDecay(adjustedVelocityX, decay) {
-                                                // Cancel if we hit the parent bounds
-                                                if (value < 0f || value > parentWidth.value - boxPxSize) cancel()
+                                            // Run the decay animation for the entire Offset.
+                                            offset.animateDecay(initialVelocity, decay) {
+                                                // If the value is about to exceed parent bounds, cancel the decay.
+                                                val clampedX = value.x.coerceIn(0f, parentSize.value.width - boxPxSize)
+                                                val clampedY = value.y.coerceIn(0f, parentSize.value.height - boxPxSize)
+                                                if (value.x != clampedX || value.y != clampedY) cancel()
                                             }
                                         } catch (_: CancellationException) {
+                                            // Decay cancelled when hitting bounds.
                                         }
-                                        // Capture the final velocity from the decay phase
-                                        val finalVelocityX = offsetX.velocity
-                                        // Chain a spring animation using that final velocity as the initial velocity.
-                                        offsetX.animateTo(0f, springSpec, initialVelocity = finalVelocityX)
+                                        // Chain the spring-back animation using the final velocity
+                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = offset.velocity)
                                     } else {
-                                        // No flick: just spring back with zero initial velocity.
-                                        offsetX.animateTo(0f, springSpec, initialVelocity = 0f)
-                                    }
-                                }
-    
-                                // Animate along Y axis
-                                scope.launch {
-                                    if (isFlick) {
-                                        try {
-                                            offsetY.animateDecay(adjustedVelocityY, decay) {
-                                                if (value < 0f || value > parentHeight.value - boxPxSize) cancel()
-                                            }
-                                        } catch (_: CancellationException) {
-                                        }
-                                        val finalVelocityY = offsetY.velocity
-                                        offsetY.animateTo(0f, springSpec, initialVelocity = finalVelocityY)
-                                    } else {
-                                        offsetY.animateTo(0f, springSpec, initialVelocity = 0f)
+                                        // No flick detected: spring back immediately (zero initial velocity).
+                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = Offset.Zero)
                                     }
                                 }
                             }
