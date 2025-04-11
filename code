@@ -1,0 +1,123 @@
+@Composable
+fun FlickableBoxWithBoundsAndContinuousMovement() {
+    val boxSize = 100.dp
+    val boxPxSize = with(LocalDensity.current) { boxSize.toPx() }
+    
+    // Parent bounds
+    val parentWidth = remember { mutableStateOf(0f) }
+    val parentHeight = remember { mutableStateOf(0f) }
+    
+    // Animatables for position
+    val offsetX = remember { Animatable(0f) }
+    val offsetY = remember { Animatable(0f) }
+    
+    // Decay animation and decay factor:
+    val decay = rememberSplineBasedDecay<Float>()
+    val decayFactor = 1.0f // Adjusts the strength of the decay by scaling the velocity
+    
+    // Spring spec for spring-back with adjustable feel.
+    // (These values can be modified/controlled by additional UI if needed.)
+    val springSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+    
+    val scope = rememberCoroutineScope()
+    
+    // Flick detection threshold (in pixels per second)
+    val flickVelocityThreshold = 1000f
+    
+    var velocityTracker by remember { mutableStateOf<VelocityTracker?>(null) }
+    
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coordinates ->
+                parentWidth.value = coordinates.size.width.toFloat()
+                parentHeight.value = coordinates.size.height.toFloat()
+            }
+            .background(Color.LightGray)
+    ) {
+        Box(
+            Modifier
+                .offset { IntOffset(offsetX.value.roundToInt(), offsetY.value.roundToInt()) }
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = {
+                            velocityTracker = VelocityTracker()
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            velocityTracker?.addPosition(change.uptimeMillis, change.position)
+    
+                            scope.launch {
+                                offsetX.snapTo(
+                                    (offsetX.value + dragAmount.x).coerceIn(
+                                        0f,
+                                        parentWidth.value - boxPxSize
+                                    )
+                                )
+                                offsetY.snapTo(
+                                    (offsetY.value + dragAmount.y).coerceIn(
+                                        0f,
+                                        parentHeight.value - boxPxSize
+                                    )
+                                )
+                            }
+                        },
+                        onDragEnd = {
+                            velocityTracker?.let { tracker ->
+                                val velocity = tracker.calculateVelocity()
+                                val isFlick =
+                                    velocity.x.absoluteValue > flickVelocityThreshold ||
+                                    velocity.y.absoluteValue > flickVelocityThreshold
+    
+                                // Scale the velocity using the decay factor
+                                val adjustedVelocityX = velocity.x * decayFactor
+                                val adjustedVelocityY = velocity.y * decayFactor
+    
+                                // Animate along X axis
+                                scope.launch {
+                                    if (isFlick) {
+                                        try {
+                                            // Run decay: this will use the adjusted velocity until the decay naturally slows
+                                            offsetX.animateDecay(adjustedVelocityX, decay) {
+                                                // Cancel if we hit the parent bounds
+                                                if (value < 0f || value > parentWidth.value - boxPxSize) cancel()
+                                            }
+                                        } catch (_: CancellationException) {
+                                        }
+                                        // Capture the final velocity from the decay phase
+                                        val finalVelocityX = offsetX.velocity
+                                        // Chain a spring animation using that final velocity as the initial velocity.
+                                        offsetX.animateTo(0f, springSpec, initialVelocity = finalVelocityX)
+                                    } else {
+                                        // No flick: just spring back with zero initial velocity.
+                                        offsetX.animateTo(0f, springSpec, initialVelocity = 0f)
+                                    }
+                                }
+    
+                                // Animate along Y axis
+                                scope.launch {
+                                    if (isFlick) {
+                                        try {
+                                            offsetY.animateDecay(adjustedVelocityY, decay) {
+                                                if (value < 0f || value > parentHeight.value - boxPxSize) cancel()
+                                            }
+                                        } catch (_: CancellationException) {
+                                        }
+                                        val finalVelocityY = offsetY.velocity
+                                        offsetY.animateTo(0f, springSpec, initialVelocity = finalVelocityY)
+                                    } else {
+                                        offsetY.animateTo(0f, springSpec, initialVelocity = 0f)
+                                    }
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            velocityTracker = null
+                        }
+                    )
+                }
+                .size(boxSize)
+                .background(Color.Blue)
+        )
+    }
+}
