@@ -1,18 +1,47 @@
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.consume
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlin.math.absoluteValue
+import kotlin.math.sqrt
+
+// Extension to compute the magnitude of an Offset vector.
+fun Offset.getDistance(): Float = sqrt(x * x + y * y)
+
+// Extension function to normalize an Offset vector.
+fun Offset.normalize(): Offset {
+    val mag = getDistance()
+    return if (mag > 0f) Offset(x / mag, y / mag) else Offset.Zero
+}
+
 @Composable
-fun FlickableBoxWithMaxDecaySmoothStop() {
+fun FlickableBoxUnifiedDecayAndSpringNoClamps() {
     val boxSize = 100.dp
+    // Getting pixel size of the box.
     val boxPxSize = with(LocalDensity.current) { boxSize.toPx() }
     
-    // Store parent size to clamp dragging.
+    // Track parent size (used here for potential future extensions)
     val parentSize = remember { mutableStateOf(IntSize.Zero) }
     
-    // Use one Animatable for a combined Offset (x and y).
+    // Single Animatable for the combined offset
     val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     
-    // Create a decay spec for Offset.
+    // Decay animation spec for Offset.
     val decay = rememberSplineBasedDecay<Offset>()
     
-    // Spring spec for spring-back.
+    // Spring spec for the spring-back phase.
     val springSpec = spring<Offset>(
         dampingRatio = Spring.DampingRatioMediumBouncy,
         stiffness = Spring.StiffnessMedium
@@ -21,11 +50,12 @@ fun FlickableBoxWithMaxDecaySmoothStop() {
     val scope = rememberCoroutineScope()
     var velocityTracker by remember { mutableStateOf<VelocityTracker?>(null) }
     
-    // Threshold for a flick (in pixels per second).
+    // Flick threshold (in pixels per second)
     val flickVelocityThreshold = 1000f
-    // Maximum offset we want the decay phase to reach.
-    val maxDecayOffset = Offset(300f, 300f)
     
+    // Maximum total distance allowed during decay before transitioning to spring.
+    val maxDecayDistance = 300f
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -36,30 +66,23 @@ fun FlickableBoxWithMaxDecaySmoothStop() {
     ) {
         Box(
             modifier = Modifier
-                .offset { 
+                .offset {
+                    // Convert the unified offset to an IntOffset.
                     IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt())
                 }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = {
-                            // Set up a new velocity tracker.
+                            // Start a new velocity tracker.
                             velocityTracker = VelocityTracker()
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
                             velocityTracker?.addPosition(change.uptimeMillis, change.position)
+                            
+                            // Update offset without any clamping.
                             scope.launch {
-                                val newOffset = offset.value + dragAmount
-                                // Clamp so the box always remains visible.
-                                val clampedX = newOffset.x.coerceIn(
-                                    0f,
-                                    (parentSize.value.width - boxPxSize).toFloat()
-                                )
-                                val clampedY = newOffset.y.coerceIn(
-                                    0f,
-                                    (parentSize.value.height - boxPxSize).toFloat()
-                                )
-                                offset.snapTo(Offset(clampedX, clampedY))
+                                offset.snapTo(offset.value + dragAmount)
                             }
                         },
                         onDragEnd = {
@@ -67,45 +90,44 @@ fun FlickableBoxWithMaxDecaySmoothStop() {
                                 val velocity = tracker.calculateVelocity()
                                 val initialVelocity = Offset(velocity.x, velocity.y)
                                 val isFlick = 
-                                    velocity.x.absoluteValue > flickVelocityThreshold ||
-                                    velocity.y.absoluteValue > flickVelocityThreshold
-
+                                    initialVelocity.x.absoluteValue > flickVelocityThreshold ||
+                                    initialVelocity.y.absoluteValue > flickVelocityThreshold
+                                
                                 scope.launch {
                                     if (isFlick) {
-                                        // Check what the natural decay target would be.
-                                        val predictedTarget = decay.getTargetValue(offset.value, initialVelocity)
-                                        
-                                        if (predictedTarget.x > maxDecayOffset.x ||
-                                            predictedTarget.y > maxDecayOffset.y) {
-                                            // Instead of running a full decay (which would overshoot),
-                                            // animate smoothly to maxDecayOffset with a tween.
+                                        // Record the start offset for decay.
+                                        val decayStart = offset.value
+
+                                        try {
+                                            // Run decay animation, but cancel it once the total displacement
+                                            // from decayStart reaches or exceeds maxDecayDistance.
+                                            offset.animateDecay(initialVelocity, decay) {
+                                                val displacement = (value - decayStart).getDistance()
+                                                if (displacement >= maxDecayDistance) cancel()
+                                            }
+                                        } catch (_: CancellationException) {
+                                            // Decay canceled due to reaching maxDecayDistance.
+                                        }
+
+                                        // Optionally, smooth out to the exact cap if needed.
+                                        val currentDisplacement = (offset.value - decayStart).getDistance()
+                                        if (currentDisplacement < maxDecayDistance) {
+                                            // Compute target point along the flick direction.
+                                            val targetDecay = decayStart + initialVelocity.normalize() * maxDecayDistance
                                             offset.animateTo(
-                                                maxDecayOffset,
+                                                targetDecay,
                                                 animationSpec = tween(
                                                     durationMillis = 300,
                                                     easing = LinearOutSlowInEasing
                                                 )
                                             )
-                                        } else {
-                                            // Run normal decay.
-                                            try {
-                                                offset.animateDecay(initialVelocity, decay)
-                                            } catch (_: CancellationException) { }
                                         }
-                                        // After decay (or tween) finishes,
-                                        // spring back to the target (here, Offset.Zero).
-                                        offset.animateTo(
-                                            Offset.Zero,
-                                            springSpec,
-                                            initialVelocity = offset.velocity
-                                        )
+
+                                        // Chain spring-back animation, using the current velocity.
+                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = offset.velocity)
                                     } else {
-                                        // No flick: simply spring back immediately.
-                                        offset.animateTo(
-                                            Offset.Zero,
-                                            springSpec,
-                                            initialVelocity = Offset.Zero
-                                        )
+                                        // If not a flick, spring back immediately.
+                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = Offset.Zero)
                                     }
                                 }
                             }
