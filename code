@@ -1,17 +1,18 @@
 @Composable
-fun FlickableBoxCombinedMotion() {
+fun FlickableBoxWithMaxDecaySmoothStop() {
     val boxSize = 100.dp
     val boxPxSize = with(LocalDensity.current) { boxSize.toPx() }
+    
+    // Store parent size to clamp dragging.
     val parentSize = remember { mutableStateOf(IntSize.Zero) }
     
-    // Use one Animatable holding both x and y together.
+    // Use one Animatable for a combined Offset (x and y).
     val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     
-    // Create a decay animation spec for Offset. This uses the VectorConverter behind the scenes.
-    // (It ensures that both axes are animated together.)
+    // Create a decay spec for Offset.
     val decay = rememberSplineBasedDecay<Offset>()
     
-    // Spring spec for the spring-back phase.
+    // Spring spec for spring-back.
     val springSpec = spring<Offset>(
         dampingRatio = Spring.DampingRatioMediumBouncy,
         stiffness = Spring.StiffnessMedium
@@ -20,9 +21,11 @@ fun FlickableBoxCombinedMotion() {
     val scope = rememberCoroutineScope()
     var velocityTracker by remember { mutableStateOf<VelocityTracker?>(null) }
     
-    // Threshold for flick detection (in pixels per second)
+    // Threshold for a flick (in pixels per second).
     val flickVelocityThreshold = 1000f
-
+    // Maximum offset we want the decay phase to reach.
+    val maxDecayOffset = Offset(300f, 300f)
+    
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -33,54 +36,76 @@ fun FlickableBoxCombinedMotion() {
     ) {
         Box(
             modifier = Modifier
-                .offset {
-                    // The unified offset controls both x and y
+                .offset { 
                     IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt())
                 }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragStart = {
+                            // Set up a new velocity tracker.
                             velocityTracker = VelocityTracker()
                         },
                         onDrag = { change, dragAmount ->
                             change.consume()
                             velocityTracker?.addPosition(change.uptimeMillis, change.position)
                             scope.launch {
-                                // Compute the new offset and clamp it within the parent's bounds.
                                 val newOffset = offset.value + dragAmount
-                                val clampedX = newOffset.x.coerceIn(0f, parentSize.value.width - boxPxSize)
-                                val clampedY = newOffset.y.coerceIn(0f, parentSize.value.height - boxPxSize)
+                                // Clamp so the box always remains visible.
+                                val clampedX = newOffset.x.coerceIn(
+                                    0f,
+                                    (parentSize.value.width - boxPxSize).toFloat()
+                                )
+                                val clampedY = newOffset.y.coerceIn(
+                                    0f,
+                                    (parentSize.value.height - boxPxSize).toFloat()
+                                )
                                 offset.snapTo(Offset(clampedX, clampedY))
                             }
                         },
                         onDragEnd = {
                             velocityTracker?.let { tracker ->
                                 val velocity = tracker.calculateVelocity()
-                                // Convert the velocity into an Offset.
                                 val initialVelocity = Offset(velocity.x, velocity.y)
-                                // Determine if it qualifies as a flick.
-                                val isFlick =
-                                    (velocity.x.absoluteValue > flickVelocityThreshold) ||
-                                    (velocity.y.absoluteValue > flickVelocityThreshold)
-                                
+                                val isFlick = 
+                                    velocity.x.absoluteValue > flickVelocityThreshold ||
+                                    velocity.y.absoluteValue > flickVelocityThreshold
+
                                 scope.launch {
                                     if (isFlick) {
-                                        try {
-                                            // Run the decay animation for the entire Offset.
-                                            offset.animateDecay(initialVelocity, decay) {
-                                                // If the value is about to exceed parent bounds, cancel the decay.
-                                                val clampedX = value.x.coerceIn(0f, parentSize.value.width - boxPxSize)
-                                                val clampedY = value.y.coerceIn(0f, parentSize.value.height - boxPxSize)
-                                                if (value.x != clampedX || value.y != clampedY) cancel()
-                                            }
-                                        } catch (_: CancellationException) {
-                                            // Decay cancelled when hitting bounds.
+                                        // Check what the natural decay target would be.
+                                        val predictedTarget = decay.getTargetValue(offset.value, initialVelocity)
+                                        
+                                        if (predictedTarget.x > maxDecayOffset.x ||
+                                            predictedTarget.y > maxDecayOffset.y) {
+                                            // Instead of running a full decay (which would overshoot),
+                                            // animate smoothly to maxDecayOffset with a tween.
+                                            offset.animateTo(
+                                                maxDecayOffset,
+                                                animationSpec = tween(
+                                                    durationMillis = 300,
+                                                    easing = LinearOutSlowInEasing
+                                                )
+                                            )
+                                        } else {
+                                            // Run normal decay.
+                                            try {
+                                                offset.animateDecay(initialVelocity, decay)
+                                            } catch (_: CancellationException) { }
                                         }
-                                        // Chain the spring-back animation using the final velocity
-                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = offset.velocity)
+                                        // After decay (or tween) finishes,
+                                        // spring back to the target (here, Offset.Zero).
+                                        offset.animateTo(
+                                            Offset.Zero,
+                                            springSpec,
+                                            initialVelocity = offset.velocity
+                                        )
                                     } else {
-                                        // No flick detected: spring back immediately (zero initial velocity).
-                                        offset.animateTo(Offset.Zero, springSpec, initialVelocity = Offset.Zero)
+                                        // No flick: simply spring back immediately.
+                                        offset.animateTo(
+                                            Offset.Zero,
+                                            springSpec,
+                                            initialVelocity = Offset.Zero
+                                        )
                                     }
                                 }
                             }
