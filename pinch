@@ -1,0 +1,114 @@
+import androidx.compose.ui.input.pointer.forEachGesture
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
+import androidx.compose.ui.input.pointer.awaitFirstDown
+import androidx.compose.ui.input.pointer.consume
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.position
+import androidx.compose.ui.input.pointer.pressed
+// … rest of your imports …
+
+@Composable
+fun TwoFingerFlickableBox(
+    decayTarget: Offset? = Offset(300f, 300f)
+) {
+    val boxSize = 100.dp
+    val density = LocalDensity.current
+    val boxPxSize = with(density) { boxSize.toPx() }
+
+    val parentSize = remember { mutableStateOf(IntSize.Zero) }
+    val offset = remember { Animatable(Offset.Zero, OffsetVectorConverter) }
+    val decaySpec = rememberTargetBasedDecay(decayTarget)
+    val springSpec = spring<Offset>(
+        dampingRatio = Spring.DampingRatioMediumBouncy,
+        stiffness = Spring.StiffnessMedium
+    )
+    val scope = rememberCoroutineScope()
+    val flickVelocityThreshold = 1000f
+
+    Box(
+        Modifier
+          .fillMaxSize()
+          .onGloballyPositioned { parentSize.value = it.size }
+          .background(Color.LightGray)
+    ) {
+      Box(
+        Modifier
+          .offset { IntOffset(offset.value.x.toInt(), offset.value.y.toInt()) }
+          .size(boxSize)
+          .background(Color.Blue)
+          .pointerInput(Unit) {
+            // forEachGesture gives us a fresh “gesture” scope each time you lift all pointers
+            forEachGesture {
+              awaitPointerEventScope {
+                // 1) wait for first finger
+                val down1 = awaitFirstDown()
+                // 2) then wait for a second finger anywhere on screen
+                var down2: PointerInputChange? = null
+                while (down2 == null) {
+                  val ev = awaitPointerEvent()
+                  down2 = ev.changes.firstOrNull { it.changedToDown() && it.id != down1.id }
+                }
+
+                // Now we have two pointers
+                val pointerIds = listOf(down1.id, down2.id)
+                // Start tracking their midpoint
+                var prevCentroid = (down1.position + down2.position) / 2f
+                val velocityTracker = VelocityTracker()
+
+                // 3) track movement until either finger lifts
+                while (true) {
+                  val ev = awaitPointerEvent()
+                  // keep only changes from our two pointers
+                  val changes = ev.changes.filter { it.id in pointerIds }
+                  if (changes.size < 2 || changes.any { !it.pressed }) {
+                    // a finger lifted — end of gesture
+                    break
+                  }
+
+                  // compute new midpoint
+                  val currPositions = changes.map { it.position }
+                  val centroid = (currPositions[0] + currPositions[1]) / 2f
+                  val pan = centroid - prevCentroid
+                  prevCentroid = centroid
+
+                  // feed velocity tracker
+                  velocityTracker.addPosition(ev.uptimeMillis, centroid)
+
+                  // apply immediate “snap” to offset
+                  scope.launch {
+                    offset.snapTo(offset.value + pan)
+                  }
+
+                  // consume so child gestures don’t also move
+                  changes.forEach { it.consume() }
+                }
+
+                // 4) on end, decide if it was a “flick”
+                val velocity = velocityTracker.calculateVelocity()
+                val initialVelocity = Offset(velocity.x, velocity.y)
+                val isFlick = 
+                  initialVelocity.x.absoluteValue > flickVelocityThreshold ||
+                  initialVelocity.y.absoluteValue > flickVelocityThreshold
+
+                scope.launch {
+                  if (isFlick) {
+                    // decay+spring back
+                    offset.animateDecay(initialVelocity, decaySpec)
+                    offset.animateTo(
+                      Offset.Zero,
+                      springSpec,
+                      initialVelocity = offset.velocity
+                    )
+                  } else {
+                    // just spring back
+                    offset.animateTo(Offset.Zero, springSpec, initialVelocity = Offset.Zero)
+                  }
+                }
+              }
+            }
+          }
+      )
+    }
+}
