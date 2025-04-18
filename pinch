@@ -1,114 +1,109 @@
-import androidx.compose.ui.input.pointer.forEachGesture
-import androidx.compose.ui.input.pointer.awaitPointerEventScope
-import androidx.compose.ui.input.pointer.awaitFirstDown
-import androidx.compose.ui.input.pointer.consume
-import androidx.compose.ui.input.pointer.PointerInputChange
-import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.changedToDown
-import androidx.compose.ui.input.pointer.position
-import androidx.compose.ui.input.pointer.pressed
-// … rest of your imports …
+import androidx.compose.ui.input.pointer.consume
+import androidx.compose.ui.input.pointer.forEachGesture
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.calculateZoom
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 @Composable
-fun TwoFingerFlickableBox(
-    decayTarget: Offset? = Offset(300f, 300f)
+fun PinchZoomableBox(
+    // scale‑per‑second threshold to trigger the spring
+    fastVelocityThreshold: Float = 1.5f,
+    // optional callback when a fast pinch occurs
+    onFastPinch: (initialVelocity: Float) -> Unit = {}
 ) {
-    val boxSize = 100.dp
-    val density = LocalDensity.current
-    val boxPxSize = with(density) { boxSize.toPx() }
-
-    val parentSize = remember { mutableStateOf(IntSize.Zero) }
-    val offset = remember { Animatable(Offset.Zero, OffsetVectorConverter) }
-    val decaySpec = rememberTargetBasedDecay(decayTarget)
-    val springSpec = spring<Offset>(
-        dampingRatio = Spring.DampingRatioMediumBouncy,
-        stiffness = Spring.StiffnessMedium
-    )
     val scope = rememberCoroutineScope()
-    val flickVelocityThreshold = 1000f
+    // Animatable holds the current scale of the box
+    val scaleAnim = remember { Animatable(1f) }
 
     Box(
-        Modifier
-          .fillMaxSize()
-          .onGloballyPositioned { parentSize.value = it.size }
-          .background(Color.LightGray)
+      Modifier
+        .fillMaxSize()
+        .background(Color.LightGray)
     ) {
       Box(
         Modifier
-          .offset { IntOffset(offset.value.x.toInt(), offset.value.y.toInt()) }
-          .size(boxSize)
-          .background(Color.Blue)
+          .size(100.dp)
+          .graphicsLayer(
+            scaleX = scaleAnim.value,
+            scaleY = scaleAnim.value
+          )
           .pointerInput(Unit) {
-            // forEachGesture gives us a fresh “gesture” scope each time you lift all pointers
             forEachGesture {
               awaitPointerEventScope {
-                // 1) wait for first finger
-                val down1 = awaitFirstDown()
-                // 2) then wait for a second finger anywhere on screen
-                var down2: PointerInputChange? = null
-                while (down2 == null) {
-                  val ev = awaitPointerEvent()
-                  down2 = ev.changes.firstOrNull { it.changedToDown() && it.id != down1.id }
-                }
+                // 1) wait for two fingers
+                awaitFirstDown()
+                awaitSecondFinger()
 
-                // Now we have two pointers
-                val pointerIds = listOf(down1.id, down2.id)
-                // Start tracking their midpoint
-                var prevCentroid = (down1.position + down2.position) / 2f
-                val velocityTracker = VelocityTracker()
+                // timing & velocity tracking
+                var lastTime = System.currentTimeMillis()
+                var lastVelocity = 0f
 
-                // 3) track movement until either finger lifts
-                while (true) {
-                  val ev = awaitPointerEvent()
-                  // keep only changes from our two pointers
-                  val changes = ev.changes.filter { it.id in pointerIds }
-                  if (changes.size < 2 || changes.any { !it.pressed }) {
-                    // a finger lifted — end of gesture
-                    break
+                // real‑time pinch loop
+                lateinit var event: PointerEvent
+                do {
+                  event = awaitPointerEvent()
+                  val zoomDelta = event.calculateZoom()
+                  val now = System.currentTimeMillis()
+                  val dt = now - lastTime
+                  if (dt > 0) {
+                    // (zoomDelta - 1) per second
+                    lastVelocity = (zoomDelta - 1f) / (dt / 1000f)
+                  }
+                  lastTime = now
+
+                  // apply scale immediately
+                  scope.launch { 
+                    scaleAnim.snapTo(scaleAnim.value * zoomDelta) 
                   }
 
-                  // compute new midpoint
-                  val currPositions = changes.map { it.position }
-                  val centroid = (currPositions[0] + currPositions[1]) / 2f
-                  val pan = centroid - prevCentroid
-                  prevCentroid = centroid
+                  event.changes.forEach { it.consume() }
+                } while (event.changes.count { it.pressed } >= 2)
 
-                  // feed velocity tracker
-                  velocityTracker.addPosition(ev.uptimeMillis, centroid)
-
-                  // apply immediate “snap” to offset
+                // 2) pinch ended → check velocity
+                val initialVelocity = lastVelocity
+                if (abs(initialVelocity) > fastVelocityThreshold) {
+                  onFastPinch(initialVelocity)
+                  // 3) spring from current scale back to 1f, using that velocity
                   scope.launch {
-                    offset.snapTo(offset.value + pan)
-                  }
-
-                  // consume so child gestures don’t also move
-                  changes.forEach { it.consume() }
-                }
-
-                // 4) on end, decide if it was a “flick”
-                val velocity = velocityTracker.calculateVelocity()
-                val initialVelocity = Offset(velocity.x, velocity.y)
-                val isFlick = 
-                  initialVelocity.x.absoluteValue > flickVelocityThreshold ||
-                  initialVelocity.y.absoluteValue > flickVelocityThreshold
-
-                scope.launch {
-                  if (isFlick) {
-                    // decay+spring back
-                    offset.animateDecay(initialVelocity, decaySpec)
-                    offset.animateTo(
-                      Offset.Zero,
-                      springSpec,
-                      initialVelocity = offset.velocity
+                    scaleAnim.animateTo(
+                      targetValue = 1f,
+                      animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                      ),
+                      initialVelocity = initialVelocity
                     )
-                  } else {
-                    // just spring back
-                    offset.animateTo(Offset.Zero, springSpec, initialVelocity = Offset.Zero)
                   }
                 }
               }
             }
           }
+          .background(Color.Blue)
       )
     }
+}
+
+// helper: suspend until any second finger touches down
+private suspend fun AwaitPointerEventScope.awaitSecondFinger() {
+  while (true) {
+    val ev = awaitPointerEvent()
+    if (ev.changes.any { it.changedToDown() }) return
+  }
 }
