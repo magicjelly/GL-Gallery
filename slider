@@ -1,0 +1,50 @@
+@Composable
+fun SliderWithButtons(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    step: Float = 0.1f,
+    modifier: Modifier = Modifier,
+) {
+    // Calculate how many discrete intervals the Slider should have
+    val steps = ((valueRange.endInclusive - valueRange.start) / step).roundToInt() - 1
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier.padding(horizontal = 16.dp)
+    ) {
+        IconButton(
+            onClick = {
+                val newValue = (value - step).coerceIn(valueRange)
+                onValueChange(newValue)
+            },
+            enabled = value > valueRange.start
+        ) {
+            Icon(Icons.Default.Remove, contentDescription = "Decrease")
+        }
+
+        Slider(
+            value = value,
+            onValueChange = { raw ->
+                // snap to nearest step
+                val stepped = ( (raw / step).roundToInt() * step )
+                    .coerceIn(valueRange)
+                onValueChange(stepped)
+            },
+            valueRange = valueRange,
+            steps = steps.coerceAtLeast(0),
+            modifier = Modifier.weight(1f)
+        )
+
+        IconButton(
+            onClick = {
+                val newValue = (value + step).coerceIn(valueRange)
+                onValueChange(newValue)
+            },
+            enabled = value < valueRange.endInclusive
+        ) {
+            Icon(Icons.Default.Add, contentDescription = "Increase")
+        }
+    }
+}
