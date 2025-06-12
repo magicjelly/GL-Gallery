@@ -1,3 +1,46 @@
-하단 패널에 디바이스가 순차적으로 나타날 때, 디바이스 간 최소 간격은 800ms로 설정했습니다.
+Google's Agent-to-Agent (A2A) Protocol – How It Affects Everyday Users
 
-또한, 그리드 레이아웃에서 디바이스가 3번 위치에서 4번 위치로 이동할 때는 아래 애니메이션을 사용해주세요:
+1. Smarter Multi-Agent Collaboration
+- Multiple specialized agents (e.g., travel, calendar, weather) can coordinate.
+- Example: “Plan a weekend trip” → One agent books flights, another checks weather, a third suggests activities.
+
+2. Improved Accuracy & Expertise
+- Each task goes to the best-suited agent instead of one generalist assistant.
+- More accurate answers, tailored results.
+
+3. Faster, Real-Time Responses
+- Agents discover each other via "agent cards" and work together instantly.
+- Feels smoother, with less lag and fewer context switches.
+
+4. Better Privacy and Control
+- Each agent only accesses what it needs; others stay sandboxed.
+- Reduces data overreach, boosting user privacy and security.
+
+5. Voice & Multi-Modal Workflows
+- Agents can interpret and respond using voice, text, forms, and images.
+- Example: Speak a command → voice agent interprets → another agent books or responds visually.
+
+6. Persistent & Coordinated Tasks
+- Agents can manage ongoing tasks with lifecycle tracking.
+- Example: Planning an event over a week → AI tracks invites, reminders, reservations.
+
+7. Personal Assistant Ecosystem
+- Your AI (like Gemini or Assistant) delegates tasks to a network of mini-specialist agents.
+- Example: Project Mariner uses browser agents to auto-fill forms or purchase tickets.
+
+Everyday Use Cases Summary:
+-------------------------------------------------
+| User Need                     | A2A Impact                                     |
+|------------------------------|------------------------------------------------|
+| “Find a recipe & groceries”  | Food agent finds recipe → shopping agent orders ingredients |
+| “Book flights + hotel”       | Travel agent delegates to booking, weather, mapping agents   |
+| “Weekly summary”             | Summary agent gathers calendar, emails, reminders            |
+
+Key Benefits:
+- Seamless multi-step tasks without switching apps
+- Better results from expert agents
+- More privacy via task-specific data access
+- More natural, intuitive interactions with AI
+
+Conclusion:
+Agent-to-Agent protocols will make mobile AI assistants feel more like intelligent teams—faster, smarter, and safer—for everyday users.
