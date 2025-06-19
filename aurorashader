@@ -1,0 +1,34 @@
+uniform shader iChannel0;
+uniform shader iChannel1;
+uniform float2 iResolution;
+uniform float iTime;
+uniform float iMouseX;
+uniform float iMouseZ;
+
+half4 main(float2 fragCoord) {
+    float2 uv = fragCoord / iResolution;
+    uv = clamp(uv, 0.0, 1.0);
+
+    // Base images
+    half4 baseColor = iChannel0.eval(uv);
+    half4 targetColor = iChannel1.eval(uv);
+
+    // Transition factor from mouseX
+    float blendFactor = clamp(iMouseX / iResolution.x, 0.0, 1.0);
+
+    // Aurora wave effect
+    float wave = sin((uv.x + iTime * 0.2) * 20.0 + sin(uv.y * 10.0 + iTime * 0.1) * 2.0);
+    float mask = smoothstep(0.3, 0.7, 0.5 + 0.5 * wave);
+
+    // Sample dynamic aurora color from iChannel1
+    float2 waveUV = uv + float2(0.0, wave * 0.05);
+    waveUV = clamp(waveUV, 0.0, 1.0);
+    half4 auroraColor = iChannel1.eval(waveUV);
+
+    // Mix with strength influenced by vertical position (sky feel)
+    float auroraStrength = smoothstep(0.3, 1.0, uv.y) * mask;
+
+    // Final color blending
+    half4 color = mix(baseColor, auroraColor, auroraStrength);
+    return mix(baseColor, color, blendFactor);
+}
