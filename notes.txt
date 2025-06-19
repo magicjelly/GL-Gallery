@@ -1,48 +1,3 @@
-
-uniform shader iChannel0;
-uniform shader iChannel1;
-uniform float iTime;
-uniform float iMouseX;
-uniform float iMouseZ;
-uniform vec2 iResolution;
-
-half4 main(float2 fragCoord) {
-    float2 uv = fragCoord / iResolution;
-
-    // Mouse-controlled transition progress (0 to 1)
-    float progress = iMouseZ > 0.0 
-        ? clamp(iMouseX / iResolution.x, 0.0, 1.0) 
-        : 0.0;
-
-    // Eased progress for smoother visual feel
-    float eased = progress < 0.5 
-        ? 2.0 * progress * progress 
-        : -1.0 + (4.0 - 2.0 * progress) * progress;
-
-    // Strength of distortion peaks at middle, 0 at start and end
-    float distortionStrength = sin(eased * 3.1415); // 0 → 1 → 0
-
-    // Distortion offset: small wave pattern
-    float2 offset = float2(
-        sin(uv.y * 40.0 + iTime * 5.0) * 0.01,
-        cos(uv.x * 40.0 + iTime * 5.0) * 0.01
-    ) * distortionStrength;
-
-    // Apply offset directionally to both images
-    float2 uvA = uv + offset * (1.0 - eased);
-    float2 uvB = uv - offset * eased;
-
-    // Sample both images
-    half4 colorA = iChannel0.eval(uvA * iResolution);
-    half4 colorB = iChannel1.eval(uvB * iResolution);
-
-    // Crossfade based on eased progress
-    return mix(colorA, colorB, eased);
-}
-
-
-
-
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun ShaderTransitionCanvas(
@@ -73,9 +28,6 @@ fun ShaderTransitionCanvas(
         }
     }
 
-    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
-    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
-
     Canvas(
         modifier = modifier
             .size(canvasWidthDp, canvasHeightDp)
@@ -85,39 +37,37 @@ fun ShaderTransitionCanvas(
                 }
             }
     ) {
-        val canvasSize = size
+        val canvasWidth = size.width
+        val canvasHeight = size.height
 
-        // Calculate image scale and offset for aspect-fit
-        val scaleA = minOf(canvasSize.width / imageBitmapA.width, canvasSize.height / imageBitmapA.height)
-        val scaleB = minOf(canvasSize.width / imageBitmapB.width, canvasSize.height / imageBitmapB.height)
+        // calculate scale to fit image into canvas
+        val scaleA = minOf(canvasWidth / imageBitmapA.width, canvasHeight / imageBitmapA.height)
+        val scaleB = minOf(canvasWidth / imageBitmapB.width, canvasHeight / imageBitmapB.height)
 
-        val imageShaderA = ImageShader(
-            imageBitmapA,
-            TileMode.Clamp,
-            TileMode.Clamp,
-            matrix = Matrix().apply {
-                reset()
-                preScale(scaleA, scaleA)
-            }
-        )
-        val imageShaderB = ImageShader(
-            imageBitmapB,
-            TileMode.Clamp,
-            TileMode.Clamp,
-            matrix = Matrix().apply {
-                reset()
-                preScale(scaleB, scaleB)
-            }
-        )
+        val scaledWidth = imageBitmapA.width * scaleA
+        val scaledHeight = imageBitmapA.height * scaleA
+        val offsetX = (canvasWidth - scaledWidth) / 2f
+        val offsetY = (canvasHeight - scaledHeight) / 2f
 
-        runtimeShader.setInputShader("iChannel0", imageShaderA)
-        runtimeShader.setInputShader("iChannel1", imageShaderB)
-        runtimeShader.setFloatUniform("iResolution", canvasSize.width, canvasSize.height)
+        val shaderA = ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp)
+        val shaderB = ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp)
+
+        runtimeShader.setInputShader("iChannel0", shaderA)
+        runtimeShader.setInputShader("iChannel1", shaderB)
+        runtimeShader.setFloatUniform("iResolution", canvasWidth, canvasHeight)
         runtimeShader.setFloatUniform("iTime", time.value)
         runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
         runtimeShader.setFloatUniform("iMouseZ", 1f)
 
-        drawRect(brush = ShaderBrush(runtimeShader))
+        // scale + center the shader content
+        withTransform({
+            translate(offsetX, offsetY)
+            scale(scaleA, scaleA)
+        }) {
+            drawRect(
+                brush = ShaderBrush(runtimeShader),
+                size = Size(imageBitmapA.width.toFloat(), imageBitmapA.height.toFloat())
+            )
+        }
     }
 }
- 
