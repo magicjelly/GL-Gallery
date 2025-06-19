@@ -2,23 +2,26 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
 {
     vec2 uv = fragCoord.xy / iResolution.xy;
 
-    // Progress based on mouse X (0 to 1)
+    // Mouse-controlled transition progress (0 to 1)
     float progress = iMouse.z > 0.0 
         ? clamp(iMouse.x / iResolution.x, 0.0, 1.0) 
         : 0.0;
 
-    // Smooth easing
+    // Eased progress for smoother visual feel
     float eased = progress < 0.5 
         ? 2.0 * progress * progress 
         : -1.0 + (4.0 - 2.0 * progress) * progress;
 
-    // Refractive distortion offset
-    vec2 offset = vec2(
-        sin(uv.y * 20.0 + iTime * 5.0) * 0.01,
-        cos(uv.x * 20.0 + iTime * 5.0) * 0.01
-    );
+    // Strength of distortion peaks at middle, 0 at start and end
+    float distortionStrength = sin(eased * 3.1415); // 0 → 1 → 0
 
-    // Apply offset differently to each image
+    // Distortion offset: small wave pattern
+    vec2 offset = vec2(
+        sin(uv.y * 40.0 + iTime * 5.0) * 0.01,
+        cos(uv.x * 40.0 + iTime * 5.0) * 0.01
+    ) * distortionStrength;
+
+    // Apply offset directionally to both images
     vec2 uvA = uv + offset * (1.0 - eased);
     vec2 uvB = uv - offset * eased;
 
@@ -26,7 +29,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     vec4 colorA = texture(iChannel0, uvA);
     vec4 colorB = texture(iChannel1, uvB);
 
-    // Blend them based on eased progress
+    // Crossfade based on eased progress
     vec4 finalColor = mix(colorA, colorB, eased);
 
     fragColor = finalColor;
