@@ -34,7 +34,6 @@ half4 main(float2 fragCoord) {
 
 
 
-
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun ShaderImageTransitionWithDrag(
