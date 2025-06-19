@@ -10,13 +10,13 @@ fun ShaderTransitionCanvas(
     val context = LocalContext.current
     val density = LocalDensity.current
 
-    val imageBitmapA = ImageBitmap.imageResource(imageA)
-    val imageBitmapB = ImageBitmap.imageResource(imageB)
-
     val shaderCode = remember {
         context.resources.openRawResource(R.raw.transition_shader).bufferedReader().use { it.readText() }
     }
     val runtimeShader = remember { RuntimeShader(shaderCode) }
+
+    val imageBitmapA = ImageBitmap.imageResource(imageA)
+    val imageBitmapB = ImageBitmap.imageResource(imageB)
 
     val time = remember { Animatable(0f) }
     val dragX = remember { mutableFloatStateOf(0f) }
@@ -31,6 +31,14 @@ fun ShaderTransitionCanvas(
     val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
     val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
 
+    // Pre-scale image to match canvas while keeping aspect ratio
+    val scaledImageA = remember(canvasWidthPx, canvasHeightPx) {
+        imageBitmapA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
+    }
+    val scaledImageB = remember(canvasWidthPx, canvasHeightPx) {
+        imageBitmapB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
+    }
+
     Canvas(
         modifier = modifier
             .size(canvasWidthDp, canvasHeightDp)
@@ -40,38 +48,23 @@ fun ShaderTransitionCanvas(
                 }
             }
     ) {
-        val canvasSize = size
+        val shaderA = ImageShader(scaledImageA, TileMode.Clamp, TileMode.Clamp)
+        val shaderB = ImageShader(scaledImageB, TileMode.Clamp, TileMode.Clamp)
 
-        val imageWidth = imageBitmapA.width.toFloat()
-        val imageHeight = imageBitmapA.height.toFloat()
-
-        val scale = minOf(canvasSize.width / imageWidth, canvasSize.height / imageHeight)
-
-        val drawWidth = imageWidth * scale
-        val drawHeight = imageHeight * scale
-
-        val offsetX = (canvasSize.width - drawWidth) / 2f
-        val offsetY = (canvasSize.height - drawHeight) / 2f
-
-        val shaderA = ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp)
-        val shaderB = ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp)
-
-        // Set resolution to match scaled image (not full canvas)
-        runtimeShader.setFloatUniform("iResolution", drawWidth, drawHeight)
-        runtimeShader.setFloatUniform("iTime", time.value)
-        runtimeShader.setFloatUniform("iMouseX", (dragX.floatValue - offsetX).coerceIn(0f, drawWidth))
-        runtimeShader.setFloatUniform("iMouseZ", 1f)
         runtimeShader.setInputShader("iChannel0", shaderA)
         runtimeShader.setInputShader("iChannel1", shaderB)
+        runtimeShader.setFloatUniform("iResolution", size.width, size.height)
+        runtimeShader.setFloatUniform("iTime", time.value)
+        runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
+        runtimeShader.setFloatUniform("iMouseZ", 1f)
 
-        withTransform({
-            translate(offsetX, offsetY)
-            scale(scale, scale)
-        }) {
-            drawRect(
-                brush = ShaderBrush(runtimeShader),
-                size = Size(imageWidth, imageHeight)
-            )
-        }
+        drawRect(brush = ShaderBrush(runtimeShader))
     }
+}
+
+fun Bitmap.scaleToFit(maxWidth: Int, maxHeight: Int): Bitmap {
+    val scale = minOf(maxWidth / width.toFloat(), maxHeight / height.toFloat())
+    val newWidth = (width * scale).toInt()
+    val newHeight = (height * scale).toInt()
+    return Bitmap.createScaledBitmap(this, newWidth, newHeight, true)
 }
