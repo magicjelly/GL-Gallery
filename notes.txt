@@ -37,13 +37,14 @@ half4 main(float2 fragCoord) {
 
 
 
-
-    
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun ShaderTransitionCanvas(
-    modifier: Modifier = Modifier,
     @DrawableRes imageA: Int,
-    @DrawableRes imageB: Int
+    @DrawableRes imageB: Int,
+    modifier: Modifier = Modifier,
+    canvasWidthDp: Dp = 300.dp,
+    canvasHeightDp: Dp = 300.dp
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -66,24 +67,46 @@ fun ShaderTransitionCanvas(
         }
     }
 
+    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
+    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
+
     Canvas(
         modifier = modifier
-            .fillMaxSize()
+            .size(canvasWidthDp, canvasHeightDp)
             .pointerInput(Unit) {
                 detectDragGestures { change, _ ->
                     dragX.floatValue = change.position.x
                 }
             }
     ) {
-        val canvasWidth = size.width
-        val canvasHeight = size.height
+        val canvasSize = size
 
-        val imageShaderA = ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp)
-        val imageShaderB = ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp)
+        // Calculate image scale and offset for aspect-fit
+        val scaleA = minOf(canvasSize.width / imageBitmapA.width, canvasSize.height / imageBitmapA.height)
+        val scaleB = minOf(canvasSize.width / imageBitmapB.width, canvasSize.height / imageBitmapB.height)
+
+        val imageShaderA = ImageShader(
+            imageBitmapA,
+            TileMode.Clamp,
+            TileMode.Clamp,
+            matrix = Matrix().apply {
+                reset()
+                preScale(scaleA, scaleA)
+            }
+        )
+        val imageShaderB = ImageShader(
+            imageBitmapB,
+            TileMode.Clamp,
+            TileMode.Clamp,
+            matrix = Matrix().apply {
+                reset()
+                preScale(scaleB, scaleB)
+            }
+        )
 
         runtimeShader.setInputShader("iChannel0", imageShaderA)
         runtimeShader.setInputShader("iChannel1", imageShaderB)
-        runtimeShader.setFloatUniform("iResolution", canvasWidth, canvasHeight)
+        runtimeShader.setFloatUniform("iResolution", canvasSize.width, canvasSize.height)
         runtimeShader.setFloatUniform("iTime", time.value)
         runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
         runtimeShader.setFloatUniform("iMouseZ", 1f)
@@ -91,4 +114,4 @@ fun ShaderTransitionCanvas(
         drawRect(brush = ShaderBrush(runtimeShader))
     }
 }
-
+ 
