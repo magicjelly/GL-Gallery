@@ -28,6 +28,9 @@ fun ShaderTransitionCanvas(
         }
     }
 
+    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
+    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
+
     Canvas(
         modifier = modifier
             .size(canvasWidthDp, canvasHeightDp)
@@ -37,36 +40,37 @@ fun ShaderTransitionCanvas(
                 }
             }
     ) {
-        val canvasWidth = size.width
-        val canvasHeight = size.height
+        val canvasSize = size
 
-        // calculate scale to fit image into canvas
-        val scaleA = minOf(canvasWidth / imageBitmapA.width, canvasHeight / imageBitmapA.height)
-        val scaleB = minOf(canvasWidth / imageBitmapB.width, canvasHeight / imageBitmapB.height)
+        val imageWidth = imageBitmapA.width.toFloat()
+        val imageHeight = imageBitmapA.height.toFloat()
 
-        val scaledWidth = imageBitmapA.width * scaleA
-        val scaledHeight = imageBitmapA.height * scaleA
-        val offsetX = (canvasWidth - scaledWidth) / 2f
-        val offsetY = (canvasHeight - scaledHeight) / 2f
+        val scale = minOf(canvasSize.width / imageWidth, canvasSize.height / imageHeight)
+
+        val drawWidth = imageWidth * scale
+        val drawHeight = imageHeight * scale
+
+        val offsetX = (canvasSize.width - drawWidth) / 2f
+        val offsetY = (canvasSize.height - drawHeight) / 2f
 
         val shaderA = ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp)
         val shaderB = ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp)
 
+        // Set resolution to match scaled image (not full canvas)
+        runtimeShader.setFloatUniform("iResolution", drawWidth, drawHeight)
+        runtimeShader.setFloatUniform("iTime", time.value)
+        runtimeShader.setFloatUniform("iMouseX", (dragX.floatValue - offsetX).coerceIn(0f, drawWidth))
+        runtimeShader.setFloatUniform("iMouseZ", 1f)
         runtimeShader.setInputShader("iChannel0", shaderA)
         runtimeShader.setInputShader("iChannel1", shaderB)
-        runtimeShader.setFloatUniform("iResolution", canvasWidth, canvasHeight)
-        runtimeShader.setFloatUniform("iTime", time.value)
-        runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
-        runtimeShader.setFloatUniform("iMouseZ", 1f)
 
-        // scale + center the shader content
         withTransform({
             translate(offsetX, offsetY)
-            scale(scaleA, scaleA)
+            scale(scale, scale)
         }) {
             drawRect(
                 brush = ShaderBrush(runtimeShader),
-                size = Size(imageBitmapA.width.toFloat(), imageBitmapA.height.toFloat())
+                size = Size(imageWidth, imageHeight)
             )
         }
     }
