@@ -1,23 +1,93 @@
-📱 Google’s Agent-to-Agent Protocol (A2A) – Quick Summary for Mobile Users
+uniform shader iChannel0;
+uniform shader iChannel1;
+uniform float iTime;
+uniform float iMouseX;
+uniform float iMouseZ;
+uniform vec2 iResolution;
 
-- Smarter Assistant Collaboration:
-  Multiple AI agents on your phone can now work together.
-  Example: Plan a trip across calendar, maps, and browser apps—all from one command.
+half4 main(float2 fragCoord) {
+    float2 uv = fragCoord / iResolution;
 
-- Seamless Multi-Step Tasks:
-  Say “book dinner and a ride,” and different agents handle each part without app-hopping.
+    float progress = iMouseZ > 0.0 
+        ? clamp(iMouseX / iResolution.x, 0.0, 1.0) 
+        : 0.0;
 
-- Faster, Context-Aware Responses:
-  Agents share context instantly, leading to quicker, smarter replies on mobile.
+    float eased = progress < 0.5 
+        ? 2.0 * progress * progress 
+        : -1.0 + (4.0 - 2.0 * progress) * progress;
 
-- Better Privacy by Design:
-  Each agent accesses only what it needs—reducing data sharing across apps/tasks.
+    float distortionStrength = sin(eased * 3.1415);
 
-- Multi-Modal Interaction:
-  Works with voice, text, and touch—agents collaborate behind the scenes no matter how you interact.
+    float2 offset = float2(
+        sin(uv.y * 40.0 + iTime * 5.0) * 0.01,
+        cos(uv.x * 40.0 + iTime * 5.0) * 0.01
+    ) * distortionStrength;
 
-- Persistent Background Tasks:
-  Agents can manage ongoing workflows (e.g., deliveries, event planning) without constant input.
+    float2 uvA = uv + offset * (1.0 - eased);
+    float2 uvB = uv - offset * eased;
 
-Summary:
-A2A makes mobile AI feel more like a coordinated team—faster, smarter, and safer for everyday users.
+    return mix(sample(iChannel0, uvA), sample(iChannel1, uvB), eased);
+}
+
+
+
+
+
+
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+fun ShaderImageTransitionWithDrag(
+    modifier: Modifier = Modifier,
+    @DrawableRes imageA: Int,
+    @DrawableRes imageB: Int
+) {
+    val context = LocalContext.current
+    val shaderCode = remember {
+        context.resources.openRawResource(R.raw.transition_shader).bufferedReader().use { it.readText() }
+    }
+
+    val runtimeShader = remember { RuntimeShader(shaderCode) }
+
+    val imageBitmapA = ImageBitmap.imageResource(imageA)
+    val imageBitmapB = ImageBitmap.imageResource(imageB)
+
+    val time = remember { Animatable(0f) }
+    val dragOffset = remember { mutableFloatStateOf(0f) }
+
+    // Animate time continuously
+    LaunchedEffect(Unit) {
+        while (true) {
+            time.snapTo(time.value + 0.016f)
+            delay(16)
+        }
+    }
+
+    val brush = remember(imageBitmapA, imageBitmapB, runtimeShader) {
+        ShaderBrush { size ->
+            val width = size.width
+            val clampedX = dragOffset.floatValue.coerceIn(0f, width)
+            val progress = clampedX / width
+
+            runtimeShader.setFloatUniform("iResolution", width, size.height)
+            runtimeShader.setFloatUniform("iTime", time.value)
+            runtimeShader.setFloatUniform("iMouseX", clampedX)
+            runtimeShader.setFloatUniform("iMouseZ", 1f) // 1f to enable transition
+            runtimeShader.setInputShader("iChannel0", ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp))
+            runtimeShader.setInputShader("iChannel1", ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp))
+            runtimeShader
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectDragGestures { change, _ ->
+                    dragOffset.floatValue = change.position.x
+                }
+            }
+            .background(brush)
+    )
+}
+
