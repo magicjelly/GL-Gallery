@@ -1,0 +1,46 @@
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform float u_time;             // Time or transition progress [0.0 to 1.0]
+uniform sampler2D u_texA;         // Current album art
+uniform sampler2D u_texB;         // Next album art
+uniform vec2 u_resolution;        // Viewport resolution
+
+varying vec2 v_uv;
+
+float easeInOut(float t) {
+    return t < 0.5 ? 2.0 * t * t : -1.0 + (4.0 - 2.0 * t) * t;
+}
+
+void main() {
+    float progress = easeInOut(u_time);
+
+    // Slight UV distortion to simulate refraction
+    vec2 offset = vec2(
+        sin(v_uv.y * 20.0 + u_time * 10.0) * 0.005,
+        cos(v_uv.x * 20.0 + u_time * 10.0) * 0.005
+    );
+
+    vec2 distortedUV_A = v_uv + offset * (1.0 - progress);
+    vec2 distortedUV_B = v_uv - offset * progress;
+
+    // Sample both images with distortion
+    vec4 colorA = texture2D(u_texA, distortedUV_A);
+    vec4 colorB = texture2D(u_texB, distortedUV_B);
+
+    // Mix the two images
+    vec4 mixedColor = mix(colorA, colorB, progress);
+
+    // Subtle dynamic blur simulation (approximate with blend)
+    float blurAmount = 0.005 * sin(progress * 3.1415);
+    vec4 blurred = (
+        texture2D(u_texA, v_uv + vec2(blurAmount, 0.0)) +
+        texture2D(u_texA, v_uv - vec2(blurAmount, 0.0)) +
+        texture2D(u_texB, v_uv + vec2(0.0, blurAmount)) +
+        texture2D(u_texB, v_uv - vec2(0.0, blurAmount))
+    ) * 0.25;
+
+    // Blend blurred layer slightly for liquid effect
+    gl_FragColor = mix(mixedColor, blurred, 0.2 * (1.0 - abs(0.5 - progress) * 2.0));
+}
