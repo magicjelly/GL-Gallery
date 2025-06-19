@@ -24,13 +24,26 @@ fun ShaderTransitionCanvas(
     var isPlaying by remember { mutableStateOf(false) }
     val animatedProgress = remember { Animatable(0f) }
 
-    // play trigger
+    var playTrigger by remember { mutableStateOf(0) }
+    var playConfig by remember {
+        mutableStateOf(Pair(2000, FastOutSlowInEasing)) // (duration, easing)
+    }
+
     fun play(durationMillis: Int = 2000, easing: Easing = LinearEasing) {
-        isPlaying = true
         dragX.floatValue = 0f
-        LaunchedEffect(Unit) {
+        playConfig = durationMillis to easing
+        playTrigger++
+    }
+
+    // Launch animation
+    LaunchedEffect(playTrigger) {
+        if (playTrigger > 0) {
+            isPlaying = true
             animatedProgress.snapTo(0f)
-            animatedProgress.animateTo(1f, animationSpec = tween(durationMillis, easing = easing))
+            animatedProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(playConfig.first, easing = playConfig.second)
+            )
             isPlaying = false
         }
     }
