@@ -5,30 +5,46 @@ uniform float iTime;
 uniform float iMouseX;
 uniform float iMouseZ;
 
+float hash(float2 p) {
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+}
+
+float noise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    float a = hash(i);
+    float b = hash(i + float2(1.0, 0.0));
+    float c = hash(i + float2(0.0, 1.0));
+    float d = hash(i + float2(1.0, 1.0));
+    float2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 half4 main(float2 fragCoord) {
     float2 uv = fragCoord / iResolution;
     uv = clamp(uv, 0.0, 1.0);
 
-    // Base images
-    half4 baseColor = iChannel0.eval(uv);
-    half4 targetColor = iChannel1.eval(uv);
+    half4 base = iChannel0.eval(uv);
+    half4 target = iChannel1.eval(uv);
 
-    // Transition factor from mouseX
-    float blendFactor = clamp(iMouseX / iResolution.x, 0.0, 1.0);
+    float progress = clamp(iMouseX / iResolution.x, 0.0, 1.0);
 
-    // Aurora wave effect
-    float wave = sin((uv.x + iTime * 0.2) * 20.0 + sin(uv.y * 10.0 + iTime * 0.1) * 2.0);
+    // Create noisy horizontal waves
+    float2 noiseCoord = float2(uv.x * 4.0, uv.y * 4.0 + iTime * 0.2);
+    float n = noise(noiseCoord) * 2.0 - 1.0;
+    float wave = sin(uv.x * 30.0 + n * 8.0 + iTime * 1.5);
+
     float mask = smoothstep(0.3, 0.7, 0.5 + 0.5 * wave);
 
-    // Sample dynamic aurora color from iChannel1
-    float2 waveUV = uv + float2(0.0, wave * 0.05);
-    waveUV = clamp(waveUV, 0.0, 1.0);
-    half4 auroraColor = iChannel1.eval(waveUV);
+    // Shift UV for aurora effect
+    float2 auroraUV = uv + float2(0.0, wave * 0.04);
+    auroraUV = clamp(auroraUV, 0.0, 1.0);
+    half4 auroraColor = iChannel1.eval(auroraUV);
 
-    // Mix with strength influenced by vertical position (sky feel)
-    float auroraStrength = smoothstep(0.3, 1.0, uv.y) * mask;
+    // Aurora only in upper sky region
+    float auroraStrength = smoothstep(0.2, 1.0, uv.y) * mask;
 
-    // Final color blending
-    half4 color = mix(baseColor, auroraColor, auroraStrength);
-    return mix(baseColor, color, blendFactor);
+    // Mix images and aurora
+    half4 blend = mix(base, auroraColor, auroraStrength);
+    return mix(base, blend, progress);
 }
