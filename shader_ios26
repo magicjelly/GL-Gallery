@@ -1,36 +1,33 @@
 void mainImage(out vec4 fragColor, in vec2 fragCoord)
 {
-    // Normalized coordinates (0 to 1)
-    vec2 uv = fragCoord / iResolution.xy;
+    vec2 uv = fragCoord.xy / iResolution.xy;
 
-    // Get transition progress (0 to 1)
-    float t = mod(iTime, 3.0) / 3.0; // 3-second loop
-    float progress = t < 0.5 ? 2.0 * t * t : -1.0 + (4.0 - 2.0 * t) * t;
+    // Progress based on mouse X (0 to 1)
+    float progress = iMouse.z > 0.0 
+        ? clamp(iMouse.x / iResolution.x, 0.0, 1.0) 
+        : 0.0;
 
-    // Distortion offset to simulate refraction
+    // Smooth easing
+    float eased = progress < 0.5 
+        ? 2.0 * progress * progress 
+        : -1.0 + (4.0 - 2.0 * progress) * progress;
+
+    // Refractive distortion offset
     vec2 offset = vec2(
-        sin(uv.y * 20.0 + iTime * 10.0) * 0.005,
-        cos(uv.x * 20.0 + iTime * 10.0) * 0.005
+        sin(uv.y * 20.0 + iTime * 5.0) * 0.01,
+        cos(uv.x * 20.0 + iTime * 5.0) * 0.01
     );
 
-    vec2 distortedUV_A = uv + offset * (1.0 - progress);
-    vec2 distortedUV_B = uv - offset * progress;
+    // Apply offset differently to each image
+    vec2 uvA = uv + offset * (1.0 - eased);
+    vec2 uvB = uv - offset * eased;
 
-    // Sample two album covers from channels 0 and 1
-    vec4 colorA = texture(iChannel0, distortedUV_A);
-    vec4 colorB = texture(iChannel1, distortedUV_B);
+    // Sample both images
+    vec4 colorA = texture(iChannel0, uvA);
+    vec4 colorB = texture(iChannel1, uvB);
 
-    // Crossfade blend
-    vec4 mixedColor = mix(colorA, colorB, progress);
+    // Blend them based on eased progress
+    vec4 finalColor = mix(colorA, colorB, eased);
 
-    // Simulated blur (4-sample average)
-    float blur = 0.005 * sin(progress * 3.1415);
-    vec4 blurSample = (
-        texture(iChannel0, uv + vec2(blur, 0.0)) +
-        texture(iChannel0, uv - vec2(blur, 0.0)) +
-        texture(iChannel1, uv + vec2(0.0, blur)) +
-        texture(iChannel1, uv - vec2(0.0, blur))
-    ) * 0.25;
-
-    fragColor = mix(mixedColor, blurSample, 0.2 * (1.0 - abs(0.5 - progress) * 2.0));
+    fragColor = finalColor;
 }
