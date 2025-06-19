@@ -1,230 +1,33 @@
-// User: In jetpack compose I want interpolation and duration values for a rotating object animation.
-// I press a button and a rotating animation starts and continues rotating until i let go of the button.
-// The rotation animation should start and stop naturally. Also on start the object scales down 50 percent
-// and on letting the button go object scales back to original size. While starting and stopping naturally
-// while continuously rotating it should rotate slowly and with linear interpolation in order for it not
-// to be distracting to the user experience.
-//
-// Assistant: Here’s a pattern you can use in Compose to get:
-// 1. Scale down to 50 % on press (150 ms, ease-in)
-// 2. Accelerate into rotation over 500 ms (ease-in)
-// 3. Spin continuously at one full turn every 3 s (linear)
-// 4. Decelerate out with a final spin of 360° in 500 ms (ease-out)
-// 5. Scale back up to 100 % on release (150 ms, ease-out)
-// Feel free to tweak any of the durationMillis or easing to taste.
+uniform shader iChannel0;
+uniform shader iChannel1;
+uniform float iTime;
+uniform float iMouseX;
+uniform float iMouseZ;
+uniform vec2 iResolution;
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutLinearInEasing
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.isActive
+half4 main(float2 fragCoord) {
+    float2 uv = fragCoord / iResolution;
 
-@Composable
-fun RotatingPressable(
-    size: Dp = 100.dp
-) {
-    var isPressed by remember { mutableStateOf(false) }
+    float progress = iMouseZ > 0.0 
+        ? clamp(iMouseX / iResolution.x, 0.0, 1.0) 
+        : 0.0;
 
-    // SCALE animation: 1f ↔ 0.5f
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.5f else 1f,
-        animationSpec = tween(
-            durationMillis = 150,
-            easing = if (isPressed) FastOutLinearInEasing else LinearOutSlowInEasing
-        )
-    )
+    float eased = progress < 0.5 
+        ? 2.0 * progress * progress 
+        : -1.0 + (4.0 - 2.0 * progress) * progress;
 
-    // ROTATION state (in degrees)
-    val rotation = remember { Animatable(0f) }
+    float distortionStrength = sin(eased * 3.1415);
 
-    LaunchedEffect(isPressed) {
-        if (isPressed) {
-            // 1) accelerate into the spin
-            rotation.animateTo(
-                targetValue = rotation.value + 360f,
-                animationSpec = tween(
-                    durationMillis = 500,
-                    easing = FastOutSlowInEasing
-                )
-            )
-            // 2) continuous, linear spin until release
-            while (isActive && isPressed) {
-                rotation.animateTo(
-                    targetValue = rotation.value + 360f,
-                    animationSpec = tween(
-                        durationMillis = 3000,
-                        easing = LinearEasing
-                    )
-                )
-            }
-        } else {
-            // 3) natural deceleration: one more full spin easing out
-            rotation.animateTo(
-                targetValue = rotation.value + 360f,
-                animationSpec = tween(
-                    durationMillis = 500,
-                    easing = FastOutSlowInEasing
-                )
-            )
-        }
-    }
+    float2 offset = float2(
+        sin(uv.y * 40.0 + iTime * 5.0) * 0.01,
+        cos(uv.x * 40.0 + iTime * 5.0) * 0.01
+    ) * distortionStrength;
 
-    Box(
-        modifier = Modifier
-            .size(size)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-                rotationZ = rotation.value % 360f
-            }
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        isPressed = true
-                        tryAwaitRelease()
-                        isPressed = false
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center
-    ) {
-        // TODO: put your content here
-    }
+    float2 uvA = clamp(uv + offset * (1.0 - eased), 0.0, 1.0);
+    float2 uvB = clamp(uv - offset * eased, 0.0, 1.0);
+
+    half4 colorA = iChannel0.eval(uvA * iResolution);
+    half4 colorB = iChannel1.eval(uvB * iResolution);
+
+    return mix(colorA, colorB, eased);
 }
-
-// User: Give me the exact interpolation values
-// Assistant: Here are the exact cubic-Bezier control-point definitions:
-// FastOutLinearInEasing: (0.4f, 0.0f, 1.0f, 1.0f)
-// LinearOutSlowInEasing: (0.0f, 0.0f, 0.2f, 1.0f)
-// FastOutSlowInEasing: (0.4f, 0.0f, 0.2f, 1.0f)
-// LinearEasing: (0.0f, 0.0f, 1.0f, 1.0f)
-
-val fastOutLinearIn = CubicBezierEasing(0.4f, 0.0f, 1.0f, 1.0f)
-val linearOutSlowIn = CubicBezierEasing(0.0f, 0.0f, 0.2f, 1.0f)
-val fastOutSlowIn   = CubicBezierEasing(0.4f, 0.0f, 0.2f, 1.0f)
-val linear          = LinearEasing
-
-// User: The rotations are too fast. Make it subtle
-// Assistant: Stretched out durations:
-// Ramp-up: 800 ms, Continuous spin: 8000 ms, Ramp-down: 800 ms
-
-LaunchedEffect(isPressed) {
-    if (isPressed) {
-        rotation.animateTo(... durationMillis = 800 ...)
-        while (isActive && isPressed) {
-            rotation.animateTo(... durationMillis = 8000 ...)
-        }
-    } else {
-        rotation.animateTo(... durationMillis = 800 ...)
-    }
-}
-
-// User: Make the ramp up down rotation 30 degrees
-// Assistant: Tweaked ramp angles to ±30° over 800 ms
-
-LaunchedEffect(isPressed) {
-    if (isPressed) {
-        rotation.animateTo(
-            targetValue = rotation.value + 30f,
-            animationSpec = tween(durationMillis = 800, easing = fastOutSlowIn)
-        )
-        while (isActive && isPressed) {
-            rotation.animateTo(
-                targetValue = rotation.value + 360f,
-                animationSpec = tween(durationMillis = 8000, easing = LinearEasing)
-            )
-        }
-    } else {
-        rotation.animateTo(
-            targetValue = rotation.value + 30f,
-            animationSpec = tween(durationMillis = 800, easing = linearOutSlowIn)
-        )
-    }
-}
-
-// User: The end of ramp up and going into linear rotation doesnt look natural. Make the transition as smooth as possible
-// Assistant: Inserted pick-up spin to smooth transition
-
-LaunchedEffect(isPressed) {
-    if (isPressed) {
-        rotation.animateTo(
-            targetValue = rotation.value + rampAngle,
-            animationSpec = tween(durationMillis = rampDuration, easing = fastOutSlowIn)
-        )
-        rotation.animateTo(
-            targetValue = rotation.value + 360f,
-            animationSpec = tween(durationMillis = spinDuration, easing = fastOutLinearIn)
-        )
-        while (isActive && isPressed) {
-            rotation.animateTo(
-                targetValue = rotation.value + 360f,
-                animationSpec = tween(durationMillis = spinDuration, easing = LinearEasing)
-            )
-        }
-    } else {
-        rotation.animateTo(
-            targetValue = rotation.value + rampAngle,
-            animationSpec = tween(durationMillis = rampDuration, easing = linearOutSlowIn)
-        )
-    }
-}
-
-// User: Show me the exact interpolation values
-// Assistant: Exact easing definitions:
-// Ramp-up: CubicBezierEasing(0.4f, 0.0f, 0.2f, 1.0f)
-// Pick-up: CubicBezierEasing(0.4f, 0.0f, 1.0f, 1.0f)
-// Continuous: LinearEasing
-// Ramp-down: CubicBezierEasing(0.0f, 0.0f, 0.2f, 1.0f)
-
-// User: Create a downloadable file of this current chat
-// Assistant: Python code to save transcript to TXT
-
-# Python code:
-transcript = """<full transcript text>"""
-with open('/mnt/data/chat_transcript.txt', 'w', encoding='utf-8') as f:
-    f.write(transcript)
-
-# User: Give it to me in txt format
-# Assistant: [Download chat_transcript.txt](sandbox:/mnt/data/chat_transcript.txt?_chatgptios_conversationID=68098e80-1050-8010-a2e2-a4aa393043c7&_chatgptios_messageID=df96b381-2ce4-4c63-8a66-2bfaa55e99e2)
-
-# User: Give it to me in docx format
-# Assistant: Python code using python-docx
-
-from docx import Document
-doc = Document()
-with open('/mnt/data/chat_transcript.txt', 'r', encoding='utf-8') as f:
-    for line in f:
-        doc.add_paragraph(line.rstrip('\n'))
-doc.save('/mnt/data/chat_transcript.docx')
-
-# User: Cant download file
-# Assistant: Python code to list directory
-
-import os
-os.listdir('/mnt/data')
-
-# User: Make it available on iphone
-# Assistant: Python code to base64-encode
-
-import base64
-with open('/mnt/data/chat_transcript.docx', 'rb') as f:
-    data = f.read()
-b64 = base64.b64encode(data).decode('utf-8')
-uri = f"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{b64}"
-print(f"[Download chat_transcript.docx]({uri})")
-
-// User: Show me this chat as something i can copy in this chat window
-// Assistant: Provided summary above
-
-// User: Put it all in one code window. Use comments for text that isnt part of the code
