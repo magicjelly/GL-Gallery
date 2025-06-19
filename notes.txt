@@ -26,10 +26,12 @@ half4 main(float2 fragCoord) {
     float2 uvA = uv + offset * (1.0 - eased);
     float2 uvB = uv - offset * eased;
 
-    return mix(sample(iChannel0, uvA), sample(iChannel1, uvB), eased);
+    half4 colorA = iChannel0.eval(uvA * iResolution);
+    half4 colorB = iChannel1.eval(uvB * iResolution);
+
+    return mix(colorA, colorB, eased);
 }
-
-
+        
 
 
 
