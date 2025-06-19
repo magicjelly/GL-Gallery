@@ -5,10 +5,12 @@ uniform float iTime;
 uniform float iMouseX;
 uniform float iMouseZ;
 
+// Random hash
 float hash(float2 p) {
-    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
 }
 
+// 2D noise
 float noise(float2 p) {
     float2 i = floor(p);
     float2 f = fract(p);
@@ -20,31 +22,45 @@ float noise(float2 p) {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// Layered noise-based aurora pattern
+float aurora(float2 uv, float time) {
+    float accum = 0.0;
+    float freq = 1.0;
+    float amp = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float2 nUV = uv * freq + float2(0.0, time * 0.05 * freq);
+        accum += (noise(nUV) - 0.5) * amp;
+        freq *= 2.0;
+        amp *= 0.5;
+    }
+    return accum;
+}
+
 half4 main(float2 fragCoord) {
     float2 uv = fragCoord / iResolution;
     uv = clamp(uv, 0.0, 1.0);
 
-    half4 base = iChannel0.eval(uv);
-    half4 target = iChannel1.eval(uv);
+    half4 img0 = iChannel0.eval(uv);
+    half4 img1 = iChannel1.eval(uv);
 
     float progress = clamp(iMouseX / iResolution.x, 0.0, 1.0);
 
-    // Create noisy horizontal waves
-    float2 noiseCoord = float2(uv.x * 4.0, uv.y * 4.0 + iTime * 0.2);
-    float n = noise(noiseCoord) * 2.0 - 1.0;
-    float wave = sin(uv.x * 30.0 + n * 8.0 + iTime * 1.5);
+    // Aurora field
+    float aura = aurora(uv * 3.0, iTime);
+    float depth = smoothstep(0.0, 1.0, abs(aura));
+    float glow = smoothstep(0.0, 0.5, 0.4 + aura * 0.6);
 
-    float mask = smoothstep(0.3, 0.7, 0.5 + 0.5 * wave);
+    // Shift UV slightly for spatial movement
+    float2 flow = float2(0.0, aura * 0.04);
+    float2 auroraUV = clamp(uv + flow, 0.0, 1.0);
 
-    // Shift UV for aurora effect
-    float2 auroraUV = uv + float2(0.0, wave * 0.04);
-    auroraUV = clamp(auroraUV, 0.0, 1.0);
+    // Use iChannel1 as color source for aurora
     half4 auroraColor = iChannel1.eval(auroraUV);
+    auroraColor.rgb *= glow * depth * 1.5;
 
-    // Aurora only in upper sky region
-    float auroraStrength = smoothstep(0.2, 1.0, uv.y) * mask;
+    // Mix image transition and aurora overlay
+    half4 baseMix = mix(img0, img1, progress);
+    half4 finalColor = baseMix + auroraColor;
 
-    // Mix images and aurora
-    half4 blend = mix(base, auroraColor, auroraStrength);
-    return mix(base, blend, progress);
+    return finalColor;
 }
