@@ -21,6 +21,21 @@ fun ShaderTransitionCanvas(
     val time = remember { Animatable(0f) }
     val dragX = remember { mutableFloatStateOf(0f) }
 
+    var isPlaying by remember { mutableStateOf(false) }
+    val animatedProgress = remember { Animatable(0f) }
+
+    // play trigger
+    fun play(durationMillis: Int = 2000, easing: Easing = LinearEasing) {
+        isPlaying = true
+        dragX.floatValue = 0f
+        LaunchedEffect(Unit) {
+            animatedProgress.snapTo(0f)
+            animatedProgress.animateTo(1f, animationSpec = tween(durationMillis, easing = easing))
+            isPlaying = false
+        }
+    }
+
+    // Animate time
     LaunchedEffect(Unit) {
         while (true) {
             time.snapTo(time.value + 0.016f)
@@ -31,7 +46,6 @@ fun ShaderTransitionCanvas(
     val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
     val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
 
-    // Pre-scale image to match canvas while keeping aspect ratio
     val scaledImageA = remember(canvasWidthPx, canvasHeightPx) {
         imageBitmapA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
     }
@@ -39,32 +53,45 @@ fun ShaderTransitionCanvas(
         imageBitmapB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
     }
 
-    Canvas(
-        modifier = modifier
-            .size(canvasWidthDp, canvasHeightDp)
-            .pointerInput(Unit) {
-                detectDragGestures { change, _ ->
-                    dragX.floatValue = change.position.x
-                }
-            }
-    ) {
-        val shaderA = ImageShader(scaledImageA, TileMode.Clamp, TileMode.Clamp)
-        val shaderB = ImageShader(scaledImageB, TileMode.Clamp, TileMode.Clamp)
-
-        runtimeShader.setInputShader("iChannel0", shaderA)
-        runtimeShader.setInputShader("iChannel1", shaderB)
-        runtimeShader.setFloatUniform("iResolution", size.width, size.height)
-        runtimeShader.setFloatUniform("iTime", time.value)
-        runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
-        runtimeShader.setFloatUniform("iMouseZ", 1f)
-
-        drawRect(brush = ShaderBrush(runtimeShader))
+    val progressX = if (isPlaying) {
+        animatedProgress.value * canvasWidthPx
+    } else {
+        dragX.floatValue
     }
-}
 
-fun Bitmap.scaleToFit(maxWidth: Int, maxHeight: Int): Bitmap {
-    val scale = minOf(maxWidth / width.toFloat(), maxHeight / height.toFloat())
-    val newWidth = (width * scale).toInt()
-    val newHeight = (height * scale).toInt()
-    return Bitmap.createScaledBitmap(this, newWidth, newHeight, true)
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .size(canvasWidthDp, canvasHeightDp)
+                .pointerInput(isPlaying) {
+                    if (!isPlaying) {
+                        detectDragGestures { change, _ ->
+                            dragX.floatValue = change.position.x
+                        }
+                    }
+                }
+        ) {
+            val shaderA = ImageShader(scaledImageA, TileMode.Clamp, TileMode.Clamp)
+            val shaderB = ImageShader(scaledImageB, TileMode.Clamp, TileMode.Clamp)
+
+            runtimeShader.setInputShader("iChannel0", shaderA)
+            runtimeShader.setInputShader("iChannel1", shaderB)
+            runtimeShader.setFloatUniform("iResolution", size.width, size.height)
+            runtimeShader.setFloatUniform("iTime", time.value)
+            runtimeShader.setFloatUniform("iMouseX", progressX.coerceIn(0f, size.width))
+            runtimeShader.setFloatUniform("iMouseZ", 1f)
+
+            drawRect(brush = ShaderBrush(runtimeShader))
+        }
+
+        Button(
+            onClick = { play(2000, FastOutSlowInEasing) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+        ) {
+            Text("Play Effect")
+        }
+    }
 }
