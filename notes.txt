@@ -34,27 +34,29 @@ half4 main(float2 fragCoord) {
 
 
 
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+
+
+    
 @Composable
-fun ShaderImageTransitionWithDrag(
+fun ShaderTransitionCanvas(
     modifier: Modifier = Modifier,
     @DrawableRes imageA: Int,
     @DrawableRes imageB: Int
 ) {
     val context = LocalContext.current
-    val shaderCode = remember {
-        context.resources.openRawResource(R.raw.transition_shader).bufferedReader().use { it.readText() }
-    }
-
-    val runtimeShader = remember { RuntimeShader(shaderCode) }
+    val density = LocalDensity.current
 
     val imageBitmapA = ImageBitmap.imageResource(imageA)
     val imageBitmapB = ImageBitmap.imageResource(imageB)
 
-    val time = remember { Animatable(0f) }
-    val dragOffset = remember { mutableFloatStateOf(0f) }
+    val shaderCode = remember {
+        context.resources.openRawResource(R.raw.transition_shader).bufferedReader().use { it.readText() }
+    }
+    val runtimeShader = remember { RuntimeShader(shaderCode) }
 
-    // Animate time continuously
+    val time = remember { Animatable(0f) }
+    val dragX = remember { mutableFloatStateOf(0f) }
+
     LaunchedEffect(Unit) {
         while (true) {
             time.snapTo(time.value + 0.016f)
@@ -62,31 +64,29 @@ fun ShaderImageTransitionWithDrag(
         }
     }
 
-    val brush = remember(imageBitmapA, imageBitmapB, runtimeShader) {
-        ShaderBrush { size ->
-            val width = size.width
-            val clampedX = dragOffset.floatValue.coerceIn(0f, width)
-            val progress = clampedX / width
-
-            runtimeShader.setFloatUniform("iResolution", width, size.height)
-            runtimeShader.setFloatUniform("iTime", time.value)
-            runtimeShader.setFloatUniform("iMouseX", clampedX)
-            runtimeShader.setFloatUniform("iMouseZ", 1f) // 1f to enable transition
-            runtimeShader.setInputShader("iChannel0", ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp))
-            runtimeShader.setInputShader("iChannel1", ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp))
-            runtimeShader
-        }
-    }
-
-    Box(
+    Canvas(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
                 detectDragGestures { change, _ ->
-                    dragOffset.floatValue = change.position.x
+                    dragX.floatValue = change.position.x
                 }
             }
-            .background(brush)
-    )
+    ) {
+        val canvasWidth = size.width
+        val canvasHeight = size.height
+
+        val imageShaderA = ImageShader(imageBitmapA, TileMode.Clamp, TileMode.Clamp)
+        val imageShaderB = ImageShader(imageBitmapB, TileMode.Clamp, TileMode.Clamp)
+
+        runtimeShader.setInputShader("iChannel0", imageShaderA)
+        runtimeShader.setInputShader("iChannel1", imageShaderB)
+        runtimeShader.setFloatUniform("iResolution", canvasWidth, canvasHeight)
+        runtimeShader.setFloatUniform("iTime", time.value)
+        runtimeShader.setFloatUniform("iMouseX", dragX.floatValue)
+        runtimeShader.setFloatUniform("iMouseZ", 1f)
+
+        drawRect(brush = ShaderBrush(runtimeShader))
+    }
 }
 
