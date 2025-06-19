@@ -5,12 +5,12 @@ uniform float iTime;
 uniform float iMouseX;
 uniform float iMouseZ;
 
-// Hash for pseudo-randomness
+// High quality hash
 float hash(float2 p) {
-    return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
 }
 
-// Smooth noise with higher frequency
+// Smooth interpolated noise
 float noise(float2 p) {
     float2 i = floor(p);
     float2 f = fract(p);
@@ -22,37 +22,43 @@ float noise(float2 p) {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-// High-res layered aurora noise
+// Layered noise for spatial aurora
 float auroraField(float2 uv, float time) {
-    float acc = 0.0;
-    float scale = 1.0;
+    float sum = 0.0;
+    float scale = 2.0;
+    float weight = 0.5;
+
     for (int i = 0; i < 4; i++) {
-        float2 nUV = uv * scale + float2(0.0, time * 0.03 * scale);
-        acc += (noise(nUV) - 0.5) * (0.5 / scale);
+        float2 pos = uv * scale + float2(0.0, time * 0.02 * scale);
+        sum += (noise(pos) - 0.5) * weight;
         scale *= 2.0;
+        weight *= 0.5;
     }
-    return acc;
+    return sum;
 }
 
 half4 main(float2 fragCoord) {
     float2 uv = fragCoord / iResolution;
     uv = clamp(uv, 0.0, 1.0);
 
-    half4 img0 = iChannel0.eval(uv);
-    half4 img1 = iChannel1.eval(uv);
     float progress = clamp(iMouseX / iResolution.x, 0.0, 1.0);
 
-    // Aurora overlay
-    float aura = auroraField(uv * 5.0, iTime);
-    float intensity = smoothstep(0.0, 1.0, abs(aura)) * 1.2;
-    float2 offset = float2(0.0, aura * 0.02);
-    float2 auroraUV = clamp(uv + offset, 0.0, 1.0);
-    half4 auroraColor = iChannel1.eval(auroraUV);
-    auroraColor.rgb *= intensity;
+    // Sample base images
+    half4 img0 = iChannel0.eval(uv);
+    half4 img1 = iChannel1.eval(uv);
 
-    // Static-to-static transition with aurora overlay
-    half4 transition = mix(img0, img1, progress);
-    half4 result = transition + auroraColor * (1.0 - abs(progress - 0.5) * 2.0);
+    // Aurora strength fades in and out during mid-transition only
+    float auraBlend = smoothstep(0.15, 0.5, progress) * smoothstep(0.85, 0.5, progress);
+
+    // Aurora displacement and glow
+    float aurora = auroraField(uv * 6.0, iTime);
+    float2 displaceUV = clamp(uv + float2(0.0, aurora * 0.03), 0.0, 1.0);
+    half4 auroraColor = iChannel1.eval(displaceUV);
+    auroraColor.rgb *= smoothstep(0.0, 1.0, abs(aurora)) * 1.4;
+
+    // Blend images with aurora overlay only in mid-transition
+    half4 blend = mix(img0, img1, progress);
+    half4 result = blend + auroraColor * auraBlend;
 
     return result;
 }
