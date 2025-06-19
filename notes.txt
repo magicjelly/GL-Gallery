@@ -1,3 +1,4 @@
+
 uniform shader iChannel0;
 uniform shader iChannel1;
 uniform float iTime;
@@ -8,31 +9,36 @@ uniform vec2 iResolution;
 half4 main(float2 fragCoord) {
     float2 uv = fragCoord / iResolution;
 
+    // Mouse-controlled transition progress (0 to 1)
     float progress = iMouseZ > 0.0 
         ? clamp(iMouseX / iResolution.x, 0.0, 1.0) 
         : 0.0;
 
+    // Eased progress for smoother visual feel
     float eased = progress < 0.5 
         ? 2.0 * progress * progress 
         : -1.0 + (4.0 - 2.0 * progress) * progress;
 
-    float distortionStrength = sin(eased * 3.1415);
+    // Strength of distortion peaks at middle, 0 at start and end
+    float distortionStrength = sin(eased * 3.1415); // 0 → 1 → 0
 
+    // Distortion offset: small wave pattern
     float2 offset = float2(
         sin(uv.y * 40.0 + iTime * 5.0) * 0.01,
         cos(uv.x * 40.0 + iTime * 5.0) * 0.01
     ) * distortionStrength;
 
+    // Apply offset directionally to both images
     float2 uvA = uv + offset * (1.0 - eased);
     float2 uvB = uv - offset * eased;
 
+    // Sample both images
     half4 colorA = iChannel0.eval(uvA * iResolution);
     half4 colorB = iChannel1.eval(uvB * iResolution);
 
+    // Crossfade based on eased progress
     return mix(colorA, colorB, eased);
 }
-        
-
 
 
 
