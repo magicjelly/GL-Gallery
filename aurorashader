@@ -5,60 +5,54 @@ uniform float iTime;
 uniform float iMouseX;
 uniform float iMouseZ;
 
-// High quality hash
+// Starry-space-like hash
 float hash(float2 p) {
-    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453123);
+    return fract(sin(dot(p, float2(23.43, 45.97))) * 1337.1337);
 }
 
-// Smooth interpolated noise
-float noise(float2 p) {
-    float2 i = floor(p);
-    float2 f = fract(p);
-    float a = hash(i);
-    float b = hash(i + float2(1.0, 0.0));
-    float c = hash(i + float2(0.0, 1.0));
-    float d = hash(i + float2(1.0, 1.0));
-    float2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+// High-frequency ribbon noise
+float ribbon(float2 uv, float time) {
+    float wave = sin((uv.x + time * 0.2) * 20.0 + sin(uv.y * 15.0 + time * 0.1) * 2.0);
+    return wave * 0.5 + 0.5;
 }
 
-// Layered noise for spatial aurora
-float auroraField(float2 uv, float time) {
-    float sum = 0.0;
-    float scale = 2.0;
-    float weight = 0.5;
-
-    for (int i = 0; i < 4; i++) {
-        float2 pos = uv * scale + float2(0.0, time * 0.02 * scale);
-        sum += (noise(pos) - 0.5) * weight;
-        scale *= 2.0;
-        weight *= 0.5;
-    }
-    return sum;
+// Gradient lighting shimmer
+float lightRay(float2 uv, float time) {
+    float centerDist = abs(uv.x - 0.5);
+    float pulse = sin(time * 2.0 + uv.y * 8.0) * 0.5 + 0.5;
+    return smoothstep(0.4, 0.0, centerDist) * pulse;
 }
 
 half4 main(float2 fragCoord) {
     float2 uv = fragCoord / iResolution;
     uv = clamp(uv, 0.0, 1.0);
 
+    // Image transition progress
     float progress = clamp(iMouseX / iResolution.x, 0.0, 1.0);
 
-    // Sample base images
+    // Base images
     half4 img0 = iChannel0.eval(uv);
     half4 img1 = iChannel1.eval(uv);
+    half4 imageBlend = mix(img0, img1, progress);
 
-    // Aurora strength fades in and out during mid-transition only
-    float auraBlend = smoothstep(0.15, 0.5, progress) * smoothstep(0.85, 0.5, progress);
+    // Aurora lighting (only during transition phase)
+    float auraStrength = smoothstep(0.2, 0.5, progress) * smoothstep(0.8, 0.5, progress);
 
-    // Aurora displacement and glow
-    float aurora = auroraField(uv * 6.0, iTime);
-    float2 displaceUV = clamp(uv + float2(0.0, aurora * 0.03), 0.0, 1.0);
-    half4 auroraColor = iChannel1.eval(displaceUV);
-    auroraColor.rgb *= smoothstep(0.0, 1.0, abs(aurora)) * 1.4;
+    // Thin aurora ribbons
+    float wave = ribbon(uv * float2(3.0, 2.0), iTime);
+    float glow = pow(wave, 3.0) * 1.5;
 
-    // Blend images with aurora overlay only in mid-transition
-    half4 blend = mix(img0, img1, progress);
-    half4 result = blend + auroraColor * auraBlend;
+    // Lighting rays from center
+    float rays = lightRay(uv, iTime);
 
-    return result;
+    // UV shift for dynamic distortion
+    float2 offset = float2(0.0, sin(uv.x * 12.0 + iTime) * 0.015);
+    float2 auroraUV = clamp(uv + offset, 0.0, 1.0);
+
+    // Sample lighting color from iChannel1
+    half4 auroraColor = iChannel1.eval(auroraUV);
+    auroraColor.rgb *= (glow + rays) * auraStrength;
+
+    // Additive aurora layer fades in only mid-transition
+    return imageBlend + auroraColor;
 }
