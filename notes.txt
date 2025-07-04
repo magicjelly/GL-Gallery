@@ -5,9 +5,10 @@ fun ShaderCanvasTemplate(
     @RawRes shaderResId: Int,
     modifier: Modifier = Modifier,
     canvasWidthDp: Dp = 300.dp,
-    canvasHeightDp: Dp = 300.dp,
-    onPlayReady: (suspend (duration: Int, easing: Easing) -> Unit) -> Unit
+    canvasHeightDp: Dp = 300.dp
 ) {
+    require(imageList.size >= 2) { "At least two images are required." }
+
     val context = LocalContext.current
     val density = LocalDensity.current
 
@@ -17,21 +18,19 @@ fun ShaderCanvasTemplate(
     val runtimeShader = remember { RuntimeShader(shaderCode) }
 
     val time = remember { Animatable(0f) }
-    val dragX = remember { mutableFloatStateOf(0f) }
 
-    var isPlaying by remember { mutableStateOf(false) }
-    val animatedProgress = remember { Animatable(0f) }
-
-    var playTrigger by remember { mutableStateOf(0) }
-    var playConfig by remember { mutableStateOf(Pair(2000, LinearEasing)) }
+    val scope = rememberCoroutineScope()
 
     var currentIndex by remember { mutableIntStateOf(0) }
+    var progress by remember { mutableFloatStateOf(0f) }
+    var isAnimating by remember { mutableStateOf(false) }
 
     val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
     val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
 
-    val imageA = imageList[currentIndex % imageList.size]
-    val imageB = imageList[(currentIndex + 1) % imageList.size]
+    val imageCount = imageList.size
+    val imageA = imageList[currentIndex % imageCount]
+    val imageB = imageList[(currentIndex + 1) % imageCount]
 
     val scaledImageA = remember(imageA, canvasWidthPx, canvasHeightPx) {
         imageA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
@@ -40,34 +39,7 @@ fun ShaderCanvasTemplate(
         imageB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
     }
 
-    val progressX = if (isPlaying) {
-        animatedProgress.value * canvasWidthPx
-    } else {
-        dragX.floatValue
-    }
-
-    // Expose play() to parent
-    LaunchedEffect(Unit) {
-        onPlayReady { duration, easing ->
-            dragX.floatValue = 0f
-            playConfig = duration to easing
-            playTrigger++
-        }
-    }
-
-    // Animate shader transition
-    LaunchedEffect(playTrigger) {
-        if (playTrigger > 0) {
-            isPlaying = true
-            animatedProgress.snapTo(0f)
-            animatedProgress.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(playConfig.first, easing = playConfig.second)
-            )
-            isPlaying = false
-            currentIndex = (currentIndex + 1) % imageList.size
-        }
-    }
+    val progressX = progress * canvasWidthPx
 
     // Animate time
     LaunchedEffect(Unit) {
@@ -77,18 +49,50 @@ fun ShaderCanvasTemplate(
         }
     }
 
+    // Programmatic transition to next or previous
+    fun transitionTo(offset: Int) {
+        if (isAnimating) return
+        isAnimating = true
+        scope.launch {
+            animate(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = tween(500, easing = FastOutSlowInEasing)
+            ) { value, _ ->
+                progress = value
+            }
+            currentIndex = (currentIndex + offset + imageCount) % imageCount
+            progress = 0f
+            isAnimating = false
+        }
+    }
+
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
+        // Shader canvas
         Canvas(
             modifier = Modifier
                 .size(canvasWidthDp, canvasHeightDp)
-                .pointerInput(isPlaying) {
-                    if (!isPlaying) {
-                        detectDragGestures { change, _ ->
-                            dragX.floatValue = change.position.x
-                        }
+                .pointerInput(currentIndex, isAnimating) {
+                    if (!isAnimating) {
+                        detectHorizontalDragGestures(
+                            onHorizontalDrag = { _, dragAmount ->
+                                progress = (progress + dragAmount / canvasWidthPx).coerceIn(0f, 1f)
+                            },
+                            onDragEnd = {
+                                if (progress >= 0.5f) {
+                                    currentIndex = (currentIndex + 1) % imageCount
+                                } else if (progress <= 0.5f && progress > 0f) {
+                                    currentIndex = (currentIndex - 1 + imageCount) % imageCount
+                                }
+                                progress = 0f
+                            },
+                            onDragCancel = {
+                                progress = 0f
+                            }
+                        )
                     }
                 }
         ) {
@@ -104,32 +108,20 @@ fun ShaderCanvasTemplate(
 
             drawRect(brush = ShaderBrush(runtimeShader))
         }
+
+        // Control buttons
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Button(onClick = { transitionTo(-1) }, enabled = !isAnimating) {
+                Text("Previous")
+            }
+            Button(onClick = { transitionTo(+1) }, enabled = !isAnimating) {
+                Text("Next")
+            }
+        }
     }
-}
-
-fun Bitmap.scaleToFit(maxWidth: Int, maxHeight: Int): Bitmap {
-    val scale = minOf(maxWidth / width.toFloat(), maxHeight / height.toFloat())
-    val newWidth = (width * scale).toInt()
-    val newHeight = (height * scale).toInt()
-    return Bitmap.createScaledBitmap(this, newWidth, newHeight, true)
-}
-
-
-// how to use
-var playFn: (suspend (Int, Easing) -> Unit)? by remember { mutableStateOf(null) }
-
-ShaderCanvasTemplate(
-    imageList = listOf(
-        ImageBitmap.imageResource(R.drawable.image1),
-        ImageBitmap.imageResource(R.drawable.image2),
-        ImageBitmap.imageResource(R.drawable.image3)
-    ),
-    shaderResId = R.raw.transition_shader,
-    onPlayReady = { playFn = it }
-)
-
-Button(onClick = {
-    playFn?.invoke(1500, FastOutSlowInEasing)
-}) {
-    Text("Next Transition")
 }
