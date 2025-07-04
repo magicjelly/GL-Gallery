@@ -1,22 +1,20 @@
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
-fun ShaderTransitionCanvas(
-    @DrawableRes imageA: Int,
-    @DrawableRes imageB: Int,
+fun ShaderCanvasTemplate(
+    imageList: List<ImageBitmap>,
+    @RawRes shaderResId: Int,
     modifier: Modifier = Modifier,
     canvasWidthDp: Dp = 300.dp,
-    canvasHeightDp: Dp = 300.dp
+    canvasHeightDp: Dp = 300.dp,
+    onPlayReady: (suspend (duration: Int, easing: Easing) -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
 
     val shaderCode = remember {
-        context.resources.openRawResource(R.raw.transition_shader).bufferedReader().use { it.readText() }
+        context.resources.openRawResource(shaderResId).bufferedReader().use { it.readText() }
     }
     val runtimeShader = remember { RuntimeShader(shaderCode) }
-
-    val imageBitmapA = ImageBitmap.imageResource(imageA)
-    val imageBitmapB = ImageBitmap.imageResource(imageB)
 
     val time = remember { Animatable(0f) }
     val dragX = remember { mutableFloatStateOf(0f) }
@@ -25,17 +23,39 @@ fun ShaderTransitionCanvas(
     val animatedProgress = remember { Animatable(0f) }
 
     var playTrigger by remember { mutableStateOf(0) }
-    var playConfig by remember {
-        mutableStateOf(Pair(2000, FastOutSlowInEasing)) // (duration, easing)
+    var playConfig by remember { mutableStateOf(Pair(2000, LinearEasing)) }
+
+    var currentIndex by remember { mutableIntStateOf(0) }
+
+    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
+    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
+
+    val imageA = imageList[currentIndex % imageList.size]
+    val imageB = imageList[(currentIndex + 1) % imageList.size]
+
+    val scaledImageA = remember(imageA, canvasWidthPx, canvasHeightPx) {
+        imageA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
+    }
+    val scaledImageB = remember(imageB, canvasWidthPx, canvasHeightPx) {
+        imageB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
     }
 
-    fun play(durationMillis: Int = 2000, easing: Easing = LinearEasing) {
-        dragX.floatValue = 0f
-        playConfig = durationMillis to easing
-        playTrigger++
+    val progressX = if (isPlaying) {
+        animatedProgress.value * canvasWidthPx
+    } else {
+        dragX.floatValue
     }
 
-    // Launch animation
+    // Expose play() to parent
+    LaunchedEffect(Unit) {
+        onPlayReady { duration, easing ->
+            dragX.floatValue = 0f
+            playConfig = duration to easing
+            playTrigger++
+        }
+    }
+
+    // Animate shader transition
     LaunchedEffect(playTrigger) {
         if (playTrigger > 0) {
             isPlaying = true
@@ -45,6 +65,7 @@ fun ShaderTransitionCanvas(
                 animationSpec = tween(playConfig.first, easing = playConfig.second)
             )
             isPlaying = false
+            currentIndex = (currentIndex + 1) % imageList.size
         }
     }
 
@@ -54,22 +75,6 @@ fun ShaderTransitionCanvas(
             time.snapTo(time.value + 0.016f)
             delay(16)
         }
-    }
-
-    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
-    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
-
-    val scaledImageA = remember(canvasWidthPx, canvasHeightPx) {
-        imageBitmapA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
-    }
-    val scaledImageB = remember(canvasWidthPx, canvasHeightPx) {
-        imageBitmapB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
-    }
-
-    val progressX = if (isPlaying) {
-        animatedProgress.value * canvasWidthPx
-    } else {
-        dragX.floatValue
     }
 
     Box(
@@ -99,12 +104,32 @@ fun ShaderTransitionCanvas(
 
             drawRect(brush = ShaderBrush(runtimeShader))
         }
-
-        Button(
-            onClick = { play(2000, FastOutSlowInEasing) },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
-        ) {
-            Text("Play Effect")
-        }
     }
+}
+
+fun Bitmap.scaleToFit(maxWidth: Int, maxHeight: Int): Bitmap {
+    val scale = minOf(maxWidth / width.toFloat(), maxHeight / height.toFloat())
+    val newWidth = (width * scale).toInt()
+    val newHeight = (height * scale).toInt()
+    return Bitmap.createScaledBitmap(this, newWidth, newHeight, true)
+}
+
+
+// how to use
+var playFn: (suspend (Int, Easing) -> Unit)? by remember { mutableStateOf(null) }
+
+ShaderCanvasTemplate(
+    imageList = listOf(
+        ImageBitmap.imageResource(R.drawable.image1),
+        ImageBitmap.imageResource(R.drawable.image2),
+        ImageBitmap.imageResource(R.drawable.image3)
+    ),
+    shaderResId = R.raw.transition_shader,
+    onPlayReady = { playFn = it }
+)
+
+Button(onClick = {
+    playFn?.invoke(1500, FastOutSlowInEasing)
+}) {
+    Text("Next Transition")
 }
