@@ -1,50 +1,42 @@
 @Composable
-fun SliderWithButtons(
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
-    step: Float = 0.1f,
-    modifier: Modifier = Modifier,
+fun VolumeControl(
+    modifier: Modifier = Modifier
 ) {
-    // Calculate how many discrete intervals the Slider should have
-    val steps = ((valueRange.endInclusive - valueRange.start) / step).roundToInt() - 1
+    var volume by rememberSaveable { mutableFloatStateOf(0.3f) }
+
+    val step = 0.05f
+    val volumeRange = 0f..1f
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = modifier.padding(horizontal = 16.dp)
+        modifier = modifier.padding(16.dp)
     ) {
+        // Minus Button
         IconButton(
             onClick = {
-                val newValue = (value - step).coerceIn(valueRange)
-                onValueChange(newValue)
-            },
-            enabled = value > valueRange.start
+                volume = (volume - step).coerceIn(volumeRange)
+            }
         ) {
-            Icon(Icons.Default.Remove, contentDescription = "Decrease")
+            Icon(Icons.Default.Remove, contentDescription = "Decrease Volume")
         }
 
+        // Slider
         Slider(
-            value = value,
-            onValueChange = { raw ->
-                // snap to nearest step
-                val stepped = ( (raw / step).roundToInt() * step )
-                    .coerceIn(valueRange)
-                onValueChange(stepped)
-            },
-            valueRange = valueRange,
-            steps = steps.coerceAtLeast(0),
-            modifier = Modifier.weight(1f)
+            value = volume,
+            onValueChange = { volume = it.coerceIn(volumeRange) },
+            valueRange = volumeRange,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 8.dp)
         )
 
+        // Plus Button
         IconButton(
             onClick = {
-                val newValue = (value + step).coerceIn(valueRange)
-                onValueChange(newValue)
-            },
-            enabled = value < valueRange.endInclusive
+                volume = (volume + step).coerceIn(volumeRange)
+            }
         ) {
-            Icon(Icons.Default.Add, contentDescription = "Increase")
+            Icon(Icons.Default.Add, contentDescription = "Increase Volume")
         }
     }
 }
