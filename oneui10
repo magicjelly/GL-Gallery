@@ -1,0 +1,70 @@
+@RequiresApi(Build.VERSION_CODES.S)
+@Composable
+fun AnimatedGlowingBoxWithIcon() {
+    val glowColor = Color.Cyan
+
+    // Infinite animation for glow effect
+    val transition = rememberInfiniteTransition(label = "GlowTransition")
+    val animatedGlowAlpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "Alpha"
+    )
+    val animatedGlowScale by transition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "Scale"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(120.dp)
+            .graphicsLayer {
+                // Animate glow dispersion using scale and alpha
+                scaleX = animatedGlowScale
+                scaleY = animatedGlowScale
+                renderEffect = RenderEffect
+                    .createBlurEffect(40f, 40f, Shader.TileMode.CLAMP)
+                    .asComposeRenderEffect()
+            }
+            .background(glowColor.copy(alpha = animatedGlowAlpha), shape = RoundedCornerShape(16.dp)),
+        contentAlignment = Alignment.Center
+    )
+
+    // Foreground: solid black box and icon
+    Box(
+        modifier = Modifier
+            .size(120.dp)
+            .background(Color.Black, shape = RoundedCornerShape(16.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        // Icon glow (also animated)
+        Box(
+            modifier = Modifier
+                .size(60.dp)
+                .graphicsLayer {
+                    scaleX = animatedGlowScale
+                    scaleY = animatedGlowScale
+                    renderEffect = RenderEffect
+                        .createBlurEffect(20f, 20f, Shader.TileMode.CLAMP)
+                        .asComposeRenderEffect()
+                }
+                .background(glowColor.copy(alpha = animatedGlowAlpha), shape = CircleShape)
+        )
+
+        // Static icon on top
+        Image(
+            painter = painterResource(id = R.drawable.your_icon),
+            contentDescription = null,
+            modifier = Modifier.size(36.dp)
+        )
+    }
+}
