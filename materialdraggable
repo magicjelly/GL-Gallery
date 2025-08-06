@@ -1,0 +1,67 @@
+// Jetpack Compose: Modifier.materialDraggable Extension with Material-aware Spring Animation
+
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.unit.IntOffset
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+fun Modifier.materialDraggable(
+    areaDp: Float,
+    material: MaterialType,
+    onOffsetChange: (Offset) -> Unit = {}
+): Modifier = composed {
+    val springSpec = remember(areaDp, material) {
+        materialSpringFor(areaDp, material)
+    }
+
+    val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    val scope = rememberCoroutineScope()
+
+    this.pointerInput(Unit) {
+        coroutineScope {
+            while (true) {
+                awaitPointerEventScope {
+                    val velocityTracker = VelocityTracker()
+                    val down = awaitFirstDown()
+                    var dragOffset = Offset.Zero
+
+                    drag(down.id) { change ->
+                        val dragAmount = change.positionChange()
+                        dragOffset += dragAmount
+                        velocityTracker.addPosition(change.uptimeMillis, change.position)
+                        launch {
+                            offset.snapTo(dragOffset)
+                            onOffsetChange(offset.value)
+                        }
+                        change.consume()
+                    }
+
+                    val velocity = velocityTracker.calculateVelocity().toOffset()
+                    launch {
+                        offset.animateTo(
+                            targetValue = Offset.Zero,
+                            animationSpec = springSpec.positionSpec,
+                            initialVelocity = velocity
+                        )
+                        onOffsetChange(offset.value)
+                    }
+                }
+            }
+        }
+    }.offset {
+        IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt())
+    }
+}
+
+private fun Velocity.toOffset(): Offset {
+    return Offset(x, y)
+}
