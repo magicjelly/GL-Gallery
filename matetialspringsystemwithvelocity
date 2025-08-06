@@ -1,0 +1,124 @@
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+// --- Material System ---
+
+enum class MaterialType(val factor: Float) {
+    Plastic(0.8f),
+    Wood(1.0f),
+    Metal(1.3f),
+    Rubber(0.7f)
+}
+
+data class MaterialSpringSpec(
+    val positionSpec: SpringSpec<Offset>,
+    val scaleSpec: SpringSpec<Float>
+)
+
+fun materialSpringFor(
+    areaDp: Float,
+    material: MaterialType,
+    minArea: Float = 100f,
+    maxArea: Float = 100_000f,
+): MaterialSpringSpec {
+    val normalized = ((areaDp - minArea) / (maxArea - minArea)).coerceIn(0f, 1f)
+    val eased = normalized.pow(0.7f)
+    val materialFactor = material.factor
+
+    val baseStiffness = lerp(Spring.StiffnessHigh, Spring.StiffnessLow, eased) / materialFactor
+    val baseDamping = Spring.DampingRatioNoBouncy + eased * 0.3f * materialFactor
+
+    val positionSpring = spring<Offset>(
+        stiffness = baseStiffness,
+        dampingRatio = baseDamping
+    )
+
+    val scaleStiffness = (baseStiffness * 1.2f).coerceIn(100f, 1000f)
+    val scaleDamping = (baseDamping + 0.1f).coerceAtMost(1.5f)
+
+    val scaleSpring = spring<Float>(
+        stiffness = scaleStiffness,
+        dampingRatio = scaleDamping
+    )
+
+    return MaterialSpringSpec(
+        positionSpec = positionSpring,
+        scaleSpec = scaleSpring
+    )
+}
+
+// --- Composable with Gesture and Velocity ---
+
+@Composable
+fun MaterialDraggableBox(
+    areaDp: Float,
+    material: MaterialType,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val springSpec = remember(areaDp, material) {
+        materialSpringFor(areaDp, material)
+    }
+
+    val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    val scope = rememberCoroutineScope()
+
+    Box(
+        modifier = modifier
+            .pointerInput(Unit) {
+                coroutineScope {
+                    while (true) {
+                        awaitPointerEventScope {
+                            val velocityTracker = VelocityTracker()
+                            val down = awaitFirstDown()
+                            var dragOffset = Offset.Zero
+
+                            drag(down.id) { change ->
+                                val dragAmount = change.positionChange()
+                                dragOffset += dragAmount
+                                velocityTracker.addPosition(change.uptimeMillis, change.position)
+                                launch {
+                                    offset.snapTo(dragOffset)
+                                }
+                                change.consume()
+                            }
+
+                            val velocity = velocityTracker.calculateVelocity().toOffset()
+                            launch {
+                                offset.animateTo(
+                                    targetValue = Offset.Zero,
+                                    animationSpec = springSpec.positionSpec,
+                                    initialVelocity = velocity
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            .offset {
+                IntOffset(offset.value.x.roundToInt(), offset.value.y.roundToInt())
+            }
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            content()
+        }
+    }
+}
+
+// --- Utility ---
+
+private fun Velocity.toOffset(): Offset {
+    return Offset(x, y)
+}
