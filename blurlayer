@@ -1,0 +1,53 @@
+@Composable
+fun BackdropBlurLens(
+  lensSize: Dp = 200.dp,
+  blurRadiusPx: Int = 80,
+  onDrag: (Offset) -> Unit
+) {
+  val context = LocalContext.current
+  var dialog by remember { mutableStateOf<Dialog?>(null) }
+  var offset by remember { mutableStateOf(Offset.Zero) }
+
+  // 1) Show a borderless, translucent dialog that will blur behind it
+  DisposableEffect(Unit) {
+    Dialog(context).also { d ->
+      d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+      d.setCancelable(false)
+      d.window?.apply {
+        // Make window itself transparent
+        setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        // Blur *behind* the window (within its bounds)
+        setBackgroundBlurRadius(blurRadiusPx)
+        // (Optional) also blur everything behind the window
+        addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+      }
+      // Supply an empty view—content is just the blur “hole”
+      d.setContentView(FrameLayout(context))
+      d.show()
+      dialog = d
+    }
+    onDispose { dialog?.dismiss() }
+  }
+
+  // 2) Drive the dialog’s position as you drag
+  LaunchedEffect(offset) {
+    dialog?.window?.attributes = dialog!!.window!!.attributes.apply {
+      x = offset.x.roundToInt()
+      y = offset.y.roundToInt()
+      width  = with(LocalDensity.current) { lensSize.toPx() }.roundToInt()
+      height = width
+    }
+  }
+
+  // 3) Invisible box to handle dragging in Compose
+  Box(Modifier
+    .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
+    .size(lensSize)
+    .pointerInput(Unit) {
+      detectDragGestures { _, drag ->
+        offset += drag
+        onDrag(offset)
+      }
+    }
+  )
+}
