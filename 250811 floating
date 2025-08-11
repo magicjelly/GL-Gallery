@@ -2,10 +2,13 @@
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -41,39 +44,32 @@ class SpatialController(
     private val _pos = Animatable(start, Offset.VectorConverter)
     val pos: Offset get() = _pos.value
 
-    // --- Tunables (good defaults) ---
-    var attractGain = 12f             // px/s^2 per px
-    var damping = 2.6f                 // unitless; >2 avoids oscillation
-    var captureRadius = 32f            // px
+    var attractGain = 12f
+    var damping = 2.6f
+    var captureRadius = 32f
     var dockGain = 22f
     var dockDamping = 3.4f
-    var maxAccel = 6000f               // px/s^2
-    var maxSpeed = 1800f               // px/s   (NEW)
-    var ambientFriction = 0f           // px/s^2 (NEW; try 20–60 for subtle fade)
-    var redirectSmoothingHz = 6f       // Hz     (NEW; 0 = follow target instantly)
-    var timeStepClampMs = 32f          // ms cap for dt
+    var maxAccel = 6000f
+    var maxSpeed = 1800f
+    var ambientFriction = 0f
+    var redirectSmoothingHz = 6f
+    var timeStepClampMs = 32f
 
-    // --- Internal state ---
     private var vel = Offset.Zero
-    private var commandTarget = start      // immediately set by setTarget()
-    private var displayTarget = start      // eased toward commandTarget each frame
+    private var commandTarget = start
+    private var displayTarget = start
     private var running = false
 
     fun setTarget(newTarget: Offset) {
         commandTarget = newTarget
-        // if idle, sync display target so it starts from current command target
         if (!running) displayTarget = newTarget
     }
 
     fun snapTo(newPos: Offset) {
-        scope.launch {
-            _pos.snapTo(newPos)
-            vel = Offset.Zero
-        }
+        scope.launch { _pos.snapTo(newPos); vel = Offset.Zero }
     }
 
-    fun addImpulse(v: Offset) { vel += v } // feed release velocity (px/s)
-
+    fun addImpulse(v: Offset) { vel += v }
     fun interrupt() { running = false }
 
     fun start() {
@@ -87,26 +83,19 @@ class SpatialController(
                 var dt = (frameNanos - lastT) / 1_000_000_000f
                 lastT = frameNanos
 
-                // Clamp dt for stability (e.g., GC/jank frames)
                 val dtClamp = timeStepClampMs / 1000f
                 if (dt > dtClamp) dt = dtClamp
 
-                // --- Redirect smoothing (internal target eases to commanded target) ---
-                // Factor per frame using exponential smoothing at `redirectSmoothingHz`
-                val s = if (redirectSmoothingHz <= 0f) 1f
-                        else (1f - exp(-redirectSmoothingHz * dt))
+                val s = if (redirectSmoothingHz <= 0f) 1f else (1f - exp(-redirectSmoothingHz * dt))
                 displayTarget += (commandTarget - displayTarget) * s
 
-                // Pick gains based on distance (capture vs dock)
                 val delta = displayTarget - _pos.value
                 val dist = delta.getDistance()
                 val k = if (dist < captureRadius) dockGain else attractGain
                 val c = if (dist < captureRadius) dockDamping else damping
 
-                // Critically-damped like PD: a = k*delta - c*vel
                 var accel = delta * k - vel * c
 
-                // Ambient friction (constant decel opposite to velocity)
                 if (ambientFriction > 0f && vel != Offset.Zero) {
                     val speed = vel.getDistance()
                     if (speed > 1e-3f) {
@@ -115,31 +104,27 @@ class SpatialController(
                     }
                 }
 
-                // Clamp acceleration magnitude
                 val aMag = accel.getDistance()
                 if (aMag > maxAccel) accel *= (maxAccel / aMag)
 
-                // Integrate velocity & clamp speed
                 vel += accel * dt
                 val speed = vel.getDistance()
                 if (speed > maxSpeed) vel *= (maxSpeed / speed)
 
-                // Integrate position
-                val next = _pos.value + vel * dt
-                _pos.snapTo(next)
+                _pos.snapTo(_pos.value + vel * dt)
             }
         }
     }
 }
-
-// --------------------- Demo Composable ---------------------
 
 @Composable
 fun SpatialRedirectableDemo() {
     val scope = rememberCoroutineScope()
     val controller = remember { SpatialController(scope) }
 
-    // Tuning example (adjust as desired)
+    // scale anim (1f = normal, <1f looks farther)
+    val scaleAnim = remember { Animatable(1f) }
+
     LaunchedEffect(Unit) {
         controller.attractGain = 12f
         controller.damping = 2.6f
@@ -147,20 +132,18 @@ fun SpatialRedirectableDemo() {
         controller.dockGain = 22f
         controller.dockDamping = 3.6f
         controller.maxAccel = 7000f
-        controller.maxSpeed = 2000f       // NEW
-        controller.ambientFriction = 35f  // NEW
-        controller.redirectSmoothingHz = 7f // NEW
+        controller.maxSpeed = 2000f
+        controller.ambientFriction = 35f
+        controller.redirectSmoothingHz = 7f
     }
 
-    // Live target (can change anytime; motion redirects mid-flight)
     var target by remember { mutableStateOf(Offset(800f, 1200f)) }
-
-    // Keep controller target synced and running
     LaunchedEffect(target) { controller.setTarget(target); controller.start() }
 
+    val vt = remember { VelocityTracker() }
+
     Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
-        // Drag to interrupt + reposition; release → continue with inertia and re-capture
-        val vt = remember { VelocityTracker() }
+        // Drag anywhere to move; fling resumes toward target
         Box(
             Modifier
                 .fillMaxSize()
@@ -168,7 +151,7 @@ fun SpatialRedirectableDemo() {
                     detectDragGestures(
                         onDragStart = {
                             vt.resetTracking()
-                            controller.interrupt() // stop loop while user takes control
+                            controller.interrupt()
                         },
                         onDrag = { change, drag ->
                             change.consume()
@@ -177,58 +160,59 @@ fun SpatialRedirectableDemo() {
                         },
                         onDragEnd = {
                             val v = vt.calculateVelocity()
-                            controller.addImpulse(Offset(v.x, v.y)) // px/s
-                            controller.start() // resume toward latest target
+                            controller.addImpulse(Offset(v.x, v.y))
+                            controller.start()
                         },
                         onDragCancel = { controller.start() }
                     )
                 }
         )
 
-        // Example retarget buttons (corners). Tap to change destination mid-flight.
-        RetargetButtons { newTarget ->
+        // Corner pads: TopRight scales down to look like receding.
+        RetargetPads { newTarget, scaleTarget ->
             target = newTarget
+            // quick, smooth scale change
+            scope.launch { scaleAnim.animateTo(scaleTarget, tween(240)) }
         }
 
-        // Moving component
+        // Moving object with scale
         Box(
             Modifier
                 .size(56.dp)
-                .offset {
-                    IntOffset(controller.pos.x.roundToInt(), controller.pos.y.roundToInt())
-                }
+                .offset { IntOffset(controller.pos.x.roundToInt(), controller.pos.y.roundToInt()) }
+                .scale(scaleAnim.value)
                 .background(Color.White)
         )
     }
 }
 
-// -------------- Utilities --------------
-
+// Four corner pads to set targets; TopRight applies smaller scale (recede)
 @Composable
-private fun RetargetButtons(onPick: (Offset) -> Unit) {
-    // Four translucent pads; adapt to your layout system as needed.
-    val pad = 72.dp
-    // Positions below are arbitrary demo values in dp; map to px as needed in your app.
-    Box(Modifier.fillMaxSize()) {
-        RetargetPad(16.dp, 16.dp, pad) { onPick(Offset(120f, 120f)) }
-        RetargetPad(300.dp, 16.dp, pad) { onPick(Offset(900f, 120f)) }
-        RetargetPad(16.dp, 600.dp, pad) { onPick(Offset(120f, 1400f)) }
-        RetargetPad(300.dp, 600.dp, pad) { onPick(Offset(900f, 1400f)) }
+private fun RetargetPads(onPick: (Offset, Float) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wPx = constraints.maxWidth.toFloat()
+        val hPx = constraints.maxHeight.toFloat()
+        fun place(alignment: Alignment, tx: Float, ty: Float, scaleTarget: Float) {
+            Box(
+                Modifier
+                    .size(72.dp)
+                    .align(alignment)
+                    .background(Color(0x22FFFFFF))
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            onPick(Offset(tx * wPx, ty * hPx), scaleTarget)
+                        }
+                    }
+            )
+        }
+        place(Alignment.TopStart,    0.1f, 0.1f, 1.0f) // normal
+        place(Alignment.TopEnd,      0.9f, 0.1f, 0.6f) // scale down (recede)
+        place(Alignment.BottomStart, 0.1f, 0.9f, 1.0f) // normal
+        place(Alignment.BottomEnd,   0.9f, 0.9f, 1.0f) // normal
     }
 }
 
-@Composable
-private fun RetargetPad(x: Dp, y: Dp, size: Dp, onTap: () -> Unit) {
-    Box(
-        Modifier
-            .offset(x, y)
-            .size(size)
-            .background(Color(0x22FFFFFF))
-            .pointerInput(Unit) { detectDragGestures(onDragStart = { onTap() }) }
-    )
-}
-
-// --- math helpers ---
+// --- helpers ---
 private operator fun Offset.plus(o: Offset) = Offset(x + o.x, y + o.y)
 private operator fun Offset.minus(o: Offset) = Offset(x - o.x, y - o.y)
 private operator fun Offset.times(s: Float) = Offset(x * s, y * s)
