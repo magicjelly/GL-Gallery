@@ -21,7 +21,21 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.*
 
-/** Redirectable, interruptible spatial controller (no bounce; inertia + soft attractor). */
+/**
+ * SpatialController = inertia + soft attractor (critically-damped PD, no bounce)
+ * Redirectable mid-flight (reads latest target every frame), interruptible (drag cancels loop).
+ *
+ * Key Tunables (pixels / seconds units):
+ * - attractGain: base positional pull toward target (lower = floatier).
+ * - damping: velocity damping vs. the attraction (>= ~2.0 to avoid “springy” feel).
+ * - captureRadius: distance where we switch to tighter docking gains.
+ * - dockGain / dockDamping: precise final approach behavior.
+ * - maxAccel: caps instantaneous acceleration for gentler curves on retarget.
+ * - maxSpeed: caps velocity to avoid streaking on long throws.
+ * - ambientFriction: constant decel (px/s^2) applied opposite to velocity (space “drag”).
+ * - redirectSmoothingHz: how quickly the internal target follows setTarget() (0 = instant).
+ * - timeStepClampMs: clamps dt for stability on jank frames.
+ */
 @Stable
 class SpatialController(
     private val scope: CoroutineScope,
@@ -30,19 +44,19 @@ class SpatialController(
     private val _pos = Animatable(start, Offset.VectorConverter)
     val pos: Offset get() = _pos.value
 
-    // ---- Tunables (good defaults) ----
-    var attractGain = 12f            // base pull toward target (lower = floatier)
-    var damping = 2.6f               // >2 avoids oscillation
-    var captureRadius = 36f          // switch to docking when within this distance (px)
-    var dockGain = 22f               // stronger pull near target
-    var dockDamping = 3.6f
-    var maxAccel = 7000f             // px/s^2 clamp
-    var maxSpeed = 2000f             // px/s clamp
-    var ambientFriction = 35f        // px/s^2 constant decel (0 to disable)
-    var redirectSmoothingHz = 7f     // 0 = instant retarget; higher = smoother
-    var timeStepClampMs = 32f        // clamp dt for stability
+    // --- Tunables ---
+    var attractGain = 12f
+    var damping = 2.6f
+    var captureRadius = 32f
+    var dockGain = 22f
+    var dockDamping = 3.4f
+    var maxAccel = 6000f
+    var maxSpeed = 1800f
+    var ambientFriction = 0f
+    var redirectSmoothingHz = 6f
+    var timeStepClampMs = 32f
 
-    // ---- Internal ----
+    // --- Internal ---
     private var vel = Offset.Zero
     private var commandTarget = start
     private var displayTarget = start
@@ -60,7 +74,7 @@ class SpatialController(
         }
     }
 
-    fun addImpulse(v: Offset) { vel += v }   // px/s from release velocity
+    fun addImpulse(v: Offset) { vel += v }
     fun interrupt() { running = false }
 
     fun start() {
@@ -69,30 +83,30 @@ class SpatialController(
         scope.launch {
             var lastT = 0L
             while (isActive && running) {
-                val now = withFrameNanos { it }
-                if (lastT == 0L) { lastT = now; continue }
-                var dt = (now - lastT) / 1_000_000_000f
-                lastT = now
+                val frameNanos = withFrameNanos { it }
+                if (lastT == 0L) { lastT = frameNanos; continue }
+                var dt = (frameNanos - lastT) / 1_000_000_000f
+                lastT = frameNanos
 
-                // dt clamp
-                val dtMax = timeStepClampMs / 1000f
-                if (dt > dtMax) dt = dtMax
+                // Clamp dt for stability
+                val dtClamp = timeStepClampMs / 1000f
+                if (dt > dtClamp) dt = dtClamp
 
-                // Smooth retarget
+                // Redirect smoothing
                 val s = if (redirectSmoothingHz <= 0f) 1f else (1f - exp(-redirectSmoothingHz * dt))
                 displayTarget += (commandTarget - displayTarget) * s
 
-                // Gains by distance (capture vs dock)
+                // Gains by distance
                 val delta = displayTarget - _pos.value
                 val dist = delta.getDistance()
                 val k = if (dist < captureRadius) dockGain else attractGain
                 val c = if (dist < captureRadius) dockDamping else damping
 
-                // PD-like accel (no bounce)
+                // PD-like accel
                 var accel = delta * k - vel * c
 
                 // Ambient friction
-                if (ambientFriction > 0f) {
+                if (ambientFriction > 0f && vel != Offset.Zero) {
                     val speed = vel.getDistance()
                     if (speed > 1e-3f) {
                         val friction = min(ambientFriction, speed / dt)
@@ -104,26 +118,38 @@ class SpatialController(
                 val aMag = accel.getDistance()
                 if (aMag > maxAccel) accel *= (maxAccel / aMag)
 
-                // Integrate, clamp speed
+                // Integrate velocity & clamp speed
                 vel += accel * dt
                 val speed = vel.getDistance()
                 if (speed > maxSpeed) vel *= (maxSpeed / speed)
 
-                // Move
+                // Integrate position
                 _pos.snapTo(_pos.value + vel * dt)
             }
         }
     }
 }
 
-// ---------------- Demo (bigger touch target; visual stays small) ----------------
+// --------------------- Demo Composable ---------------------
 
 @Composable
 fun SpatialRedirectableDemo() {
     val scope = rememberCoroutineScope()
     val controller = remember { SpatialController(scope) }
 
-    // Live target; update however you like (buttons below are just a demo)
+    // Example tuning
+    LaunchedEffect(Unit) {
+        controller.attractGain = 12f
+        controller.damping = 2.6f
+        controller.captureRadius = 36f
+        controller.dockGain = 22f
+        controller.dockDamping = 3.6f
+        controller.maxAccel = 7000f
+        controller.maxSpeed = 2000f
+        controller.ambientFriction = 35f
+        controller.redirectSmoothingHz = 7f
+    }
+
     var target by remember { mutableStateOf(Offset(800f, 1200f)) }
     LaunchedEffect(target) { controller.setTarget(target); controller.start() }
 
@@ -132,10 +158,9 @@ fun SpatialRedirectableDemo() {
     val vt = remember { VelocityTracker() }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
-        // Tap anywhere (four pads) to change target; motion will redirect mid-flight
-        RetargetPads { target = it }
+        RetargetButtons { newTarget -> target = newTarget }
 
-        // DRAG ONLY ON THE OBJECT (larger invisible hit area)
+        // DRAG ONLY ON OBJECT (larger touch target)
         Box(
             Modifier
                 .size(touchSize)
@@ -166,29 +191,27 @@ fun SpatialRedirectableDemo() {
     }
 }
 
-// Four corner pads to set new targets (for demo)
+// Four corner tap zones for changing targets
 @Composable
-private fun RetargetPads(onPick: (Offset) -> Unit) {
+private fun RetargetButtons(onPick: (Offset) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wPx = constraints.maxWidth.toFloat()
         val hPx = constraints.maxHeight.toFloat()
-        fun place(alignment: Alignment, tx: Float, ty: Float) {
+        fun pad(alignment: Alignment, tx: Float, ty: Float) {
             Box(
                 Modifier
                     .size(72.dp)
                     .align(alignment)
                     .background(Color(0x22FFFFFF))
                     .pointerInput(Unit) {
-                        detectTapGestures {
-                            onPick(Offset(tx * wPx, ty * hPx))
-                        }
+                        detectTapGestures { onPick(Offset(tx * wPx, ty * hPx)) }
                     }
             )
         }
-        place(Alignment.TopStart,    0.1f, 0.1f)
-        place(Alignment.TopEnd,      0.9f, 0.1f)
-        place(Alignment.BottomStart, 0.1f, 0.9f)
-        place(Alignment.BottomEnd,   0.9f, 0.9f)
+        pad(Alignment.TopStart,    0.1f, 0.1f)
+        pad(Alignment.TopEnd,      0.9f, 0.1f)
+        pad(Alignment.BottomStart, 0.1f, 0.9f)
+        pad(Alignment.BottomEnd,   0.9f, 0.9f)
     }
 }
 
