@@ -22,16 +22,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.*
 
-/**
- * SpatialController = inertia + soft attractor (critically-damped PD, no bounce)
- * Redirectable mid-flight (reads latest target every frame), interruptible (drag cancels loop).
- *
- * Primary knobs (spring-like):
- * - pullStrength: 0.5..1.5 (≈ stiffness)
- * - dragRatio:    0.7..1.4 (≈ dampingRatio)
- * - floatiness:   0.0..1.0 (spacey drift)
- * - mass:         0.5..2.0 (inertia)
- */
+// -----------------------------------------------------------------------------
+// SpatialController = inertia + soft pull (critically/over‑damped PD; no bounce)
+// Redirectable mid‑flight (reads latest target each frame), interruptible (drag cancels).
+//
+// Primary knobs (designer‑friendly):
+// - pullStrengthKnob: 0.5..1.5  (like stiffness)
+// - dragRatioKnob:    0.7..1.4  (like dampingRatio)
+// - floatinessKnob:   0.0..1.0  (more drift when higher)
+// - massKnob:         0.5..2.0  (heavier → slower accel/turn)
+// Internals below are auto‑mapped from these knobs but remain override‑able.
+// -----------------------------------------------------------------------------
 @Stable
 class SpatialController(
     private val scope: CoroutineScope,
@@ -40,160 +41,192 @@ class SpatialController(
     private val _pos = Animatable(start, Offset.VectorConverter)
     val pos: Offset get() = _pos.value
 
-    // Internals auto-mapped from knobs
-    var attractGain = 12f
-    var damping = 2.6f
-    var captureRadius = 32f
-    var dockGain = 22f
-    var dockDamping = 3.4f
-    var maxAccel = 6000f
-    var maxSpeed = 1800f
-    var ambientFriction = 0f
-    var redirectSmoothingHz = 6f
-    var timeStepClampMs = 32f
+    // --- Beginner‑friendly internal tunables (auto-set via applySpaceTuning) ---
+    var pullStrength = 12f            // px/s² per px to target. ↑ = stronger pull (snappier start).
+    var pullDamping = 2.6f            // damping while pulling (outside slowdown zone). ↑ = less bounce, quicker stop.
 
-    // Public knobs
-    var pullStrength = 1.0f; private set
-    var dragRatio = 1.0f; private set
-    var floatiness = 0.3f; private set
-    var mass = 1.0f; private set
+    var slowdownZoneRadius = 32f      // px distance where “slowdown zone” begins.
+    var slowdownPullStrength = 22f    // pull inside slowdown zone. ↑ = faster final snap‑in.
+    var slowdownPullDamping = 3.4f    // damping inside slowdown zone. ↑ = precise stop.
 
-    private var vel = Offset.Zero
-    private var commandTarget = start
-    private var displayTarget = start
+    var maxAcceleration = 6000f       // px/s² acceleration cap. ↓ = gentler redirects, ↑ = sharper turns.
+    var maxSpeed = 1800f              // px/s speed cap. ↓ = calmer, ↑ = faster.
+
+    var backgroundDrag = 0f           // px/s² constant decel (always on). ↑ = drift dies sooner.
+    var retargetSmoothnessHz = 6f     // Hz: how quickly internal target follows commanded target. ↑ = quicker re‑aim.
+    var maxFrameStepMs = 32f          // ms clamp for stability on jank frames.
+
+    // --- User‑facing knobs (mapped → internals above) ---
+    var pullStrengthKnob = 1.0f; private set
+    var dragRatioKnob    = 1.0f; private set
+    var floatinessKnob   = 0.3f; private set
+    var massKnob         = 1.0f; private set
+
+    // --- Internal state ---
+    private var vel = Offset.Zero           // px/s
+    private var commandTarget = start       // requested target
+    private var displayTarget = start       // smoothed internal target
     private var running = false
 
+    /** Map simple knobs → internal params. Safe to call anytime (even mid‑animation). */
     fun applySpaceTuning(
-        pullStrength: Float = this.pullStrength,
-        dragRatio: Float = this.dragRatio,
-        floatiness: Float = this.floatiness,
-        mass: Float = this.mass
+        pullStrength: Float = this.pullStrengthKnob,
+        dragRatio: Float = this.dragRatioKnob,
+        floatiness: Float = this.floatinessKnob,
+        mass: Float = this.massKnob
     ) {
-        this.pullStrength = pullStrength
-        this.dragRatio = dragRatio
-        this.floatiness = floatiness.coerceIn(0f, 1f)
-        this.mass = mass
+        pullStrengthKnob = pullStrength
+        dragRatioKnob = dragRatio
+        floatinessKnob = floatiness.coerceIn(0f, 1f)
+        massKnob = mass.coerceAtLeast(0.2f)
 
-        val baseAttract = 12f
-        val baseDockAttract = 22f
-        val baseDamping = 2.6f
-        val baseDockDamping = 3.4f
-        val baseFrictionMax = 60f
+        // Baselines kept from “version 1” feel
+        val basePull = 12f
+        val baseSlowdownPull = 22f
+        val baseDamp = 2.6f
+        val baseSlowdownDamp = 3.4f
+        val baseDragMax = 60f
         val baseMaxAccel = 6000f
         val baseMaxSpeed = 1800f
-        val baseRedirectHz = 6f
-        val m = mass.coerceAtLeast(0.2f)
+        val baseSmoothHz = 6f
+        val m = massKnob
 
-        attractGain   = (baseAttract * pullStrength) / m
-        dockGain      = (baseDockAttract * pullStrength) / m
+        // Pulls (like stiffness), scaled by mass (F = m·a → a = F/m)
+        this.pullStrength        = (basePull * pullStrengthKnob) / m
+        this.slowdownPullStrength = (baseSlowdownPull * pullStrengthKnob) / m
 
+        // Dampings (like damping ratio), scaled by 1/√m to stay near critical with mass changes
         val massDampScale = 1f / sqrt(m)
-        damping      = (baseDamping * dragRatio) * massDampScale
-        dockDamping  = (baseDockDamping * dragRatio) * massDampScale
-        if (damping < 2f) damping = 2f
-        if (dockDamping < 2.5f) dockDamping = 2.5f
+        this.pullDamping        = (baseDamp * dragRatioKnob) * massDampScale
+        this.slowdownPullDamping = (baseSlowdownDamp * dragRatioKnob) * massDampScale
+        if (this.pullDamping < 2f) this.pullDamping = 2f
+        if (this.slowdownPullDamping < 2.5f) this.slowdownPullDamping = 2.5f
 
-        ambientFriction = lerp(baseFrictionMax, 0f, this.floatiness) / m
-        captureRadius   = lerp(28f, 44f, this.floatiness)
-        redirectSmoothingHz = lerp(baseRedirectHz, baseRedirectHz * 1.6f, this.floatiness)
+        // Floatiness → more drift: lower background drag, later slowdown, slower retarget smoothing
+        this.backgroundDrag        = lerp(baseDragMax, 0f, floatinessKnob) / m
+        this.slowdownZoneRadius    = lerp(28f, 44f, floatinessKnob)
+        this.retargetSmoothnessHz  = lerp(baseSmoothHz, baseSmoothHz * 1.6f, floatinessKnob)
 
-        maxAccel = (baseMaxAccel * pullStrength) / m
-        maxSpeed = (baseMaxSpeed * (0.9f + 0.4f * this.floatiness)) / sqrt(m)
+        // Safety caps scaled with mass so heavy objects don’t dart
+        this.maxAcceleration = (baseMaxAccel * pullStrengthKnob) / m
+        this.maxSpeed        = (baseMaxSpeed * (0.9f + 0.4f * floatinessKnob)) / sqrt(m)
     }
 
+    /** Redirectable target update. */
     fun setTarget(newTarget: Offset) {
         commandTarget = newTarget
         if (!running) displayTarget = newTarget
     }
 
+    /** Immediate position snap (interrupts and clears velocity). */
     fun snapTo(newPos: Offset) {
         scope.launch { _pos.snapTo(newPos); vel = Offset.Zero }
     }
 
+    /** Add velocity impulse in px/s (e.g., from a fling). */
     fun addImpulse(v: Offset) { vel += v }
+
+    /** Stop loop (e.g., user starts dragging). */
     fun interrupt() { running = false }
 
+    /** Start/continue loop (reads latest target; naturally re‑targets mid‑flight). */
     fun start() {
         if (running) return
         running = true
         scope.launch {
             var lastT = 0L
             while (isActive && running) {
-                val frameNanos = withFrameNanos { it }
-                if (lastT == 0L) { lastT = frameNanos; continue }
-                var dt = (frameNanos - lastT) / 1_000_000_000f
-                lastT = frameNanos
+                val now = withFrameNanos { it }
+                if (lastT == 0L) { lastT = now; continue }
+                var dt = (now - lastT) / 1_000_000_000f
+                lastT = now
 
-                val dtClamp = timeStepClampMs / 1000f
-                if (dt > dtClamp) dt = dtClamp
+                // Stability clamp
+                val dtMax = maxFrameStepMs / 1000f
+                if (dt > dtMax) dt = dtMax
 
-                val s = if (redirectSmoothingHz <= 0f) 1f else (1f - exp(-redirectSmoothingHz * dt))
+                // Smooth retarget toward commanded target
+                val s = if (retargetSmoothnessHz <= 0f) 1f else (1f - exp(-retargetSmoothnessHz * dt))
                 displayTarget += (commandTarget - displayTarget) * s
 
+                // Choose “pull” vs “slowdown” set based on zone
                 val delta = displayTarget - _pos.value
                 val dist = delta.getDistance()
-                val k = if (dist < captureRadius) dockGain else attractGain
-                val c = if (dist < captureRadius) dockDamping else damping
+                val k = if (dist < slowdownZoneRadius) slowdownPullStrength else pullStrength
+                val c = if (dist < slowdownZoneRadius) slowdownPullDamping else pullDamping
 
+                // PD‑like accel: a = k*delta - c*vel
                 var accel = delta * k - vel * c
 
-                if (ambientFriction > 0f && vel != Offset.Zero) {
+                // Always‑on background drag (constant decel opposing velocity)
+                if (backgroundDrag > 0f && vel != Offset.Zero) {
                     val speed = vel.getDistance()
                     if (speed > 1e-3f) {
-                        val friction = min(ambientFriction, speed / dt)
-                        accel += (-vel / speed) * friction
+                        val drag = min(backgroundDrag, speed / dt)
+                        accel += (-vel / speed) * drag
                     }
                 }
 
+                // Clamp accel → integrate velocity
                 val aMag = accel.getDistance()
-                if (aMag > maxAccel) accel *= (maxAccel / aMag)
-
+                if (aMag > maxAcceleration) accel *= (maxAcceleration / aMag)
                 vel += accel * dt
-                val speed = vel.getDistance()
-                if (speed > maxSpeed) vel *= (maxSpeed / speed)
 
+                // Clamp speed
+                val sp = vel.getDistance()
+                if (sp > maxSpeed) vel *= (maxSpeed / sp)
+
+                // Integrate position
                 _pos.snapTo(_pos.value + vel * dt)
             }
         }
     }
 }
 
+// -----------------------------------------------------------------------------
+// Demo with collapsible controls, sliders for the 4 knobs, preset radios, pads.
+// -----------------------------------------------------------------------------
 @Composable
 fun SpatialRedirectableDemo() {
     val scope = rememberCoroutineScope()
     val controller = remember { SpatialController(scope) }
 
-    // Slider state
-    var pullStrength by remember { mutableStateOf(1.0f) }
-    var dragRatio by remember { mutableStateOf(1.0f) }
-    var floatiness by remember { mutableStateOf(0.3f) }
-    var mass by remember { mutableStateOf(1.0f) }
+    // Knob states (designer‑facing)
+    var pullStrengthKnob by remember { mutableStateOf(1.0f) }
+    var dragRatioKnob    by remember { mutableStateOf(1.0f) }
+    var floatinessKnob   by remember { mutableStateOf(0.3f) }
+    var massKnob         by remember { mutableStateOf(1.0f) }
 
     // Presets
     data class Preset(val name: String, val pull: Float, val drag: Float, val flo: Float, val mass: Float)
     val presets = listOf(
-        Preset("Crisp",     1.3f, 1.2f, 0.1f, 1.0f),
-        Preset("Balanced",  1.0f, 1.0f, 0.3f, 1.0f),
-        Preset("Floaty",    0.8f, 0.9f, 0.7f, 1.2f),
+        Preset("Crisp",    1.30f, 1.20f, 0.10f, 1.00f),
+        Preset("Balanced", 1.00f, 1.00f, 0.30f, 1.00f),
+        Preset("Floaty",   0.80f, 0.90f, 0.70f, 1.20f),
     )
     var selectedPreset by remember { mutableStateOf("Balanced") }
     val eps = 0.01f
     fun matches(p: Preset) =
-        abs(pullStrength - p.pull) < eps &&
-        abs(dragRatio - p.drag) < eps &&
-        abs(floatiness - p.flo) < eps &&
-        abs(mass - p.mass) < eps
+        abs(pullStrengthKnob - p.pull) < eps &&
+        abs(dragRatioKnob    - p.drag) < eps &&
+        abs(floatinessKnob   - p.flo ) < eps &&
+        abs(massKnob         - p.mass) < eps
 
-    // Apply knobs to controller
-    LaunchedEffect(pullStrength, dragRatio, floatiness, mass) {
-        controller.applySpaceTuning(pullStrength, dragRatio, floatiness, mass)
-        // Auto-select Custom if sliders deviate from chosen preset
+    // Apply mapping whenever knobs change + maintain radio selection (Custom if deviates)
+    LaunchedEffect(pullStrengthKnob, dragRatioKnob, floatinessKnob, massKnob) {
+        controller.applySpaceTuning(
+            pullStrength = pullStrengthKnob,
+            dragRatio    = dragRatioKnob,
+            floatiness   = floatinessKnob,
+            mass         = massKnob
+        )
         selectedPreset = presets.firstOrNull { matches(it) }?.name ?: "Custom"
     }
 
-    // Controls collapsible
+    // Collapsible controls
     var controlsExpanded by remember { mutableStateOf(true) }
 
+    // Live target & motion
     var target by remember { mutableStateOf(Offset(800f, 1200f)) }
     LaunchedEffect(target) { controller.setTarget(target); controller.start() }
 
@@ -213,13 +246,12 @@ fun SpatialRedirectableDemo() {
 
         AnimatedVisibility(visible = controlsExpanded) {
             Column {
-                SliderWithLabel("Pull Strength", pullStrength, 0.5f, 1.5f) { pullStrength = it }
-                SliderWithLabel("Drag Ratio",    dragRatio,    0.7f, 1.4f) { dragRatio = it }
-                SliderWithLabel("Floatiness",    floatiness,   0f,   1f   ) { floatiness = it }
-                SliderWithLabel("Mass",          mass,         0.5f, 2f   ) { mass = it }
+                SliderWithLabel("Pull Strength", pullStrengthKnob, 0.5f, 1.5f) { pullStrengthKnob = it }
+                SliderWithLabel("Drag Ratio",    dragRatioKnob,    0.7f, 1.4f) { dragRatioKnob = it }
+                SliderWithLabel("Floatiness",    floatinessKnob,   0f,   1f   ) { floatinessKnob = it }
+                SliderWithLabel("Mass",          massKnob,         0.5f, 2f   ) { massKnob = it }
 
-                // Preset Radios (+ Custom)
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp)) {
                     Text("Quick Tuning", color = Color.White)
                     presets.forEach { p ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -227,10 +259,10 @@ fun SpatialRedirectableDemo() {
                                 selected = selectedPreset == p.name,
                                 onClick = {
                                     selectedPreset = p.name
-                                    pullStrength = p.pull
-                                    dragRatio = p.drag
-                                    floatiness = p.flo
-                                    mass = p.mass
+                                    pullStrengthKnob = p.pull
+                                    dragRatioKnob    = p.drag
+                                    floatinessKnob   = p.flo
+                                    massKnob         = p.mass
                                 }
                             )
                             Text(p.name, color = Color.White)
@@ -239,7 +271,7 @@ fun SpatialRedirectableDemo() {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(
                             selected = selectedPreset == "Custom",
-                            onClick = { selectedPreset = "Custom" } // keep current slider values
+                            onClick = { selectedPreset = "Custom" } // keep current knob values
                         )
                         Text("Custom", color = Color.White)
                     }
@@ -248,6 +280,7 @@ fun SpatialRedirectableDemo() {
             }
         }
 
+        // Interaction surface + moving object
         Box(
             Modifier.weight(1f).fillMaxWidth()
                 .pointerInput(Unit) {
@@ -283,16 +316,21 @@ fun SpatialRedirectableDemo() {
 }
 
 // --- UI helpers ---
-
 @Composable
-private fun SliderWithLabel(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
+private fun SliderWithLabel(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    onChange: (Float) -> Unit
+) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
         Text("$label: ${"%.2f".format(value)}", color = Color.White)
         Slider(value = value, onValueChange = onChange, valueRange = min..max)
     }
 }
 
-// Four corner pads to set new targets (for demo)
+// Four corner pads to set new targets (demo)
 @Composable
 private fun RetargetPads(onPick: (Offset) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
