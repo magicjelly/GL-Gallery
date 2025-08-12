@@ -2,11 +2,11 @@
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,16 +25,11 @@ import kotlin.math.*
  * SpatialController = inertia + soft attractor (critically-damped PD, no bounce)
  * Redirectable mid-flight (reads latest target every frame), interruptible (drag cancels loop).
  *
- * Key Tunables (pixels / seconds units):
- * - attractGain: base positional pull toward target (lower = floatier).
- * - damping: velocity damping vs. the attraction (>= ~2.0 to avoid “springy” feel).
- * - captureRadius: distance where we switch to tighter docking gains.
- * - dockGain / dockDamping: precise final approach behavior.
- * - maxAccel: caps instantaneous acceleration for gentler curves on retarget.
- * - maxSpeed: caps velocity to avoid streaking on long throws.
- * - ambientFriction: constant decel (px/s^2) applied opposite to velocity (space “drag”).
- * - redirectSmoothingHz: how quickly the internal target follows setTarget() (0 = instant).
- * - timeStepClampMs: clamps dt for stability on jank frames.
+ * Primary knobs (spring-like):
+ * - pullStrength: 0.5..1.5 (≈ stiffness). Higher = stronger pull to target.
+ * - dragRatio:    0.7..1.4 (≈ dampingRatio). Higher = more damping, less glide.
+ * - floatiness:   0.0..1.0. Higher = more “spacey” (drifty).
+ * - mass:         0.5..2.0. Higher = heavier; accelerates/turns more slowly.
  */
 @Stable
 class SpatialController(
@@ -44,6 +39,7 @@ class SpatialController(
     private val _pos = Animatable(start, Offset.VectorConverter)
     val pos: Offset get() = _pos.value
 
+    // Internals auto-mapped from knobs
     var attractGain = 12f
     var damping = 2.6f
     var captureRadius = 32f
@@ -55,10 +51,54 @@ class SpatialController(
     var redirectSmoothingHz = 6f
     var timeStepClampMs = 32f
 
+    // Public knobs
+    var pullStrength = 1.0f; private set
+    var dragRatio = 1.0f; private set
+    var floatiness = 0.3f; private set
+    var mass = 1.0f; private set
+
     private var vel = Offset.Zero
     private var commandTarget = start
     private var displayTarget = start
     private var running = false
+
+    fun applySpaceTuning(
+        pullStrength: Float = this.pullStrength,
+        dragRatio: Float = this.dragRatio,
+        floatiness: Float = this.floatiness,
+        mass: Float = this.mass
+    ) {
+        this.pullStrength = pullStrength
+        this.dragRatio = dragRatio
+        this.floatiness = floatiness.coerceIn(0f, 1f)
+        this.mass = mass
+
+        val baseAttract = 12f
+        val baseDockAttract = 22f
+        val baseDamping = 2.6f
+        val baseDockDamping = 3.4f
+        val baseFrictionMax = 60f
+        val baseMaxAccel = 6000f
+        val baseMaxSpeed = 1800f
+        val baseRedirectHz = 6f
+        val m = mass.coerceAtLeast(0.2f)
+
+        attractGain   = (baseAttract * pullStrength) / m
+        dockGain      = (baseDockAttract * pullStrength) / m
+
+        val massDampScale = 1f / sqrt(m)
+        damping      = (baseDamping * dragRatio) * massDampScale
+        dockDamping  = (baseDockDamping * dragRatio) * massDampScale
+        if (damping < 2f) damping = 2f
+        if (dockDamping < 2.5f) dockDamping = 2.5f
+
+        ambientFriction = lerp(baseFrictionMax, 0f, this.floatiness) / m
+        captureRadius   = lerp(28f, 44f, this.floatiness)
+        redirectSmoothingHz = lerp(baseRedirectHz, baseRedirectHz * 1.6f, this.floatiness)
+
+        maxAccel = (baseMaxAccel * pullStrength) / m
+        maxSpeed = (baseMaxSpeed * (0.9f + 0.4f * this.floatiness)) / sqrt(m)
+    }
 
     fun setTarget(newTarget: Offset) {
         commandTarget = newTarget
@@ -122,19 +162,19 @@ fun SpatialRedirectableDemo() {
     val scope = rememberCoroutineScope()
     val controller = remember { SpatialController(scope) }
 
-    // scale anim (1f = normal, <1f looks farther)
-    val scaleAnim = remember { Animatable(1f) }
+    // State for sliders
+    var pullStrength by remember { mutableStateOf(1.0f) }
+    var dragRatio by remember { mutableStateOf(1.0f) }
+    var floatiness by remember { mutableStateOf(0.3f) }
+    var mass by remember { mutableStateOf(1.0f) }
 
-    LaunchedEffect(Unit) {
-        controller.attractGain = 12f
-        controller.damping = 2.6f
-        controller.captureRadius = 36f
-        controller.dockGain = 22f
-        controller.dockDamping = 3.6f
-        controller.maxAccel = 7000f
-        controller.maxSpeed = 2000f
-        controller.ambientFriction = 35f
-        controller.redirectSmoothingHz = 7f
+    LaunchedEffect(pullStrength, dragRatio, floatiness, mass) {
+        controller.applySpaceTuning(
+            pullStrength = pullStrength,
+            dragRatio = dragRatio,
+            floatiness = floatiness,
+            mass = mass
+        )
     }
 
     var target by remember { mutableStateOf(Offset(800f, 1200f)) }
@@ -142,78 +182,84 @@ fun SpatialRedirectableDemo() {
 
     val vt = remember { VelocityTracker() }
 
-    Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
-        // Drag anywhere to move; fling resumes toward target
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = {
-                            vt.resetTracking()
-                            controller.interrupt()
-                        },
-                        onDrag = { change, drag ->
-                            change.consume()
-                            vt.addPosition(change.uptimeMillis, change.position)
-                            controller.snapTo(controller.pos + drag)
-                        },
-                        onDragEnd = {
-                            val v = vt.calculateVelocity()
-                            controller.addImpulse(Offset(v.x, v.y))
-                            controller.start()
-                        },
-                        onDragCancel = { controller.start() }
-                    )
-                }
-        )
+    Column(Modifier.fillMaxSize()) {
+        // Sliders UI
+        SliderWithLabel("Pull Strength", pullStrength, 0.5f, 1.5f) { pullStrength = it }
+        SliderWithLabel("Drag Ratio", dragRatio, 0.7f, 1.4f) { dragRatio = it }
+        SliderWithLabel("Floatiness", floatiness, 0f, 1f) { floatiness = it }
+        SliderWithLabel("Mass", mass, 0.5f, 2f) { mass = it }
 
-        // Corner pads: TopRight scales down to look like receding.
-        RetargetPads { newTarget, scaleTarget ->
-            target = newTarget
-            // quick, smooth scale change
-            scope.launch { scaleAnim.animateTo(scaleTarget, tween(240)) }
+        Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = {
+                                vt.resetTracking()
+                                controller.interrupt()
+                            },
+                            onDrag = { change, drag ->
+                                change.consume()
+                                vt.addPosition(change.uptimeMillis, change.position)
+                                controller.snapTo(controller.pos + drag)
+                            },
+                            onDragEnd = {
+                                val v = vt.calculateVelocity()
+                                controller.addImpulse(Offset(v.x, v.y))
+                                controller.start()
+                            },
+                            onDragCancel = { controller.start() }
+                        )
+                    }
+            )
+
+            RetargetPads { newTarget -> target = newTarget }
+
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .offset { IntOffset(controller.pos.x.roundToInt(), controller.pos.y.roundToInt()) }
+                    .background(Color.White)
+            )
         }
-
-        // Moving object with scale
-        Box(
-            Modifier
-                .size(56.dp)
-                .offset { IntOffset(controller.pos.x.roundToInt(), controller.pos.y.roundToInt()) }
-                .scale(scaleAnim.value)
-                .background(Color.White)
-        )
     }
 }
 
-// Four corner pads to set targets; TopRight applies smaller scale (recede)
 @Composable
-private fun RetargetPads(onPick: (Offset, Float) -> Unit) {
+private fun SliderWithLabel(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text("$label: ${"%.2f".format(value)}", color = Color.White)
+        Slider(value, onValueChange = onChange, valueRange = min..max)
+    }
+}
+
+@Composable
+private fun RetargetPads(onPick: (Offset) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wPx = constraints.maxWidth.toFloat()
         val hPx = constraints.maxHeight.toFloat()
-        fun place(alignment: Alignment, tx: Float, ty: Float, scaleTarget: Float) {
+        fun place(alignment: Alignment, tx: Float, ty: Float) {
             Box(
                 Modifier
                     .size(72.dp)
                     .align(alignment)
                     .background(Color(0x22FFFFFF))
                     .pointerInput(Unit) {
-                        detectTapGestures {
-                            onPick(Offset(tx * wPx, ty * hPx), scaleTarget)
-                        }
+                        detectTapGestures { onPick(Offset(tx * wPx, ty * hPx)) }
                     }
             )
         }
-        place(Alignment.TopStart,    0.1f, 0.1f, 1.0f) // normal
-        place(Alignment.TopEnd,      0.9f, 0.1f, 0.6f) // scale down (recede)
-        place(Alignment.BottomStart, 0.1f, 0.9f, 1.0f) // normal
-        place(Alignment.BottomEnd,   0.9f, 0.9f, 1.0f) // normal
+        place(Alignment.TopStart,    0.1f, 0.1f)
+        place(Alignment.TopEnd,      0.9f, 0.1f)
+        place(Alignment.BottomStart, 0.1f, 0.9f)
+        place(Alignment.BottomEnd,   0.9f, 0.9f)
     }
 }
 
 // --- helpers ---
+private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 private operator fun Offset.plus(o: Offset) = Offset(x + o.x, y + o.y)
 private operator fun Offset.minus(o: Offset) = Offset(x - o.x, y - o.y)
 private operator fun Offset.times(s: Float) = Offset(x * s, y * s)
-private operator fun Offset.div(s: Float) = Offset(x / s, y / s)
+private operator fun Offset.div(s: Float) = Offset(x / s)
