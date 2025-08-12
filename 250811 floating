@@ -15,6 +15,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
@@ -92,12 +93,12 @@ class SpatialController(
         val m = massKnob
 
         // Pulls (like stiffness), scaled by mass (F = m·a → a = F/m)
-        this.pullStrength        = (basePull * pullStrengthKnob) / m
+        this.pullStrength         = (basePull * pullStrengthKnob) / m
         this.slowdownPullStrength = (baseSlowdownPull * pullStrengthKnob) / m
 
         // Dampings (like damping ratio), scaled by 1/√m to stay near critical with mass changes
         val massDampScale = 1f / sqrt(m)
-        this.pullDamping        = (baseDamp * dragRatioKnob) * massDampScale
+        this.pullDamping         = (baseDamp * dragRatioKnob) * massDampScale
         this.slowdownPullDamping = (baseSlowdownDamp * dragRatioKnob) * massDampScale
         if (this.pullDamping < 2f) this.pullDamping = 2f
         if (this.slowdownPullDamping < 2.5f) this.slowdownPullDamping = 2.5f
@@ -303,6 +304,7 @@ fun SpatialRedirectableDemo() {
                     )
                 }
         ) {
+            // Center‑clustered pads (easier one‑hand reach)
             RetargetPads { newTarget -> target = newTarget }
 
             Box(
@@ -330,27 +332,45 @@ private fun SliderWithLabel(
     }
 }
 
-// Four corner pads to set new targets (demo)
+// Four pads clustered near center — larger for easier tapping
 @Composable
 private fun RetargetPads(onPick: (Offset) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wPx = constraints.maxWidth.toFloat()
         val hPx = constraints.maxHeight.toFloat()
-        fun place(alignment: Alignment, tx: Float, ty: Float) {
+        val density = LocalDensity.current
+
+        // Offset from screen center (fraction of total width/height)
+        val offsetFrac = 0.18f
+
+        fun place(offsetXFrac: Float, offsetYFrac: Float) {
             Box(
                 Modifier
-                    .size(72.dp)
-                    .align(alignment)
-                    .background(Color(0x22FFFFFF))
+                    .size(88.dp) // bigger hit area
+                    .align(Alignment.Center)
+                    .offset(
+                        x = (constraints.maxWidth * offsetXFrac / density.density).dp,
+                        y = (constraints.maxHeight * offsetYFrac / density.density).dp
+                    )
+                    .background(Color(0x33FFFFFF))
                     .pointerInput(Unit) {
-                        detectTapGestures { onPick(Offset(tx * wPx, ty * hPx)) }
+                        detectTapGestures {
+                            onPick(
+                                Offset(
+                                    wPx / 2f + wPx * offsetXFrac,
+                                    hPx / 2f + hPx * offsetYFrac
+                                )
+                            )
+                        }
                     }
             )
         }
-        place(Alignment.TopStart,    0.1f, 0.1f)
-        place(Alignment.TopEnd,      0.9f, 0.1f)
-        place(Alignment.BottomStart, 0.1f, 0.9f)
-        place(Alignment.BottomEnd,   0.9f, 0.9f)
+
+        // top-left, top-right, bottom-left, bottom-right — all near center
+        place(-offsetFrac, -offsetFrac)
+        place(+offsetFrac, -offsetFrac)
+        place(-offsetFrac, +offsetFrac)
+        place(+offsetFrac, +offsetFrac)
     }
 }
 
