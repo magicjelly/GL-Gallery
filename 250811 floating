@@ -1,5 +1,6 @@
 @file:Suppress("FunctionName")
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.foundation.background
@@ -26,10 +27,10 @@ import kotlin.math.*
  * Redirectable mid-flight (reads latest target every frame), interruptible (drag cancels loop).
  *
  * Primary knobs (spring-like):
- * - pullStrength: 0.5..1.5 (≈ stiffness). Higher = stronger pull to target.
- * - dragRatio:    0.7..1.4 (≈ dampingRatio). Higher = more damping, less glide.
- * - floatiness:   0.0..1.0. Higher = more “spacey” (drifty).
- * - mass:         0.5..2.0. Higher = heavier; accelerates/turns more slowly.
+ * - pullStrength: 0.5..1.5 (≈ stiffness)
+ * - dragRatio:    0.7..1.4 (≈ dampingRatio)
+ * - floatiness:   0.0..1.0 (spacey drift)
+ * - mass:         0.5..2.0 (inertia)
  */
 @Stable
 class SpatialController(
@@ -162,58 +163,113 @@ fun SpatialRedirectableDemo() {
     val scope = rememberCoroutineScope()
     val controller = remember { SpatialController(scope) }
 
-    // State for sliders
+    // Slider state
     var pullStrength by remember { mutableStateOf(1.0f) }
     var dragRatio by remember { mutableStateOf(1.0f) }
     var floatiness by remember { mutableStateOf(0.3f) }
     var mass by remember { mutableStateOf(1.0f) }
 
+    // Presets
+    data class Preset(val name: String, val pull: Float, val drag: Float, val flo: Float, val mass: Float)
+    val presets = listOf(
+        Preset("Crisp",     1.3f, 1.2f, 0.1f, 1.0f),
+        Preset("Balanced",  1.0f, 1.0f, 0.3f, 1.0f),
+        Preset("Floaty",    0.8f, 0.9f, 0.7f, 1.2f),
+    )
+    var selectedPreset by remember { mutableStateOf("Balanced") }
+    val eps = 0.01f
+    fun matches(p: Preset) =
+        abs(pullStrength - p.pull) < eps &&
+        abs(dragRatio - p.drag) < eps &&
+        abs(floatiness - p.flo) < eps &&
+        abs(mass - p.mass) < eps
+
+    // Apply knobs to controller
     LaunchedEffect(pullStrength, dragRatio, floatiness, mass) {
-        controller.applySpaceTuning(
-            pullStrength = pullStrength,
-            dragRatio = dragRatio,
-            floatiness = floatiness,
-            mass = mass
-        )
+        controller.applySpaceTuning(pullStrength, dragRatio, floatiness, mass)
+        // Auto-select Custom if sliders deviate from chosen preset
+        selectedPreset = presets.firstOrNull { matches(it) }?.name ?: "Custom"
     }
+
+    // Controls collapsible
+    var controlsExpanded by remember { mutableStateOf(true) }
 
     var target by remember { mutableStateOf(Offset(800f, 1200f)) }
     LaunchedEffect(target) { controller.setTarget(target); controller.start() }
 
     val vt = remember { VelocityTracker() }
 
-    Column(Modifier.fillMaxSize()) {
-        // Sliders UI
-        SliderWithLabel("Pull Strength", pullStrength, 0.5f, 1.5f) { pullStrength = it }
-        SliderWithLabel("Drag Ratio", dragRatio, 0.7f, 1.4f) { dragRatio = it }
-        SliderWithLabel("Floatiness", floatiness, 0f, 1f) { floatiness = it }
-        SliderWithLabel("Mass", mass, 0.5f, 2f) { mass = it }
+    Column(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
 
-        Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = {
-                                vt.resetTracking()
-                                controller.interrupt()
-                            },
-                            onDrag = { change, drag ->
-                                change.consume()
-                                vt.addPosition(change.uptimeMillis, change.position)
-                                controller.snapTo(controller.pos + drag)
-                            },
-                            onDragEnd = {
-                                val v = vt.calculateVelocity()
-                                controller.addImpulse(Offset(v.x, v.y))
-                                controller.start()
-                            },
-                            onDragCancel = { controller.start() }
-                        )
+        Row(
+            Modifier.fillMaxWidth().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Motion Controls", color = Color.White, modifier = Modifier.weight(1f))
+            TextButton(onClick = { controlsExpanded = !controlsExpanded }) {
+                Text(if (controlsExpanded) "Hide" else "Show", color = Color.White)
+            }
+        }
+
+        AnimatedVisibility(visible = controlsExpanded) {
+            Column {
+                SliderWithLabel("Pull Strength", pullStrength, 0.5f, 1.5f) { pullStrength = it }
+                SliderWithLabel("Drag Ratio",    dragRatio,    0.7f, 1.4f) { dragRatio = it }
+                SliderWithLabel("Floatiness",    floatiness,   0f,   1f   ) { floatiness = it }
+                SliderWithLabel("Mass",          mass,         0.5f, 2f   ) { mass = it }
+
+                // Preset Radios (+ Custom)
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("Quick Tuning", color = Color.White)
+                    presets.forEach { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = selectedPreset == p.name,
+                                onClick = {
+                                    selectedPreset = p.name
+                                    pullStrength = p.pull
+                                    dragRatio = p.drag
+                                    floatiness = p.flo
+                                    mass = p.mass
+                                }
+                            )
+                            Text(p.name, color = Color.White)
+                        }
                     }
-            )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = selectedPreset == "Custom",
+                            onClick = { selectedPreset = "Custom" } // keep current slider values
+                        )
+                        Text("Custom", color = Color.White)
+                    }
+                }
+                Divider(color = Color.White.copy(alpha = 0.1f))
+            }
+        }
 
+        Box(
+            Modifier.weight(1f).fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = {
+                            vt.resetTracking()
+                            controller.interrupt()
+                        },
+                        onDrag = { change, drag ->
+                            change.consume()
+                            vt.addPosition(change.uptimeMillis, change.position)
+                            controller.snapTo(controller.pos + drag)
+                        },
+                        onDragEnd = {
+                            val v = vt.calculateVelocity()
+                            controller.addImpulse(Offset(v.x, v.y))
+                            controller.start()
+                        },
+                        onDragCancel = { controller.start() }
+                    )
+                }
+        ) {
             RetargetPads { newTarget -> target = newTarget }
 
             Box(
@@ -226,14 +282,17 @@ fun SpatialRedirectableDemo() {
     }
 }
 
+// --- UI helpers ---
+
 @Composable
 private fun SliderWithLabel(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
         Text("$label: ${"%.2f".format(value)}", color = Color.White)
-        Slider(value, onValueChange = onChange, valueRange = min..max)
+        Slider(value = value, onValueChange = onChange, valueRange = min..max)
     }
 }
 
+// Four corner pads to set new targets (for demo)
 @Composable
 private fun RetargetPads(onPick: (Offset) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -257,9 +316,9 @@ private fun RetargetPads(onPick: (Offset) -> Unit) {
     }
 }
 
-// --- helpers ---
+// --- math helpers ---
 private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 private operator fun Offset.plus(o: Offset) = Offset(x + o.x, y + o.y)
 private operator fun Offset.minus(o: Offset) = Offset(x - o.x, y - o.y)
 private operator fun Offset.times(s: Float) = Offset(x * s, y * s)
-private operator fun Offset.div(s: Float) = Offset(x / s)
+private operator fun Offset.div(s: Float) = Offset(this.x / s, this.y / s)
