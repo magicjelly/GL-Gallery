@@ -26,7 +26,7 @@ import kotlin.math.*
 
 // -----------------------------------------------------------------------------
 // SpatialController with matched Depth (scale) controller.
-// Depth uses the SAME PD gains, smoothing, and clamps → scale bounce matches position.
+// Depth uses the SAME PD gains & smoothing as XY → scale bounce matches position.
 // -----------------------------------------------------------------------------
 @Stable
 class SpatialController(
@@ -37,24 +37,30 @@ class SpatialController(
     val pos: Offset get() = _pos.value
 
     // --- Motion tunables (beginner-friendly names) ---
-    var pullStrength = 12f            // px/s² per px to target. ↑ = stronger pull (snappier start).
-    var pullDamping = 2.6f            // damping while pulling. ↑ = less bounce, quicker stop.
-    var slowdownZoneRadius = 32f      // px distance where “slowdown zone” begins.
-    var slowdownPullStrength = 22f    // pull inside slowdown zone.
-    var slowdownPullDamping = 3.4f    // damping inside slowdown zone.
-    var maxAcceleration = 6000f       // px/s² acceleration cap.
-    var maxSpeed = 1800f              // px/s speed cap.
-    var backgroundDrag = 0f           // px/s² constant decel (always on).
-    var retargetSmoothnessHz = 6f     // Hz: how quickly internal target follows commanded target.
-    var maxFrameStepMs = 32f          // ms clamp for stability on jank frames.
+    var pullStrength = 12f            // px/s² per px to target
+    var pullDamping = 2.6f            // damping while pulling
+    var slowdownZoneRadius = 32f      // px where “slowdown zone” begins
+    var slowdownPullStrength = 22f    // pull inside slowdown zone
+    var slowdownPullDamping = 3.4f    // damping inside slowdown zone
+    var maxAcceleration = 6000f       // px/s² accel cap
+    var maxSpeed = 1800f              // px/s speed cap
+    var backgroundDrag = 0f           // px/s² constant decel (always on)
+    var retargetSmoothnessHz = 6f     // Hz smoothing for retarget
+    var maxFrameStepMs = 32f          // stability clamp for dt
 
-    // --- Depth (Z) ↔ scale mapping tunables ---
-    var depthPixelsForHalfScale = 600f   // +Z px → scale 0.5× at this distance
-    var minScale = 0.6f
-    var maxScale = 1.2f
-    var depthSlowdownZone = 32f          // slowdown zone for depth (px in Z)
+    // ----------------- [ADDED for scaling] Depth ↔ Scale params -----------------
+    /** Number of depth pixels that halves the scale (reference distance). */
+    var depthPixelsForHalfScale = 600f
 
-    // --- User-facing knobs (map → internals) ---
+    /** New safe scale clamps so large upscales (e.g., 4×) are visible. */
+    var minScale = 0.5f
+    var maxScale = 5.0f
+
+    /** Slowdown zone for depth (use same as XY by default). */
+    var depthSlowdownZone = 32f
+    // ---------------------------------------------------------------------------
+
+    // --- Designer knobs (map → internals) ---
     var pullStrengthKnob = 1.0f; private set
     var dragRatioKnob    = 1.0f; private set
     var floatinessKnob   = 0.3f; private set
@@ -65,12 +71,14 @@ class SpatialController(
     private var commandTarget = start
     private var displayTarget = start
 
-    // --- Depth (Z) state (observable so scale recomposes while animating) ---
-    var depth by mutableFloatStateOf(0f)   // px along “into-screen” axis
+    // ----------------- [ADDED for scaling] Depth state -----------------
+    // Depth along the “camera” axis in pixels (observable → recomposes scale per frame)
+    var depth by mutableFloatStateOf(0f)
         private set
     private var depthVel = 0f
     private var depthTarget = 0f
     private var depthDisplayTarget = 0f
+    // -------------------------------------------------------------------
 
     private var running = false
 
@@ -109,7 +117,7 @@ class SpatialController(
         // Floatiness: less drag, later slowdown, slower retarget smoothing
         backgroundDrag        = lerp(baseDragMax, 0f, floatinessKnob) / m
         slowdownZoneRadius    = lerp(28f, 44f, floatinessKnob)
-        depthSlowdownZone     = slowdownZoneRadius // same zone behavior in Z
+        depthSlowdownZone     = slowdownZoneRadius // [ADDED] keep same feel in Z
         retargetSmoothnessHz  = lerp(baseSmoothHz, baseSmoothHz * 1.6f, floatinessKnob)
 
         // Caps (mass-scaled)
@@ -121,17 +129,18 @@ class SpatialController(
         commandTarget = newTarget
         if (!running) displayTarget = newTarget
     }
+
+    // ----------------- [ADDED for scaling] Depth target setters -----------------
     fun setDepthTarget(zPx: Float) {
         depthTarget = zPx
         if (!running) depthDisplayTarget = zPx
     }
+    fun snapDepthTo(zPx: Float) { depth = zPx; depthVel = 0f }
+    fun addDepthImpulse(vz: Float) { depthVel += vz }
+    // ---------------------------------------------------------------------------
 
     fun snapTo(newPos: Offset) { scope.launch { _pos.snapTo(newPos); vel = Offset.Zero } }
-    fun snapDepthTo(zPx: Float) { depth = zPx; depthVel = 0f }
-
     fun addImpulse(v: Offset) { vel += v }
-    fun addDepthImpulse(vz: Float) { depthVel += vz }
-
     fun interrupt() { running = false }
 
     fun start() {
@@ -149,12 +158,12 @@ class SpatialController(
                 val dtMax = maxFrameStepMs / 1000f
                 if (dt > dtMax) dt = dtMax
 
-                // --- 1) Smooth retargets (XY & Z use the same smoothing) ---
+                // 1) Smooth retargets (XY & Z share the same smoothing)
                 val s = if (retargetSmoothnessHz <= 0f) 1f else (1f - exp(-retargetSmoothnessHz * dt))
                 displayTarget += (commandTarget - displayTarget) * s
                 depthDisplayTarget += (depthTarget - depthDisplayTarget) * s
 
-                // --- 2) XY PD update ---
+                // 2) XY PD update
                 val delta = displayTarget - _pos.value
                 val dist = delta.getDistance()
                 val kXY = if (dist < slowdownZoneRadius) slowdownPullStrength else pullStrength
@@ -174,7 +183,7 @@ class SpatialController(
                 if (sp > maxSpeed) vel *= (maxSpeed / sp)
                 _pos.snapTo(_pos.value + vel * dt)
 
-                // --- 3) Depth PD update (IDENTICAL logic to XY → matching bounce) ---
+                // 3) Depth PD update (IDENTICAL gains/logic → matching bounce)
                 val dz = depthDisplayTarget - depth
                 val dzAbs = abs(dz)
                 val kZ = if (dzAbs < depthSlowdownZone) slowdownPullStrength else pullStrength
@@ -189,20 +198,37 @@ class SpatialController(
                 depthVel += az * dt
                 val vZAbs = abs(depthVel)
                 if (vZAbs > maxSpeed) depthVel *= (maxSpeed / vZAbs)
-                depth += depthVel * dt // ← writes observable state → recomposes scale each frame
+                depth += depthVel * dt
+
+                // [OPTIONAL SAFETY] clamp extreme depth so scale stays within sane bounds
+                depth = depth.coerceIn(-4f * depthPixelsForHalfScale, 2f * depthPixelsForHalfScale)
             }
         }
     }
 
-    // Map current depth → scale with a perspective-like curve (clamped)
+    // ----------------- [CHANGED for scaling] Safe exponential mapping -----------------
+    // Old (problematic near depth = -half): scale = 1 / (1 + depth/half)
+    // New (monotonic, no singularity):      scale = 2^(-depth/half)
+    //  depth = +half   → 0.5×
+    //  depth =   0     → 1.0×
+    //  depth = -half   → 2.0×
+    //  depth = -2*half → 4.0×
     fun currentScale(): Float {
-        val raw = 1f / (1f + (depth / depthPixelsForHalfScale))
+        val raw = 2f.pow(-depth / depthPixelsForHalfScale)
         return raw.coerceIn(minScale, maxScale)
     }
+
+    // Convenience: compute required depth for a desired scale (so you can call setDepthTarget(depthForScale(4f)))
+    fun depthForScale(targetScale: Float): Float {
+        val s = targetScale.coerceIn(0.1f, 8f)
+        return - (ln(s) / ln(2f)) * depthPixelsForHalfScale
+    }
+    // -------------------------------------------------------------------------------
 }
 
 // -----------------------------------------------------------------------------
-// Demo (center-clustered pads). Top-right sets positive depth target → scale down.
+// Demo (center-clustered pads). Top-right → “into” screen (0.5×).
+// Bottom-right → “toward” screen (4×) to test large upscale without jumps.
 // -----------------------------------------------------------------------------
 @Composable
 fun SpatialRedirectableDemo() {
@@ -255,6 +281,7 @@ fun SpatialRedirectableDemo() {
                 SliderWithLabel("Drag Ratio",    dragRatioKnob,    0.7f, 1.4f) { dragRatioKnob = it }
                 SliderWithLabel("Floatiness",    floatinessKnob,   0f,   1f   ) { floatinessKnob = it }
                 SliderWithLabel("Mass",          massKnob,         0.5f, 2f   ) { massKnob = it }
+
                 // Quick tuning radios + Custom
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Text("Quick Tuning", color = Color.White)
@@ -274,10 +301,7 @@ fun SpatialRedirectableDemo() {
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(
-                            selected = selectedPreset == "Custom",
-                            onClick = { selectedPreset = "Custom" }
-                        )
+                        RadioButton(selected = selectedPreset == "Custom", onClick = { selectedPreset = "Custom" })
                         Text("Custom", color = Color.White)
                     }
                 }
@@ -305,18 +329,18 @@ fun SpatialRedirectableDemo() {
                     )
                 }
         ) {
-            // Center-clustered pads. Top-right → go "into screen" (positive depth).
+            // Pads:  TL → 1×, TR → 0.5× (into), BL → 1×, BR → 4× (toward)
             RetargetPads { padIndex, padPos ->
                 target = padPos
-                if (padIndex == 1) {
-                    controller.setDepthTarget(controller.depthPixelsForHalfScale) // ~0.5×
-                } else {
-                    controller.setDepthTarget(0f) // back to ~1.0×
+                when (padIndex) {
+                    1 -> controller.setDepthTarget(controller.depthForScale(0.5f)) // top-right: into screen
+                    3 -> controller.setDepthTarget(controller.depthForScale(4.0f)) // bottom-right: big toward screen
+                    else -> controller.setDepthTarget(controller.depthForScale(1.0f)) // others: flat
                 }
-                controller.start() // ensure loop is running so scale animates
+                controller.start() // ensure loop runs so scale animates
             }
 
-            // Moving object with matched-bounce scale
+            // Moving object with matched-bounce scale (no singularities)
             val scale = controller.currentScale()
             Box(
                 Modifier
@@ -373,9 +397,9 @@ private fun RetargetPads(onPick: (padIndex: Int, pos: Offset) -> Unit) {
             )
         }
         place(0, -offsetFrac, -offsetFrac) // top-left
-        place(1, +offsetFrac, -offsetFrac) // top-right  → depth in
+        place(1, +offsetFrac, -offsetFrac) // top-right  → 0.5×
         place(2, -offsetFrac, +offsetFrac) // bottom-left
-        place(3, +offsetFrac, +offsetFrac) // bottom-right
+        place(3, +offsetFrac, +offsetFrac) // bottom-right → 4×
     }
 }
 
