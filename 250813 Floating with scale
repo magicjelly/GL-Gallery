@@ -37,22 +37,22 @@ class SpatialController(
     val pos: Offset get() = _pos.value
 
     // --- Motion tunables (beginner-friendly names) ---
-    var pullStrength = 12f
-    var pullDamping = 2.6f
-    var slowdownZoneRadius = 32f
-    var slowdownPullStrength = 22f
-    var slowdownPullDamping = 3.4f
-    var maxAcceleration = 6000f
-    var maxSpeed = 1800f
-    var backgroundDrag = 0f
-    var retargetSmoothnessHz = 6f
-    var maxFrameStepMs = 32f
+    var pullStrength = 12f            // px/s² per px to target. ↑ = stronger pull (snappier start).
+    var pullDamping = 2.6f            // damping while pulling. ↑ = less bounce, quicker stop.
+    var slowdownZoneRadius = 32f      // px distance where “slowdown zone” begins.
+    var slowdownPullStrength = 22f    // pull inside slowdown zone.
+    var slowdownPullDamping = 3.4f    // damping inside slowdown zone.
+    var maxAcceleration = 6000f       // px/s² acceleration cap.
+    var maxSpeed = 1800f              // px/s speed cap.
+    var backgroundDrag = 0f           // px/s² constant decel (always on).
+    var retargetSmoothnessHz = 6f     // Hz: how quickly internal target follows commanded target.
+    var maxFrameStepMs = 32f          // ms clamp for stability on jank frames.
 
     // --- Depth (Z) ↔ scale mapping tunables ---
     var depthPixelsForHalfScale = 600f   // +Z px → scale 0.5× at this distance
     var minScale = 0.6f
     var maxScale = 1.2f
-    var depthSlowdownZone = 32f          // slowdown zone for depth (px in Z). Defaults similar to XY.
+    var depthSlowdownZone = 32f          // slowdown zone for depth (px in Z)
 
     // --- User-facing knobs (map → internals) ---
     var pullStrengthKnob = 1.0f; private set
@@ -65,8 +65,9 @@ class SpatialController(
     private var commandTarget = start
     private var displayTarget = start
 
-    // --- Internal Depth (Z) state (in "depth pixels") ---
-    var depth = 0f;         private set
+    // --- Depth (Z) state (observable so scale recomposes while animating) ---
+    var depth by mutableFloatStateOf(0f)   // px along “into-screen” axis
+        private set
     private var depthVel = 0f
     private var depthTarget = 0f
     private var depthDisplayTarget = 0f
@@ -108,7 +109,7 @@ class SpatialController(
         // Floatiness: less drag, later slowdown, slower retarget smoothing
         backgroundDrag        = lerp(baseDragMax, 0f, floatinessKnob) / m
         slowdownZoneRadius    = lerp(28f, 44f, floatinessKnob)
-        depthSlowdownZone     = slowdownZoneRadius // keep same zone behavior in Z
+        depthSlowdownZone     = slowdownZoneRadius // same zone behavior in Z
         retargetSmoothnessHz  = lerp(baseSmoothHz, baseSmoothHz * 1.6f, floatinessKnob)
 
         // Caps (mass-scaled)
@@ -153,7 +154,7 @@ class SpatialController(
                 displayTarget += (commandTarget - displayTarget) * s
                 depthDisplayTarget += (depthTarget - depthDisplayTarget) * s
 
-                // --- 2) XY PD update (unchanged) ---
+                // --- 2) XY PD update ---
                 val delta = displayTarget - _pos.value
                 val dist = delta.getDistance()
                 val kXY = if (dist < slowdownZoneRadius) slowdownPullStrength else pullStrength
@@ -173,7 +174,7 @@ class SpatialController(
                 if (sp > maxSpeed) vel *= (maxSpeed / sp)
                 _pos.snapTo(_pos.value + vel * dt)
 
-                // --- 3) Depth PD update (IDENTICAL gains/logic) ---
+                // --- 3) Depth PD update (IDENTICAL logic to XY → matching bounce) ---
                 val dz = depthDisplayTarget - depth
                 val dzAbs = abs(dz)
                 val kZ = if (dzAbs < depthSlowdownZone) slowdownPullStrength else pullStrength
@@ -188,7 +189,7 @@ class SpatialController(
                 depthVel += az * dt
                 val vZAbs = abs(depthVel)
                 if (vZAbs > maxSpeed) depthVel *= (maxSpeed / vZAbs)
-                depth += depthVel * dt
+                depth += depthVel * dt // ← writes observable state → recomposes scale each frame
             }
         }
     }
@@ -307,10 +308,12 @@ fun SpatialRedirectableDemo() {
             // Center-clustered pads. Top-right → go "into screen" (positive depth).
             RetargetPads { padIndex, padPos ->
                 target = padPos
-                when (padIndex) {
-                    1 -> controller.setDepthTarget(controller.depthPixelsForHalfScale) // top-right: ~0.5×
-                    else -> controller.setDepthTarget(0f)                              // others: 1.0×
+                if (padIndex == 1) {
+                    controller.setDepthTarget(controller.depthPixelsForHalfScale) // ~0.5×
+                } else {
+                    controller.setDepthTarget(0f) // back to ~1.0×
                 }
+                controller.start() // ensure loop is running so scale animates
             }
 
             // Moving object with matched-bounce scale
