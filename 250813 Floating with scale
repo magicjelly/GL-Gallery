@@ -1,0 +1,384 @@
+@file:Suppress("FunctionName")
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlin.math.*
+
+// -----------------------------------------------------------------------------
+// SpatialController with matched Depth (scale) controller.
+// Depth uses the SAME PD gains, smoothing, and clamps → scale bounce matches position.
+// -----------------------------------------------------------------------------
+@Stable
+class SpatialController(
+    private val scope: CoroutineScope,
+    start: Offset = Offset.Zero
+) {
+    private val _pos = Animatable(start, Offset.VectorConverter)
+    val pos: Offset get() = _pos.value
+
+    // --- Motion tunables (beginner-friendly names) ---
+    var pullStrength = 12f
+    var pullDamping = 2.6f
+    var slowdownZoneRadius = 32f
+    var slowdownPullStrength = 22f
+    var slowdownPullDamping = 3.4f
+    var maxAcceleration = 6000f
+    var maxSpeed = 1800f
+    var backgroundDrag = 0f
+    var retargetSmoothnessHz = 6f
+    var maxFrameStepMs = 32f
+
+    // --- Depth (Z) ↔ scale mapping tunables ---
+    var depthPixelsForHalfScale = 600f   // +Z px → scale 0.5× at this distance
+    var minScale = 0.6f
+    var maxScale = 1.2f
+    var depthSlowdownZone = 32f          // slowdown zone for depth (px in Z). Defaults similar to XY.
+
+    // --- User-facing knobs (map → internals) ---
+    var pullStrengthKnob = 1.0f; private set
+    var dragRatioKnob    = 1.0f; private set
+    var floatinessKnob   = 0.3f; private set
+    var massKnob         = 1.0f; private set
+
+    // --- Internal XY state ---
+    private var vel = Offset.Zero
+    private var commandTarget = start
+    private var displayTarget = start
+
+    // --- Internal Depth (Z) state (in "depth pixels") ---
+    var depth = 0f;         private set
+    private var depthVel = 0f
+    private var depthTarget = 0f
+    private var depthDisplayTarget = 0f
+
+    private var running = false
+
+    // ---------- Public API ----------
+    fun applySpaceTuning(
+        pullStrength: Float = this.pullStrengthKnob,
+        dragRatio: Float = this.dragRatioKnob,
+        floatiness: Float = this.floatinessKnob,
+        mass: Float = this.massKnob
+    ) {
+        pullStrengthKnob = pullStrength
+        dragRatioKnob = dragRatio
+        floatinessKnob = floatiness.coerceIn(0f, 1f)
+        massKnob = mass.coerceAtLeast(0.2f)
+
+        // Baselines from v1 feel
+        val basePull = 12f
+        val baseSlowdownPull = 22f
+        val baseDamp = 2.6f
+        val baseSlowdownDamp = 3.4f
+        val baseDragMax = 60f
+        val baseMaxAccel = 6000f
+        val baseMaxSpeed = 1800f
+        val baseSmoothHz = 6f
+        val m = massKnob
+
+        // Pulls (like stiffness), mass-scaled
+        pullStrength         = (basePull * pullStrengthKnob) / m
+        slowdownPullStrength = (baseSlowdownPull * pullStrengthKnob) / m
+
+        // Dampings, scaled by 1/√m
+        val massDampScale = 1f / sqrt(m)
+        pullDamping         = max(2f,  (baseDamp * dragRatioKnob) * massDampScale)
+        slowdownPullDamping = max(2.5f,(baseSlowdownDamp * dragRatioKnob) * massDampScale)
+
+        // Floatiness: less drag, later slowdown, slower retarget smoothing
+        backgroundDrag        = lerp(baseDragMax, 0f, floatinessKnob) / m
+        slowdownZoneRadius    = lerp(28f, 44f, floatinessKnob)
+        depthSlowdownZone     = slowdownZoneRadius // keep same zone behavior in Z
+        retargetSmoothnessHz  = lerp(baseSmoothHz, baseSmoothHz * 1.6f, floatinessKnob)
+
+        // Caps (mass-scaled)
+        maxAcceleration = (baseMaxAccel * pullStrengthKnob) / m
+        maxSpeed        = (baseMaxSpeed * (0.9f + 0.4f * floatinessKnob)) / sqrt(m)
+    }
+
+    fun setTarget(newTarget: Offset) {
+        commandTarget = newTarget
+        if (!running) displayTarget = newTarget
+    }
+    fun setDepthTarget(zPx: Float) {
+        depthTarget = zPx
+        if (!running) depthDisplayTarget = zPx
+    }
+
+    fun snapTo(newPos: Offset) { scope.launch { _pos.snapTo(newPos); vel = Offset.Zero } }
+    fun snapDepthTo(zPx: Float) { depth = zPx; depthVel = 0f }
+
+    fun addImpulse(v: Offset) { vel += v }
+    fun addDepthImpulse(vz: Float) { depthVel += vz }
+
+    fun interrupt() { running = false }
+
+    fun start() {
+        if (running) return
+        running = true
+        scope.launch {
+            var lastT = 0L
+            while (isActive && running) {
+                val now = withFrameNanos { it }
+                if (lastT == 0L) { lastT = now; continue }
+                var dt = (now - lastT) / 1_000_000_000f
+                lastT = now
+
+                // Stability clamp
+                val dtMax = maxFrameStepMs / 1000f
+                if (dt > dtMax) dt = dtMax
+
+                // --- 1) Smooth retargets (XY & Z use the same smoothing) ---
+                val s = if (retargetSmoothnessHz <= 0f) 1f else (1f - exp(-retargetSmoothnessHz * dt))
+                displayTarget += (commandTarget - displayTarget) * s
+                depthDisplayTarget += (depthTarget - depthDisplayTarget) * s
+
+                // --- 2) XY PD update (unchanged) ---
+                val delta = displayTarget - _pos.value
+                val dist = delta.getDistance()
+                val kXY = if (dist < slowdownZoneRadius) slowdownPullStrength else pullStrength
+                val cXY = if (dist < slowdownZoneRadius) slowdownPullDamping else pullDamping
+                var accel = delta * kXY - vel * cXY
+                if (backgroundDrag > 0f && vel != Offset.Zero) {
+                    val speed = vel.getDistance()
+                    if (speed > 1e-3f) {
+                        val drag = min(backgroundDrag, speed / dt)
+                        accel += (-vel / speed) * drag
+                    }
+                }
+                val aMag = accel.getDistance()
+                if (aMag > maxAcceleration) accel *= (maxAcceleration / aMag)
+                vel += accel * dt
+                val sp = vel.getDistance()
+                if (sp > maxSpeed) vel *= (maxSpeed / sp)
+                _pos.snapTo(_pos.value + vel * dt)
+
+                // --- 3) Depth PD update (IDENTICAL gains/logic) ---
+                val dz = depthDisplayTarget - depth
+                val dzAbs = abs(dz)
+                val kZ = if (dzAbs < depthSlowdownZone) slowdownPullStrength else pullStrength
+                val cZ = if (dzAbs < depthSlowdownZone) slowdownPullDamping else pullDamping
+                var az = dz * kZ - depthVel * cZ
+                if (backgroundDrag > 0f && abs(depthVel) > 1e-3f) {
+                    val drag = min(backgroundDrag, abs(depthVel) / dt)
+                    az += -sign(depthVel) * drag
+                }
+                val aZAbs = abs(az)
+                if (aZAbs > maxAcceleration) az *= (maxAcceleration / aZAbs)
+                depthVel += az * dt
+                val vZAbs = abs(depthVel)
+                if (vZAbs > maxSpeed) depthVel *= (maxSpeed / vZAbs)
+                depth += depthVel * dt
+            }
+        }
+    }
+
+    // Map current depth → scale with a perspective-like curve (clamped)
+    fun currentScale(): Float {
+        val raw = 1f / (1f + (depth / depthPixelsForHalfScale))
+        return raw.coerceIn(minScale, maxScale)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Demo (center-clustered pads). Top-right sets positive depth target → scale down.
+// -----------------------------------------------------------------------------
+@Composable
+fun SpatialRedirectableDemo() {
+    val scope = rememberCoroutineScope()
+    val controller = remember { SpatialController(scope) }
+
+    // Knobs
+    var pullStrengthKnob by remember { mutableStateOf(1.0f) }
+    var dragRatioKnob    by remember { mutableStateOf(1.0f) }
+    var floatinessKnob   by remember { mutableStateOf(0.3f) }
+    var massKnob         by remember { mutableStateOf(1.0f) }
+
+    // Presets
+    data class Preset(val name: String, val pull: Float, val drag: Float, val flo: Float, val mass: Float)
+    val presets = listOf(
+        Preset("Crisp",    1.30f, 1.20f, 0.10f, 1.00f),
+        Preset("Balanced", 1.00f, 1.00f, 0.30f, 1.00f),
+        Preset("Floaty",   0.80f, 0.90f, 0.70f, 1.20f),
+    )
+    var selectedPreset by remember { mutableStateOf("Balanced") }
+    val eps = 0.01f
+    fun matches(p: Preset) =
+        abs(pullStrengthKnob - p.pull) < eps &&
+        abs(dragRatioKnob    - p.drag) < eps &&
+        abs(floatinessKnob   - p.flo ) < eps &&
+        abs(massKnob         - p.mass) < eps
+
+    LaunchedEffect(pullStrengthKnob, dragRatioKnob, floatinessKnob, massKnob) {
+        controller.applySpaceTuning(pullStrengthKnob, dragRatioKnob, floatinessKnob, massKnob)
+        selectedPreset = presets.firstOrNull { matches(it) }?.name ?: "Custom"
+    }
+
+    var target by remember { mutableStateOf(Offset(800f, 1200f)) }
+    LaunchedEffect(target) { controller.setTarget(target); controller.start() }
+
+    val vt = remember { VelocityTracker() }
+
+    Column(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
+        // Controls (collapsible)
+        var controlsExpanded by remember { mutableStateOf(true) }
+        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Motion Controls", color = Color.White, modifier = Modifier.weight(1f))
+            TextButton(onClick = { controlsExpanded = !controlsExpanded }) {
+                Text(if (controlsExpanded) "Hide" else "Show", color = Color.White)
+            }
+        }
+        AnimatedVisibility(visible = controlsExpanded) {
+            Column {
+                SliderWithLabel("Pull Strength", pullStrengthKnob, 0.5f, 1.5f) { pullStrengthKnob = it }
+                SliderWithLabel("Drag Ratio",    dragRatioKnob,    0.7f, 1.4f) { dragRatioKnob = it }
+                SliderWithLabel("Floatiness",    floatinessKnob,   0f,   1f   ) { floatinessKnob = it }
+                SliderWithLabel("Mass",          massKnob,         0.5f, 2f   ) { massKnob = it }
+                // Quick tuning radios + Custom
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("Quick Tuning", color = Color.White)
+                    presets.forEach { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = selectedPreset == p.name,
+                                onClick = {
+                                    selectedPreset = p.name
+                                    pullStrengthKnob = p.pull
+                                    dragRatioKnob    = p.drag
+                                    floatinessKnob   = p.flo
+                                    massKnob         = p.mass
+                                }
+                            )
+                            Text(p.name, color = Color.White)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = selectedPreset == "Custom",
+                            onClick = { selectedPreset = "Custom" }
+                        )
+                        Text("Custom", color = Color.White)
+                    }
+                }
+                Divider(color = Color.White.copy(alpha = 0.1f))
+            }
+        }
+
+        // Interaction surface + object
+        Box(
+            Modifier.weight(1f).fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { vt.resetTracking(); controller.interrupt() },
+                        onDrag = { change, drag ->
+                            change.consume()
+                            vt.addPosition(change.uptimeMillis, change.position)
+                            controller.snapTo(controller.pos + drag)
+                        },
+                        onDragEnd = {
+                            val v = vt.calculateVelocity()
+                            controller.addImpulse(Offset(v.x, v.y))
+                            controller.start()
+                        },
+                        onDragCancel = { controller.start() }
+                    )
+                }
+        ) {
+            // Center-clustered pads. Top-right → go "into screen" (positive depth).
+            RetargetPads { padIndex, padPos ->
+                target = padPos
+                when (padIndex) {
+                    1 -> controller.setDepthTarget(controller.depthPixelsForHalfScale) // top-right: ~0.5×
+                    else -> controller.setDepthTarget(0f)                              // others: 1.0×
+                }
+            }
+
+            // Moving object with matched-bounce scale
+            val scale = controller.currentScale()
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .offset { IntOffset(controller.pos.x.roundToInt(), controller.pos.y.roundToInt()) }
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .background(Color.White)
+            )
+        }
+    }
+}
+
+// ---------- UI helpers ----------
+@Composable
+private fun SliderWithLabel(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    onChange: (Float) -> Unit
+) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text("$label: ${"%.2f".format(value)}", color = Color.White)
+        Slider(value = value, onValueChange = onChange, valueRange = min..max)
+    }
+}
+
+// Four pads clustered near center — returns (index, position)
+@Composable
+private fun RetargetPads(onPick: (padIndex: Int, pos: Offset) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wPx = constraints.maxWidth.toFloat()
+        val hPx = constraints.maxHeight.toFloat()
+        val density = LocalDensity.current
+        val offsetFrac = 0.18f
+        fun place(idx: Int, ox: Float, oy: Float) {
+            Box(
+                Modifier
+                    .size(88.dp)
+                    .align(Alignment.Center)
+                    .offset(
+                        x = (constraints.maxWidth * ox / density.density).dp,
+                        y = (constraints.maxHeight * oy / density.density).dp
+                    )
+                    .background(Color(0x33FFFFFF))
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            onPick(idx, Offset(wPx / 2f + wPx * ox, hPx / 2f + hPx * oy))
+                        }
+                    }
+            )
+        }
+        place(0, -offsetFrac, -offsetFrac) // top-left
+        place(1, +offsetFrac, -offsetFrac) // top-right  → depth in
+        place(2, -offsetFrac, +offsetFrac) // bottom-left
+        place(3, +offsetFrac, +offsetFrac) // bottom-right
+    }
+}
+
+// ---------- math ----------
+private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
+private operator fun Offset.plus(o: Offset) = Offset(x + o.x, y + o.y)
+private operator fun Offset.minus(o: Offset) = Offset(x - o.x, y - o.y)
+private operator fun Offset.times(s: Float) = Offset(x * s, y * s)
+private operator fun Offset.div(s: Float) = Offset(this.x / s, this.y / s)
