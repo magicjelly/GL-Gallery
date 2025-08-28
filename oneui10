@@ -1,70 +1,381 @@
-@RequiresApi(Build.VERSION_CODES.S)
-@Composable
-fun AnimatedGlowingBoxWithIcon() {
-    val glowColor = Color.Cyan
+@file:Suppress("UnusedImport")
 
-    // Infinite animation for glow effect
-    val transition = rememberInfiniteTransition(label = "GlowTransition")
-    val animatedGlowAlpha by transition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "Alpha"
-    )
-    val animatedGlowScale by transition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "Scale"
-    )
+package com.example.magnetism
 
-    Box(
-        modifier = Modifier
-            .size(120.dp)
-            .graphicsLayer {
-                // Animate glow dispersion using scale and alpha
-                scaleX = animatedGlowScale
-                scaleY = animatedGlowScale
-                renderEffect = RenderEffect
-                    .createBlurEffect(40f, 40f, Shader.TileMode.CLAMP)
-                    .asComposeRenderEffect()
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.isActive
+import kotlin.math.*
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   DATA + SIM
+   ──────────────────────────────────────────────────────────────────────────── */
+
+data class Magnet(
+    val id: Int,
+    var pos: Offset,                // base layout position (grid slot)
+    val A: Float = 1f,              // (kept for extensibility)
+    var sigma: Float = 160f,        // current spread (px)
+    val sigmaIdle: Float = 160f,    // idle spread
+    val sigmaPressed: Float = 100f  // spread when pressed
+)
+
+/** Simple overlap-based force model using Gaussian fields. */
+class MagnetSim(
+    private val magnets: List<Magnet>,
+    private val kAttr: Float = 28f,
+    private val kRep: Float = 34f,
+    private val fMax: Float = 1800f
+) {
+    private val baselineOverlap = HashMap<Long, Float>()
+
+    fun initBaseline() {
+        baselineOverlap.clear()
+        for (i in magnets.indices) for (j in i + 1 until magnets.size) {
+            baselineOverlap[key(i, j)] = overlap(magnets[i], magnets[j])
+        }
+    }
+
+    /** Compute net force on each magnet (based on deviation from baseline overlap). */
+    fun step(forcesOut: MutableMap<Int, Offset>) {
+        forcesOut.clear()
+        for (i in magnets.indices) {
+            var fx = 0f; var fy = 0f
+            val mi = magnets[i]
+            for (j in magnets.indices) if (i != j) {
+                val mj = magnets[j]
+                val dx = mj.pos.x - mi.pos.x
+                val dy = mj.pos.y - mi.pos.y
+                val d = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-3f)
+                if (d > 3f * max(mi.sigma, mj.sigma)) continue
+
+                val oNow = overlap(mi, mj)
+                val oBase = baselineOverlap[key(i, j)] ?: continue
+                val dO = oBase - oNow // >0: attract (pull together); <0: repel
+
+                val dirX = dx / d; val dirY = dy / d
+                val k = if (dO > 0f) kAttr else kRep
+                val f = (k * abs(dO)).coerceAtMost(fMax)
+                val s = if (dO >= 0f) +1f else -1f
+                fx += dirX * f * s
+                fy += dirY * f * s
             }
-            .background(glowColor.copy(alpha = animatedGlowAlpha), shape = RoundedCornerShape(16.dp)),
-        contentAlignment = Alignment.Center
-    )
+            forcesOut[mi.id] = Offset(fx, fy)
+        }
+    }
 
-    // Foreground: solid black box and icon
-    Box(
-        modifier = Modifier
-            .size(120.dp)
-            .background(Color.Black, shape = RoundedCornerShape(16.dp)),
-        contentAlignment = Alignment.Center
+    private fun overlap(a: Magnet, b: Magnet): Float {
+        val dx = a.pos.x - b.pos.x; val dy = a.pos.y - b.pos.y
+        val d2 = dx * dx + dy * dy
+        val s2 = a.sigma * a.sigma + b.sigma * b.sigma
+        return exp(-d2 / (2f * s2))
+    }
+
+    private fun key(i: Int, j: Int): Long {
+        val a = min(i, j); val b = max(i, j)
+        return (a.toLong() shl 32) or b.toLong()
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   DEBUG UI
+   ──────────────────────────────────────────────────────────────────────────── */
+
+enum class FieldViewMode { Combined, PerMagnet }
+
+private val magnetColors = listOf(
+    Color(0xFF5C9DFF), Color(0xFFFF7A7A), Color(0xFFFFC85C),
+    Color(0xFF74E0A6), Color(0xFFB78CFF), Color(0xFFFFA9DD),
+    Color(0xFF66E3FF), Color(0xFFA0F07A), Color(0xFFB0C7D1)
+)
+
+@Composable
+fun MagneticDebugToggle(show: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .padding(12.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0x6618181C))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        // Icon glow (also animated)
-        Box(
-            modifier = Modifier
-                .size(60.dp)
-                .graphicsLayer {
-                    scaleX = animatedGlowScale
-                    scaleY = animatedGlowScale
-                    renderEffect = RenderEffect
-                        .createBlurEffect(20f, 20f, Shader.TileMode.CLAMP)
-                        .asComposeRenderEffect()
-                }
-                .background(glowColor.copy(alpha = animatedGlowAlpha), shape = CircleShape)
-        )
+        Text("Field lines", color = Color.White)
+        Spacer(Modifier.width(8.dp))
+        Switch(checked = show, onCheckedChange = onToggle)
+    }
+}
 
-        // Static icon on top
-        Image(
-            painter = painterResource(id = R.drawable.your_icon),
-            contentDescription = null,
-            modifier = Modifier.size(36.dp)
+@Composable
+fun FieldModeToggle(mode: FieldViewMode, onChange: (FieldViewMode) -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0x6618181C))
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("View", color = Color.White)
+        Spacer(Modifier.width(8.dp))
+        SegmentedButton(
+            options = listOf("Combined", "Per-component"),
+            selectedIndex = if (mode == FieldViewMode.Combined) 0 else 1,
+            onSelect = { onChange(if (it == 0) FieldViewMode.Combined else FieldViewMode.PerMagnet) }
         )
+    }
+}
+
+@Composable
+private fun SegmentedButton(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit
+) {
+    Row(Modifier.clip(RoundedCornerShape(8.dp)).background(Color(0x331E1F26))) {
+        options.forEachIndexed { idx, label ->
+            val sel = idx == selectedIndex
+            Box(
+                Modifier
+                    .background(if (sel) Color(0xFF2A2B33) else Color.Transparent)
+                    .clickable { onSelect(idx) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text(label, color = Color.White, fontSize = 12.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal)
+            }
+        }
+    }
+}
+
+@Composable
+fun MagneticLegend(magnets: List<Magnet>, mode: FieldViewMode) {
+    if (mode != FieldViewMode.PerMagnet) return
+    Row(
+        Modifier
+            .padding(8.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0x6618181C))
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        magnets.forEachIndexed { idx, m ->
+            Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(magnetColors[idx % magnetColors.size])
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("#${m.id}", color = Color.White, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+/** Draw vector field arrows + per-magnet σ rings. */
+@Composable
+fun MagneticFieldOverlay(
+    magnets: List<Magnet>,
+    show: Boolean,
+    sizePx: IntSize,
+    mode: FieldViewMode = FieldViewMode.Combined,
+    cell: Int = 36,
+    arrowLen: Float = 14f,
+    ringSteps: Int = 3
+) {
+    if (!show) return
+    Canvas(Modifier.matchParentSize()) {
+        fun drawArrow(from: Offset, dir: Offset, color: Color) {
+            val d = dir.getDistance()
+            if (d < 1e-3f) return
+            val n = dir / d
+            val to = from + n * arrowLen
+            val base = color.copy(alpha = 0.33f)
+            drawLine(base, from, to, strokeWidth = 1f)
+            val left = to + (Offset(-n.y, n.x) * 3f) - n * 4f
+            val right = to + (Offset(n.y, -n.x) * 3f) - n * 4f
+            drawLine(base, to, left, strokeWidth = 1f)
+            drawLine(base, to, right, strokeWidth = 1f)
+        }
+
+        // Arrows
+        for (y in 0 until sizePx.height step cell) {
+            for (x in 0 until sizePx.width step cell) {
+                val p = Offset(x.toFloat(), y.toFloat())
+                when (mode) {
+                    FieldViewMode.Combined -> {
+                        var gx = 0f; var gy = 0f
+                        magnets.forEach { m ->
+                            val dx = m.pos.x - p.x; val dy = m.pos.y - p.y
+                            val d2 = dx * dx + dy * dy; val s2 = m.sigma * m.sigma
+                            val phi = kotlin.math.exp(-d2 / (2f * s2))
+                            gx += phi * (dx / s2); gy += phi * (dy / s2)
+                        }
+                        drawArrow(p, Offset(gx, gy), Color(0xFFA0C4FF))
+                    }
+                    FieldViewMode.PerMagnet -> {
+                        magnets.forEachIndexed { idx, m ->
+                            val dx = m.pos.x - p.x; val dy = m.pos.y - p.y
+                            val d2 = dx * dx + dy * dy; val s2 = m.sigma * m.sigma
+                            val phi = kotlin.math.exp(-d2 / (2f * s2))
+                            val gx = phi * (dx / s2); val gy = phi * (dy / s2)
+                            drawArrow(p, Offset(gx, gy), magnetColors[idx % magnetColors.size])
+                        }
+                    }
+                }
+            }
+        }
+
+        // σ rings
+        magnets.forEachIndexed { idx, m ->
+            repeat(ringSteps) { k ->
+                val r = (k + 1) * (m.sigma / ringSteps)
+                val col = if (mode == FieldViewMode.PerMagnet) magnetColors[idx % magnetColors.size] else Color(0xFFFFD479)
+                drawCircle(
+                    color = col.copy(alpha = if (k == ringSteps - 1) 0.5f else 0.2f),
+                    radius = r,
+                    center = m.pos,
+                    style = Stroke(width = if (k == ringSteps - 1) 2f else 1f)
+                )
+            }
+        }
+    }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   DEMO: 3×3 grid with center press changing σ; neighbors pull/repel
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@Composable
+fun MagneticGridDemo() {
+    // Build 3×3 grid of magnets (220px spacing; 160px cards)
+    val grid = remember {
+        (0 until 9).map { idx ->
+            val col = idx % 3; val row = idx / 3
+            Magnet(id = idx, pos = Offset(col * 220f, row * 220f))
+        }
+    }
+    val sim = remember { MagnetSim(grid) }
+    LaunchedEffect(Unit) { sim.initBaseline() }
+
+    // Position anims (each magnet animates toward a target affected by forces)
+    val anims = remember {
+        grid.associate { it.id to Animatable(it.pos, Offset.VectorConverter) }
+    }
+
+    // Center press morphs its σ (spread)
+    val center = grid[4]
+    val sigmaAnim = remember { Animatable(center.sigma) }
+    var pressed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pressed) {
+        val target = if (pressed) center.sigmaPressed else center.sigmaIdle
+        sigmaAnim.animateTo(
+            targetValue = target,
+            animationSpec = tween(
+                durationMillis = if (pressed) 140 else 160,
+                easing = if (pressed) { x -> 1f - (1f - x) * (1f - x) * (1f - x) }  // easeOutCubic
+                else { x -> x * x * x }                                              // easeInCubic
+            )
+        )
+    }
+    LaunchedEffect(sigmaAnim.value) { center.sigma = sigmaAnim.value }
+
+    // Debug overlay state
+    var showFields by remember { mutableStateOf(false) }
+    var mode by remember { mutableStateOf(FieldViewMode.Combined) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Physics loop: compute forces and retarget animations
+    LaunchedEffect(Unit) {
+        val forces = mutableMapOf<Int, Offset>()
+        while (isActive) {
+            sim.step(forces)
+            // Retarget with premium springs (near-critical)
+            forces.forEach { (id, F) ->
+                val m = grid.first { it.id == id }
+                val target = m.pos + (F * 0.004f) // small gain → subtle displacement
+                anims[id]!!.animateTo(
+                    target,
+                    animationSpec = spring(
+                        dampingRatio = 0.98f,
+                        stiffness = 320f
+                    )
+                )
+            }
+            // one tick per frame
+            withFrameNanos { /* no-op */ }
+        }
+    }
+
+    // UI
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .size(660.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color(0xFF0F1116))
+                .padding(24.dp)
+                .onSizeChanged { canvasSize = it }
+        ) {
+            // cards
+            grid.forEach { m ->
+                val pos by anims[m.id]!!.asState()
+                Box(
+                    Modifier
+                        .offset { IntOffset(pos.x.toInt(), pos.y.toInt()) }
+                        .size(160.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(if (m.id == 4) Color(0xFF4C7EFF) else Color(0xFF1E1F26))
+                        .pointerInput(Unit) {
+                            if (m.id == 4) detectTapGestures(
+                                onPress = {
+                                    pressed = true
+                                    tryAwaitRelease()
+                                    pressed = false
+                                }
+                            )
+                        }
+                )
+            }
+
+            // overlay
+            MagneticFieldOverlay(
+                magnets = grid,
+                show = showFields,
+                sizePx = canvasSize,
+                mode = mode
+            )
+        }
+
+        // controls
+        Column(Modifier.align(Alignment.TopEnd).padding(8.dp), horizontalAlignment = Alignment.End) {
+            MagneticDebugToggle(show = showFields, onToggle = { showFields = it })
+            Spacer(Modifier.height(8.dp))
+            FieldModeToggle(mode = mode, onChange = { mode = it })
+            MagneticLegend(magnets = grid, mode = mode)
+        }
     }
 }
