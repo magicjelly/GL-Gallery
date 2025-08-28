@@ -1,239 +1,99 @@
-@file:Suppress("FunctionName")
-
-package your.package.name
-
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.matchParentSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Painter
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.consume
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.sqrt
-
-/**
- * Netflix-like tilting card with natural reflection and drag control.
- * Drag on the tile to tilt; releasing springs it back to rest.
- */
-@Composable
-fun TiltReflectionTile(
-    modifier: Modifier = Modifier,
-    imagePainter: Painter,
-    cornerRadius: Dp = 16.dp,
-    maxTiltDeg: Float = 18f,
-    parallaxPx: Float = 18f,
-    specularStrength: Float = 0.55f,
-    baseElevationDp: Dp = 18.dp,
-) {
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
-
-    // Live drag state (simple, non-suspend)
-    var rotX by remember { mutableFloatStateOf(0f) }
-    var rotY by remember { mutableFloatStateOf(0f) }
-
-    // Spring-back animators used only on release
-    val animX = remember { Animatable(0f) }
-    val animY = remember { Animatable(0f) }
-
-    // Sensitivity (deg per px) — tweak to taste
-    val pxToDeg = 0.08f
-
-    // Drag → rotation mapping; on release, spring back using Animatable
-    val pointer = Modifier.pointerInput(Unit) {
-        detectDragGestures(
-            onDragStart = {
-                // If a spring is running, stop it so the user can take over
-                if (animX.isRunning || animY.isRunning) {
-                    scope.launch {
-                        animX.stop()
-                        animY.stop()
-                    }
-                }
-            },
-            onDragEnd = {
-                scope.launch {
-                    // Start springs from current rotX/rotY back to zero
-                    animX.snapTo(rotX)
-                    animY.snapTo(rotY)
-                    val spec = spring<Float>(
-                        stiffness = Spring.StiffnessLow,
-                        dampingRatio = 0.72f
-                    )
-                    animX.animateTo(0f, spec)
-                    animY.animateTo(0f, spec)
-                }
-            },
-            onDragCancel = {
-                scope.launch {
-                    animX.snapTo(rotX)
-                    animY.snapTo(rotY)
-                    val spec = spring<Float>(
-                        stiffness = Spring.StiffnessLow,
-                        dampingRatio = 0.72f
-                    )
-                    animX.animateTo(0f, spec)
-                    animY.animateTo(0f, spec)
-                }
-            }
-        ) { change, dragAmount ->
-            change.consume()
-            val (dx, dy) = dragAmount
-            rotX = (rotX + dy * pxToDeg).coerceIn(-maxTiltDeg, maxTiltDeg) // vertical drag -> X
-            rotY = (rotY - dx * pxToDeg).coerceIn(-maxTiltDeg, maxTiltDeg) // horizontal drag -> Y
-        }
-    }
-
-    // During spring-back, use animated values; else use live drag values
-    val drawRotX = if (animX.isRunning || animY.isRunning) animX.value else rotX
-    val drawRotY = if (animX.isRunning || animY.isRunning) animY.value else rotY
-
-    // Camera distance: larger -> less perspective exaggeration
-    val cameraDistancePx = with(density) { 16.dp.toPx() }
-
-    // Elevation grows a bit with tilt to fake deepening contact shadow
-    val tiltMag = sqrt(drawRotX * drawRotX + drawRotY * drawRotY)
-    val dynamicElevation = baseElevationDp + (tiltMag / maxTiltDeg * 8f).dp
-
-    // Parallax shift of the image (opposite the rotation for depth feel)
-    val imgTx = (-drawRotY / maxTiltDeg) * parallaxPx
-    val imgTy = (drawRotX / maxTiltDeg) * parallaxPx
-
-    // Reflection parameters from tilt
-    val nx = drawRotY / maxTiltDeg           // left/right normal component [-1..1]
-    val ny = -drawRotX / maxTiltDeg          // up/down normal component [-1..1]
-    val normalLen = max(1e-4f, sqrt(nx * nx + ny * ny))
-    val dirX = nx / normalLen
-    val dirY = ny / normalLen
-
-    // Strength scales with how much the surface "faces the light" (ny~up)
-    val dynamicSpecular = (0.25f + 0.75f * (ny * 0.5f + 0.5f)) * specularStrength
-
-    Box(
-        modifier
-            .graphicsLayer {
-                rotationX = drawRotX
-                rotationY = drawRotY
-                cameraDistance = cameraDistancePx
-                shadowElevation = with(density) { dynamicElevation.toPx() }
-                shape = shape
-                clip = true
-            }
-            .then(pointer)
-    ) {
-        // Poster image with subtle parallax and overscale
-        Image(
-            painter = imagePainter,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .matchParentSize()
-                .graphicsLayer {
-                    translationX = imgTx
-                    translationY = imgTy
-                    scaleX = 1.03f
-                    scaleY = 1.03f
-                }
-        )
-
-        // Moving light reflection overlay
-        ReflectionOverlay(
-            modifier = Modifier.matchParentSize(),
-            dirX = dirX,
-            dirY = dirY,
-            intensity = dynamicSpecular
-        )
-    }
-}
-
-/**
- * Natural-looking moving reflection:
- *  - a slim linear "sheen" band aligned to (dirX, dirY) with explicit stops
- *  - a soft radial hotspot near the band
- *  - a subtle vignette to ground edges while tilting
- */
 @Composable
 private fun ReflectionOverlay(
     modifier: Modifier,
     dirX: Float,
     dirY: Float,
-    intensity: Float
+    intensity: Float,
+    bandCurvature: Float = 0.18f,   // 0..0.35 : how much the band bows
+    bandWidthFrac: Float = 0.22f,   // 0..0.4  : thickness of the sheen
+    bandLengthFrac: Float = 1.35f   // 0.8..1.6: length of the sheen
 ) {
     val clamped = intensity.coerceIn(0f, 1f)
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
+        val minD = size.minDimension
         val center = Offset(w * 0.5f, h * 0.5f)
 
-        // Axis for the sweeping band
-        val axis = Offset(dirX, dirY)
-        val halfExtent = hypot(w, h) * 0.7f
-        val start = center - axis * halfExtent
-        val end = center + axis * halfExtent
+        // Unit direction of the light sweep
+        val nLen = max(1e-4f, sqrt(dirX * dirX + dirY * dirY))
+        val axis = Offset(dirX / nLen, dirY / nLen)
 
-        // Sheen band with explicit stops
-        val bandAlpha = 0.65f * clamped
-        val bandColors = listOf(
-            Color.White.copy(alpha = 0f),
-            Color.White.copy(alpha = bandAlpha * 0.15f),
-            Color.White.copy(alpha = bandAlpha),
-            Color.White.copy(alpha = bandAlpha * 0.15f),
-            Color.White.copy(alpha = 0f),
-        )
-        val bandStops = listOf(0.32f, 0.45f, 0.50f, 0.55f, 0.68f)
-        val colorStops = bandStops.zip(bandColors).toTypedArray()
+        // --- 1) Bowed elliptical sheen band ---------------------------------
+        // Build an elongated ellipse by scaling a circle, then rotate to axis.
+        // We draw THREE slightly offset ellipses along a shallow quadratic curve
+        // to get a natural "banana" highlight instead of a straight line.
+        val bandAlpha = 0.55f * clamped
+        val bandLen = hypot(w, h) * 0.5f * bandLengthFrac         // visual length
+        val bandRad = minD * bandWidthFrac                        // thickness
+        val pivot = center
 
+        // Curved path offsets (quadratic y = kx^2 style along the axis-normal)
+        val normal = Offset(-axis.y, axis.x)                      // 90° to axis
+        val segs = listOf(-0.28f, 0f, 0.28f)                      // 3 lobes
+        val weights = listOf(0.55f, 1.0f, 0.65f)                  // center brightest
+
+        segs.forEachIndexed { i, t ->
+            // Bow amount grows with |t|
+            val bow = bandCurvature * t * t * bandLen
+            val along = axis * (t * bandLen)
+            val across = normal * bow
+            val pos = pivot + along + across
+
+            withTransform({
+                translate(pos.x - pivot.x, pos.y - pivot.y)
+                rotate(
+                    degrees = Math.toDegrees(atan2(axis.y.toDouble(), axis.x.toDouble())).toFloat(),
+                    pivot = Offset.Zero
+                )
+                // Scale circle -> ellipse (lengthwise vs thickness)
+                scale(
+                    sx = (bandLen / bandRad),
+                    sy = 1f,
+                    pivot = Offset.Zero
+                )
+            }) {
+                // Draw a soft elliptical blob (from a radial gradient circle)
+                val r = bandRad
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colorStops = arrayOf(
+                            0.0f to Color.White.copy(alpha = bandAlpha * 0.85f * weights[i]),
+                            0.35f to Color.White.copy(alpha = bandAlpha * 0.55f * weights[i]),
+                            0.7f to Color.White.copy(alpha = bandAlpha * 0.20f * weights[i]),
+                            1.0f to Color.Transparent
+                        ),
+                        center = Offset.Zero,
+                        radius = r
+                    ),
+                    radius = r
+                )
+            }
+        }
+
+        // Optional very soft crossfade to remove any band edges (subtle fog)
         drawRect(
-            brush = Brush.linearGradient(
-                colorStops = colorStops,
-                start = start,
-                end = end
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.06f * clamped),
+                    Color.Transparent
+                ),
+                center = center,
+                radius = size.maxDimension * 0.9f
             ),
-            size = size
+            size = size,
+            blendMode = BlendMode.Screen
         )
 
-        // Specular hotspot near the band center
-        val hotspotCenter = center + axis * (size.minDimension * 0.05f)
-        val hotspotRadius = size.minDimension * 0.22f
-        val hotspotAlpha = 0.45f * clamped
-
+        // --- 2) Specular hotspot (kept, slightly tighter) -------------------
+        val hotspotCenter = center + axis * (minD * 0.06f)
+        val hotspotRadius = minD * 0.18f
+        val hotspotAlpha = 0.40f * clamped
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
                     Color.White.copy(alpha = hotspotAlpha),
-                    Color.White.copy(alpha = 0f)
+                    Color.Transparent
                 ),
                 center = hotspotCenter,
                 radius = hotspotRadius
@@ -242,37 +102,38 @@ private fun ReflectionOverlay(
             center = hotspotCenter
         )
 
-        // Soft vignette to keep edges grounded
-        val vignetteAlpha = 0.12f
+        // --- 3) Fresnel rim (edge brightening opposite light) ---------------
+        // Brighter on the edge facing the light direction; very subtle.
+        val sweepCenter = center
+        drawCircle(
+            brush = Brush.sweepGradient(
+                colors = listOf(
+                    // Start opposite the light (dim) → towards light (bright) → wrap
+                    Color.White.copy(alpha = 0.00f),
+                    Color.White.copy(alpha = 0.10f * clamped),
+                    Color.White.copy(alpha = 0.00f)
+                ),
+                center = sweepCenter
+            ),
+            radius = size.maxDimension * 0.54f,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = minD * 0.012f
+            ),
+            blendMode = BlendMode.Screen
+        )
+
+        // --- 4) Subtle vignette to ground edges ------------------------------
         drawRect(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    Color.Black.copy(alpha = 0f),
-                    Color.Black.copy(alpha = vignetteAlpha)
+                    Color.Transparent,
+                    Color.Black.copy(alpha = 0.12f)
                 ),
                 center = center,
-                radius = size.maxDimension * 0.9f
+                radius = size.maxDimension * 0.95f
             ),
             size = size,
             blendMode = BlendMode.Multiply
         )
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-private fun TiltReflectionTilePreview() {
-    MaterialTheme {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            TiltReflectionTile(
-                modifier = Modifier.size(width = 240.dp, height = 360.dp),
-                imagePainter = painterResource(id = android.R.drawable.ic_menu_gallery)
-            )
-        }
     }
 }
