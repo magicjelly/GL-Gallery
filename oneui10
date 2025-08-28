@@ -3,7 +3,7 @@
 package com.example.magnetism
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -37,62 +38,65 @@ import kotlin.math.*
 
 data class Magnet(
     val id: Int,
-    var pos: Offset,                // base layout position (grid slot)
-    val A: Float = 1f,              // (kept for extensibility)
-    var sigma: Float = 160f,        // current spread (px)
-    val sigmaIdle: Float = 160f,    // idle spread
-    val sigmaPressed: Float = 100f  // spread when pressed
+    val basePos: Offset,           // grid slot (doesn't change)
+    var sigma: Float,              // current spread (px)
+    val sigmaIdle: Float,
+    val sigmaPressed: Float
 )
 
-/** Simple overlap-based force model using Gaussian fields. */
+/** Overlap (Gaussian) based force model using live positions each frame. */
 class MagnetSim(
-    private val magnets: List<Magnet>,
+    private val count: Int,
     private val kAttr: Float = 28f,
     private val kRep: Float = 34f,
     private val fMax: Float = 1800f
 ) {
     private val baselineOverlap = HashMap<Long, Float>()
 
-    fun initBaseline() {
+    fun initBaseline(basePositions: List<Offset>, sigmas: List<Float>) {
         baselineOverlap.clear()
-        for (i in magnets.indices) for (j in i + 1 until magnets.size) {
-            baselineOverlap[key(i, j)] = overlap(magnets[i], magnets[j])
+        for (i in 0 until count) for (j in i + 1 until count) {
+            baselineOverlap[key(i, j)] = overlap(basePositions[i], sigmas[i], basePositions[j], sigmas[j])
         }
     }
 
-    /** Compute net force on each magnet (based on deviation from baseline overlap). */
-    fun step(forcesOut: MutableMap<Int, Offset>) {
-        forcesOut.clear()
-        for (i in magnets.indices) {
+    /** positions = live animated positions; sigmas = current spreads */
+    fun step(
+        positions: List<Offset>,
+        sigmas: List<Float>,
+        anchoredIds: Set<Int> = emptySet()
+    ): Map<Int, Offset> {
+        val out = HashMap<Int, Offset>(count)
+        for (i in 0 until count) {
+            if (i in anchoredIds) { out[i] = Offset.Zero; continue }
+            val pi = positions[i]; val si = sigmas[i]
             var fx = 0f; var fy = 0f
-            val mi = magnets[i]
-            for (j in magnets.indices) if (i != j) {
-                val mj = magnets[j]
-                val dx = mj.pos.x - mi.pos.x
-                val dy = mj.pos.y - mi.pos.y
-                val d = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-3f)
-                if (d > 3f * max(mi.sigma, mj.sigma)) continue
+            for (j in 0 until count) if (i != j) {
+                val pj = positions[j]; val sj = sigmas[j]
+                val dx = pj.x - pi.x; val dy = pj.y - pi.y
+                val d = hypot(dx, dy).coerceAtLeast(1e-3f)
+                if (d > 3f * max(si, sj)) continue
 
-                val oNow = overlap(mi, mj)
+                val oNow = overlap(pi, si, pj, sj)
                 val oBase = baselineOverlap[key(i, j)] ?: continue
-                val dO = oBase - oNow // >0: attract (pull together); <0: repel
+                val dO = oBase - oNow // >0 attract; <0 repel
 
-                val dirX = dx / d; val dirY = dy / d
                 val k = if (dO > 0f) kAttr else kRep
                 val f = (k * abs(dO)).coerceAtMost(fMax)
                 val s = if (dO >= 0f) +1f else -1f
-                fx += dirX * f * s
-                fy += dirY * f * s
+                fx += (dx / d) * f * s
+                fy += (dy / d) * f * s
             }
-            forcesOut[mi.id] = Offset(fx, fy)
+            out[i] = Offset(fx, fy)
         }
+        return out
     }
 
-    private fun overlap(a: Magnet, b: Magnet): Float {
-        val dx = a.pos.x - b.pos.x; val dy = a.pos.y - b.pos.y
-        val d2 = dx * dx + dy * dy
-        val s2 = a.sigma * a.sigma + b.sigma * b.sigma
-        return exp(-d2 / (2f * s2))
+    private fun overlap(pi: Offset, si: Float, pj: Offset, sj: Float): Float {
+        val dx = pi.x - pj.x; val dy = pi.y - pj.y
+        val d2 = dx*dx + dy*dy
+        val s2 = si*si + sj*sj
+        return kotlin.math.exp(-d2 / (2f * s2))
     }
 
     private fun key(i: Int, j: Int): Long {
@@ -206,7 +210,7 @@ fun MagneticFieldOverlay(
     ringSteps: Int = 3
 ) {
     if (!show) return
-    Canvas(Modifier.matchParentSize()) {
+    Canvas(Modifier.fillMaxSize()) { // avoid BoxScope requirement
         fun drawArrow(from: Offset, dir: Offset, color: Color) {
             val d = dir.getDistance()
             if (d < 1e-3f) return
@@ -227,8 +231,8 @@ fun MagneticFieldOverlay(
                 when (mode) {
                     FieldViewMode.Combined -> {
                         var gx = 0f; var gy = 0f
-                        magnets.forEach { m ->
-                            val dx = m.pos.x - p.x; val dy = m.pos.y - p.y
+                        magnets.forEachIndexed { _, m ->
+                            val dx = m.basePos.x - p.x; val dy = m.basePos.y - p.y
                             val d2 = dx * dx + dy * dy; val s2 = m.sigma * m.sigma
                             val phi = kotlin.math.exp(-d2 / (2f * s2))
                             gx += phi * (dx / s2); gy += phi * (dy / s2)
@@ -237,7 +241,7 @@ fun MagneticFieldOverlay(
                     }
                     FieldViewMode.PerMagnet -> {
                         magnets.forEachIndexed { idx, m ->
-                            val dx = m.pos.x - p.x; val dy = m.pos.y - p.y
+                            val dx = m.basePos.x - p.x; val dy = m.basePos.y - p.y
                             val d2 = dx * dx + dy * dy; val s2 = m.sigma * m.sigma
                             val phi = kotlin.math.exp(-d2 / (2f * s2))
                             val gx = phi * (dx / s2); val gy = phi * (dy / s2)
@@ -248,15 +252,14 @@ fun MagneticFieldOverlay(
             }
         }
 
-        // σ rings
+        // σ rings (use base positions for clarity)
         magnets.forEachIndexed { idx, m ->
             repeat(ringSteps) { k ->
                 val r = (k + 1) * (m.sigma / ringSteps)
                 val col = if (mode == FieldViewMode.PerMagnet) magnetColors[idx % magnetColors.size] else Color(0xFFFFD479)
                 drawCircle(
                     color = col.copy(alpha = if (k == ringSteps - 1) 0.5f else 0.2f),
-                    radius = r,
-                    center = m.pos,
+                    radius = r, center = m.basePos,
                     style = Stroke(width = if (k == ringSteps - 1) 2f else 1f)
                 )
             }
@@ -265,68 +268,90 @@ fun MagneticFieldOverlay(
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   DEMO: 3×3 grid with center press changing σ; neighbors pull/repel
+   DEMO: 3×3 grid with center press (σ shrink) → neighbors pull/repel
    ──────────────────────────────────────────────────────────────────────────── */
 
 @Composable
 fun MagneticGridDemo() {
-    // Build 3×3 grid of magnets (220px spacing; 160px cards)
-    val grid = remember {
+    val density = LocalDensity.current
+    val spacingPx = with(density) { 220.dp.toPx() }
+    val cardSize = 160.dp
+
+    // Build 3×3 magnets with base positions in px
+    val magnets = remember {
         (0 until 9).map { idx ->
-            val col = idx % 3; val row = idx / 3
-            Magnet(id = idx, pos = Offset(col * 220f, row * 220f))
+            val c = idx % 3; val r = idx / 3
+            val base = Offset(c * spacingPx, r * spacingPx)
+            val idle = 180f
+            val pressed = 80f
+            Magnet(
+                id = idx,
+                basePos = base,
+                sigma = idle,
+                sigmaIdle = idle,
+                sigmaPressed = pressed
+            )
         }
     }
-    val sim = remember { MagnetSim(grid) }
-    LaunchedEffect(Unit) { sim.initBaseline() }
 
-    // Position anims (each magnet animates toward a target affected by forces)
+    val centerId = 4
+    val center = magnets[centerId]
+
+    // Animatables for live positions (start at base)
     val anims = remember {
-        grid.associate { it.id to Animatable(it.pos, Offset.VectorConverter) }
+        magnets.associate { it.id to Animatable(it.basePos, Offset.VectorConverter) }
     }
 
-    // Center press morphs its σ (spread)
-    val center = grid[4]
-    val sigmaAnim = remember { Animatable(center.sigma) }
+    // Center press morphs σ; also scale for depth cue
     var pressed by remember { mutableStateOf(false) }
-
+    val centerSigmaAnim = remember { Animatable(center.sigma) }
     LaunchedEffect(pressed) {
         val target = if (pressed) center.sigmaPressed else center.sigmaIdle
-        sigmaAnim.animateTo(
+        centerSigmaAnim.animateTo(
             targetValue = target,
             animationSpec = tween(
                 durationMillis = if (pressed) 140 else 160,
-                easing = if (pressed) { x -> 1f - (1f - x) * (1f - x) * (1f - x) }  // easeOutCubic
-                else { x -> x * x * x }                                              // easeInCubic
+                easing = if (pressed) { x -> 1f - (1f - x).pow(3) } else { x -> x.pow(3) }
             )
         )
     }
-    LaunchedEffect(sigmaAnim.value) { center.sigma = sigmaAnim.value }
+    LaunchedEffect(centerSigmaAnim.value) { center.sigma = centerSigmaAnim.value }
+
+    val pressScale by animateFloatAsState(if (pressed) 0.92f else 1f, label = "pressScale")
 
     // Debug overlay state
     var showFields by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf(FieldViewMode.Combined) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // Physics loop: compute forces and retarget animations
+    // Physics sim (uses live positions)
+    val sim = remember { MagnetSim(count = magnets.size) }
     LaunchedEffect(Unit) {
-        val forces = mutableMapOf<Int, Offset>()
+        sim.initBaseline(
+            basePositions = magnets.map { it.basePos },
+            sigmas = magnets.map { it.sigmaIdle }
+        )
+    }
+
+    LaunchedEffect(Unit) {
         while (isActive) {
-            sim.step(forces)
-            // Retarget with premium springs (near-critical)
+            val positions = (0 until magnets.size).map { anims[it]!!.value }
+            val sigmas = magnets.map { it.sigma }
+            val forces = sim.step(
+                positions = positions,
+                sigmas = sigmas,
+                anchoredIds = if (pressed) setOf(centerId) else emptySet()
+            )
+            // Retarget all to basePos + displacement from forces
             forces.forEach { (id, F) ->
-                val m = grid.first { it.id == id }
-                val target = m.pos + (F * 0.004f) // small gain → subtle displacement
+                val base = magnets[id].basePos
+                val target = base + (F * 0.006f) // gain controls pull strength
                 anims[id]!!.animateTo(
                     target,
-                    animationSpec = spring(
-                        dampingRatio = 0.98f,
-                        stiffness = 320f
-                    )
+                    animationSpec = spring(dampingRatio = 0.98f, stiffness = 320f)
                 )
             }
-            // one tick per frame
-            withFrameNanos { /* no-op */ }
+            withFrameNanos { }
         }
     }
 
@@ -340,17 +365,31 @@ fun MagneticGridDemo() {
                 .padding(24.dp)
                 .onSizeChanged { canvasSize = it }
         ) {
-            // cards
-            grid.forEach { m ->
+            // 1) Overlay behind (so it never occludes cards)
+            MagneticFieldOverlay(
+                magnets = magnets,
+                show = showFields,
+                sizePx = canvasSize,
+                mode = mode
+            )
+
+            // 2) Cards on top (use live anim values)
+            magnets.forEach { m ->
                 val pos by anims[m.id]!!.asState()
+                val isCenter = m.id == centerId
+                val scale = if (isCenter) pressScale else 1f
                 Box(
                     Modifier
                         .offset { IntOffset(pos.x.toInt(), pos.y.toInt()) }
-                        .size(160.dp)
+                        .size(cardSize)
                         .clip(RoundedCornerShape(24.dp))
-                        .background(if (m.id == 4) Color(0xFF4C7EFF) else Color(0xFF1E1F26))
+                        .background(if (isCenter) Color(0xFF4C7EFF) else Color(0xFF1E1F26))
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
                         .pointerInput(Unit) {
-                            if (m.id == 4) detectTapGestures(
+                            if (isCenter) detectTapGestures(
                                 onPress = {
                                     pressed = true
                                     tryAwaitRelease()
@@ -360,22 +399,17 @@ fun MagneticGridDemo() {
                         }
                 )
             }
-
-            // overlay
-            MagneticFieldOverlay(
-                magnets = grid,
-                show = showFields,
-                sizePx = canvasSize,
-                mode = mode
-            )
         }
 
-        // controls
-        Column(Modifier.align(Alignment.TopEnd).padding(8.dp), horizontalAlignment = Alignment.End) {
+        // Controls
+        Column(
+            Modifier.align(Alignment.TopEnd).padding(8.dp),
+            horizontalAlignment = Alignment.End
+        ) {
             MagneticDebugToggle(show = showFields, onToggle = { showFields = it })
             Spacer(Modifier.height(8.dp))
             FieldModeToggle(mode = mode, onChange = { mode = it })
-            MagneticLegend(magnets = grid, mode = mode)
+            MagneticLegend(magnets = magnets, mode = mode)
         }
     }
 }
