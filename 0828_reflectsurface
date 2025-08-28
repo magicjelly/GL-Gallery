@@ -1,0 +1,255 @@
+@file:Suppress("FunctionName")
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import kotlin.math.*
+
+/**
+ * Netflix-like tilting card with natural reflection.
+ *
+ * @param modifier size/placement of the tile
+ * @param imagePainter your poster/thumbnail
+ * @param cornerRadius visual shape of the tile
+ * @param maxTiltDeg maximum rotation in degrees on each axis
+ * @param parallaxPx how much the image shifts (parallax) relative to tilt
+ * @param specularStrength [0..1] intensity of highlight overlay
+ * @param baseElevationDp shadow elevation while tilting
+ */
+@Composable
+fun TiltReflectionTile(
+    modifier: Modifier = Modifier,
+    imagePainter: Painter,
+    cornerRadius: Dp = 16.dp,
+    maxTiltDeg: Float = 18f,
+    parallaxPx: Float = 18f,
+    specularStrength: Float = 0.55f,
+    baseElevationDp: Dp = 18.dp,
+) {
+    val density = LocalDensity.current
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+
+    // Rotation state (degrees). X = tilt forward/back, Y = tilt left/right.
+    val rotX = remember { Animatable(0f) }
+    val rotY = remember { Animatable(0f) }
+
+    // Drag -> rotation mapping: pixels to degrees (tuned to feel natural).
+    // Positive dragY should tilt "down" (increase rotX), dragX to the right -> negative rotY.
+    val pxToDeg = remember(maxTiltDeg) { 0.08f } // tweak sensitivity (deg per px)
+
+    // On release, spring back to rest.
+    suspend fun springToRest() {
+        val spec = spring<Float>(
+            stiffness = Spring.StiffnessLow,
+            dampingRatio = 0.72f
+        )
+        rotX.animateTo(0f, spec)
+        rotY.animateTo(0f, spec)
+    }
+
+    // Gesture: drag anywhere on the tile to tilt.
+    val pointer = Modifier.pointerInput(Unit) {
+        detectDragGestures(
+            onDragStart = { /* no-op */ },
+            onDragEnd = { launch { springToRest() } },
+            onDragCancel = { launch { springToRest() } }
+        ) { change, dragAmount ->
+            change.consume()
+            val (dx, dy) = dragAmount
+            // Update instantly but clamp to max tilt.
+            val nextX = (rotX.value + dy * pxToDeg).coerceIn(-maxTiltDeg, maxTiltDeg)
+            val nextY = (rotY.value - dx * pxToDeg).coerceIn(-maxTiltDeg, maxTiltDeg)
+            rotX.snapTo(nextX)
+            rotY.snapTo(nextY)
+        }
+    }
+
+    // Camera distance: larger reduces perspective exaggeration.
+    val cameraDistancePx = with(density) { 16.dp.toPx() }
+
+    // Elevation grows a bit with tilt to fake contact shadow deepening.
+    val tiltMag = sqrt(rotX.value * rotX.value + rotY.value * rotY.value)
+    val dynamicElevation = baseElevationDp + (tiltMag / maxTiltDeg * 8f).dp
+
+    // Parallax shift of the image (opposite direction to rotation for depth feel).
+    val imgTx = (-rotY.value / maxTiltDeg) * parallaxPx
+    val imgTy = (rotX.value / maxTiltDeg) * parallaxPx
+
+    // Reflection parameters derived from tilt.
+    // Think of a "light direction" that comes from above the viewer.
+    // As you tilt, the band moves across the surface and slightly rotates.
+    val nx = rotY.value / maxTiltDeg          // left/right normal component [-1..1]
+    val ny = -rotX.value / maxTiltDeg         // up/down normal component [-1..1]
+    val normalLen = max(1e-4f, sqrt(nx*nx + ny*ny))
+    val dirX = nx / normalLen
+    val dirY = ny / normalLen
+
+    // Strength modulates with how much the surface faces the light (ny ~ facing up).
+    val dynamicSpecular = (0.25f + 0.75f * (ny * 0.5f + 0.5f)) * specularStrength
+
+    Box(
+        modifier
+            .graphicsLayer {
+                rotationX = rotX.value
+                rotationY = rotY.value
+                cameraDistance = cameraDistancePx
+                shadowElevation = with(density) { dynamicElevation.toPx() }
+                shape = shape
+                clip = true
+            }
+            .then(pointer)
+    ) {
+        // Image with slight parallax and subtle overscale to hide edges while translating
+        Image(
+            painter = imagePainter,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .matchParentSize()
+                .graphicsLayer {
+                    translationX = imgTx
+                    translationY = imgTy
+                    scaleX = 1.03f
+                    scaleY = 1.03f
+                }
+        )
+
+        // Reflection overlay
+        ReflectionOverlay(
+            modifier = Modifier.matchParentSize(),
+            dirX = dirX,
+            dirY = dirY,
+            intensity = dynamicSpecular
+        )
+    }
+}
+
+/**
+ * Draws a natural-looking moving light reflection made of:
+ * 1) a soft linear "sheen" band sweeping across the tile
+ * 2) a small radial specular hotspot near the band center
+ */
+@Composable
+private fun ReflectionOverlay(
+    modifier: Modifier,
+    dirX: Float,
+    dirY: Float,
+    intensity: Float
+) {
+    // guard against zero intensity
+    val clampedIntensity = intensity.coerceIn(0f, 1f)
+    if (clampedIntensity <= 0.01f) {
+        // nothing visible, but still keep composable cheap
+        Box(modifier = modifier)
+        return
+    }
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val center = Offset(w * 0.5f, h * 0.5f)
+
+        // Build a long gradient axis oriented by (dirX, dirY).
+        val bandHalfExtent = hypot(w, h) * 0.7f
+        val axis = Offset(dirX, dirY)
+        val start = center - axis * bandHalfExtent
+        val end = center + axis * bandHalfExtent
+
+        // Band thickness and sharpness tune the "Netflix" glassy sweep feeling.
+        val bandAlpha = 0.65f * clampedIntensity
+        val edgeAlpha = 0.0f
+
+        // The band is narrow near center, fading outwards.
+        val bandColors = listOf(
+            Color.White.copy(alpha = edgeAlpha),
+            Color.White.copy(alpha = bandAlpha * 0.15f),
+            Color.White.copy(alpha = bandAlpha),
+            Color.White.copy(alpha = bandAlpha * 0.15f),
+            Color.White.copy(alpha = edgeAlpha),
+        )
+        val bandStops = listOf(0.32f, 0.45f, 0.5f, 0.55f, 0.68f)
+
+        // Draw the sweeping band
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = bandColors,
+                start = start,
+                end = end,
+                tileMode = TileMode.Clamp
+            ),
+            size = size,
+            alpha = 1f
+        )
+
+        // Small specular hotspot that follows the band
+        val hotspotCenter = center + axis * (size.minDimension * 0.05f)
+        val hotspotRadius = size.minDimension * 0.22f
+        val hotspotAlpha = 0.45f * clampedIntensity
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = hotspotAlpha),
+                    Color.White.copy(alpha = 0f)
+                ),
+                center = hotspotCenter,
+                radius = hotspotRadius
+            ),
+            radius = hotspotRadius,
+            center = hotspotCenter
+        )
+
+        // A barely-there vignette to keep edges grounded while tilting
+        val vignetteAlpha = 0.12f
+        drawRect(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.Black.copy(alpha = 0f),
+                    Color.Black.copy(alpha = vignetteAlpha)
+                ),
+                center = center,
+                radius = size.maxDimension * 0.9f
+            ),
+            size = size,
+            blendMode = BlendMode.Multiply
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun TiltReflectionTilePreview() {
+    MaterialTheme {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            TiltReflectionTile(
+                modifier = Modifier
+                    .size(width = 240.dp, height = 360.dp),
+                imagePainter = painterResource(id = android.R.drawable.ic_menu_gallery)
+            )
+        }
+    }
+}
