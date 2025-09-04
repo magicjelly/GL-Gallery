@@ -1,3 +1,10 @@
+// Natural small-move behavior:
+// - Opposite-tail, axis-aware (X→width, Y→height)
+// - Critically damped travel (stiffness=50)
+// - For SHORT moves: strong gating so elongation stays subtle & slower
+// - For LONG moves: elongation grows and speeds up naturally
+// - Starts centered; full-screen tap; box=100.dp
+
 @file:Suppress("MagicNumber")
 
 import androidx.compose.animation.core.*
@@ -16,34 +23,46 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.pow
 
 @Composable
-fun ReactiveMotion_DistanceLinked() {
+fun ReactiveMotion_OppositeTail_Natural() {
     val objSize = 100.dp
     val density = LocalDensity.current
     val sizePx = with(density) { objSize.toPx() }
 
-    // Position spring: slow, critically damped
+    // Position: slow + critically damped
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val posSpring = spring<Offset>(dampingRatio = 1f, stiffness = 50f)
 
-    // Elongation in *pixels* (extra length), spring-matched to position
-    val elongPx = remember { Animatable(0f) }
-    val elongSpring = spring<Float>(dampingRatio = 1f, stiffness = 50f)
+    // Elongation (scale driver) with softer spring so small moves don’t snap
+    val stretch = remember { Animatable(1f) }
+    val stretchSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
 
-    // Cap: max extra length (px)
-    val MAX_ELONG_PX = with(density) { 140.dp.toPx() }
+    // Visibility & caps
+    val MAX_STRETCH = 1.8f
+    val MIN_SQUASH  = 1f / MAX_STRETCH
 
-    // Track the start of each move to measure distance c
+    // Gating & sensitivity
+    val VEL_FOR_MAX = 380f                  // base speed→stretch map
+    val AXIS_SHARPNESS = 2.2f               // axis pick
+    val CLOSE_EPS = with(density) { 14.dp.toPx() }
+    val D_FOR_MAX = with(density) { 260.dp.toPx() }  // total-move gate
+    val REM_SOFT = with(density) { 36.dp.toPx() }    // remaining-distance soft zone
+
+    // Filters
+    val VLPF = 0.6f
+
+    // Per-move state
     var moveStart by remember { mutableStateOf(Offset.Zero) }
-    var latestTarget by remember { mutableStateOf(Offset.Zero) }
+    var moveEnd by remember { mutableStateOf(Offset.Zero) }
+    var totalAxisDist by remember { mutableStateOf(1e-3f) } // avoid div0
 
-    // Velocity (for matching elongation velocity)
+    // Kinematics
     var lastP by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFilt by remember { mutableStateOf(Offset.Zero) }
-    val VLPF = 0.6f
 
     val scope = rememberCoroutineScope()
 
@@ -58,23 +77,29 @@ fun ReactiveMotion_DistanceLinked() {
                         tap.x.coerceIn(pad, size.width - pad),
                         tap.y.coerceIn(pad, size.height - pad)
                     )
-                    moveStart = pos.value              // reset displacement origin
-                    latestTarget = tgt
+                    moveStart = pos.value
+                    moveEnd = tgt
+
+                    // compute total axis distance for gating
+                    val dx = abs(tgt.x - moveStart.x)
+                    val dy = abs(tgt.y - moveStart.y)
+                    totalAxisDist = maxOf(dx, dy).coerceAtLeast(1e-3f)
+
                     scope.launch {
-                        pos.animateTo(tgt, posSpring)
-                        elongPx.animateTo(0f, elongSpring) // pin to rest at end
+                        pos.animateTo(tgt, animationSpec = posSpring)
+                        stretch.animateTo(1f, stretchSpring)
                     }
                 }
             }
     ) {
-        // Start centered
+        // center at start
         LaunchedEffect(maxWidth, maxHeight) {
-            val center = with(density) { Offset(maxWidth.toPx() / 2f, maxHeight.toPx() / 2f) }
-            pos.snapTo(center)
-            moveStart = center
+            val c = with(density) { Offset(maxWidth.toPx() / 2f, maxHeight.toPx() / 2f) }
+            pos.snapTo(c); moveStart = c; moveEnd = c
         }
 
-        // Compute 1:1 elongation = |displacement along dominant axis| (clamped)
+        // Drive stretch target with multi-gate:
+        //   1) speed map (linear→ease)  2) total distance gate  3) remaining distance gate  4) per-move displacement cap
         LaunchedEffect(Unit) {
             snapshotFlow { pos.value }.collect { p ->
                 val now = System.nanoTime()
@@ -84,75 +109,61 @@ fun ReactiveMotion_DistanceLinked() {
 
                 val dx = p.x - moveStart.x
                 val dy = p.y - moveStart.y
-                val xDominant = abs(dx) >= abs(dy)
+                val xDom = abs(dx) >= abs(dy)
+                val dispAxis = if (xDom) abs(dx) else abs(dy)
 
-                val c = if (xDominant) abs(dx) else abs(dy)                    // distance c
-                val targetElong = c.coerceAtMost(MAX_ELONG_PX)
+                val speed = hypot(vFilt.x, vFilt.y)
 
-                // Match rates: elong velocity = projection of v onto dominant axis (signed)
-                val vAxis = if (xDominant) abs(vFilt.x) else abs(vFilt.y)
+                // 1) speed→stretch base (visible but not extreme for small speeds)
+                val ts = (speed / VEL_FOR_MAX).coerceIn(0f, 1f)
+                val base = 1f + (MAX_STRETCH - 1f) * easeOut(ts)
 
-                elongPx.animateTo(
-                    targetValue = targetElong,
-                    animationSpec = elongSpring,
-                    initialVelocity = vAxis        // px/s → matches perceived rate
-                )
+                // 2) total distance gate (short moves ⇒ downscale stretch & its rate)
+                val gTotal = smoothstep(0f, D_FOR_MAX, totalAxisDist)
+
+                // 3) remaining distance gate (near target ⇒ return)
+                val remaining = (moveEnd - p).getDistance()
+                val gRemain = smoothstep(REM_SOFT, totalAxisDist, remaining)
+
+                // 4) geometric cap: prevent elongation exceeding fraction of total move
+                val fracCap = (dispAxis / totalAxisDist).coerceIn(0f, 1f) // 0→1 over the move
+                val geoCap = 1f + (MAX_STRETCH - 1f) * fracCap
+
+                val target = if (remaining < CLOSE_EPS) 1f
+                else minOf(base, geoCap) * gTotal * gRemain
+                    .coerceIn(1f, MAX_STRETCH)
+
+                stretch.animateTo(target, stretchSpring)
 
                 lastP = p; lastT = now
             }
         }
 
-        // Render with opposite-tail anchoring and fixed leading edge
+        // Render (opposite-tail, fixed leading edge)
         val center = pos.value
-        val dx = center.x - moveStart.x
-        val dy = center.y - moveStart.y
-        val xDom = abs(dx) >= abs(dy)
-        val signX = if (dx >= 0f) 1 else -1
-        val signY = if (dy >= 0f) 1 else -1
+        val vx = vFilt.x; val vy = vFilt.y
+        val ax = abs(vx); val ay = abs(vy)
+        val axP = ax.pow(AXIS_SHARPNESS); val ayP = ay.pow(AXIS_SHARPNESS)
+        val sum = (axP + ayP).coerceAtLeast(1e-3f)
+        val wx = axP / sum      // X dominance
+        val wy = 1f - wx        // Y dominance
+        val signX = if (vx >= 0f) 1f else -1f
+        val signY = if (vy >= 0f) 1f else -1f
 
-        val extra = elongPx.value  // px of extra length
-        val scaleX: Float
-        val scaleY: Float
-        val originX: Float
-        val originY: Float
-        val topLeftX: Float
-        val topLeftY: Float
+        val s = stretch.value.coerceIn(1f, MAX_STRETCH)
+        val inv = (1f / s).coerceIn(MIN_SQUASH, 1f)
+        val scaleX = inv * wy + s * wx
+        val scaleY = s * wy + inv * wx
 
-        if (xDom) {
-            // X → width = sizePx + extra; height stays constant (no squash)
-            scaleX = 1f + extra / sizePx
-            scaleY = 1f
-            originY = 0.5f
-            if (signX > 0) {
-                // moving right → keep RIGHT edge fixed → stretch LEFT
-                originX = 1f
-                val rightEdge = center.x + sizePx / 2f
-                topLeftX = rightEdge - sizePx
-            } else {
-                // moving left → keep LEFT edge fixed → stretch RIGHT
-                originX = 0f
-                val leftEdge = center.x - sizePx / 2f
-                topLeftX = leftEdge
-            }
-            topLeftY = center.y - sizePx / 2f
-        } else {
-            // Y → height = sizePx + extra; width stays constant
-            scaleY = 1f + extra / sizePx
-            scaleX = 1f
-            originX = 0.5f
-            if (signY > 0) {
-                // moving down → keep BOTTOM edge fixed → stretch UP
-                originY = 1f
-                val bottom = center.y + sizePx / 2f
-                topLeftY = bottom - sizePx
-            } else {
-                // moving up → keep TOP edge fixed → stretch DOWN
-                originY = 0f
-                val top = center.y - sizePx / 2f
-                topLeftY = top
-            }
-            topLeftX = center.x - sizePx / 2f
-        }
+        val (originX, topLeftX) = if (wx >= wy) {
+            if (signX > 0) { val right = center.x + sizePx / 2f; 1f to (right - sizePx) }
+            else            { val left  = center.x - sizePx / 2f; 0f to left }
+        } else 0.5f to (center.x - (sizePx * scaleX) / 2f)
+
+        val (originY, topLeftY) = if (wy > wx) {
+            if (signY > 0) { val bottom = center.y + sizePx / 2f; 1f to (bottom - sizePx) }
+            else            { val top    = center.y - sizePx / 2f; 0f to top }
+        } else 0.5f to (center.y - (sizePx * scaleY) / 2f)
 
         Box(
             modifier = Modifier
@@ -168,4 +179,10 @@ fun ReactiveMotion_DistanceLinked() {
                 .background(Color(0xFF1EB980))
         )
     }
+}
+
+// Helpers
+private fun easeOut(t: Float) = 1f - (1f - t) * (1f - t)
+private fun smoothstep(a: Float, b: Float, x: Float): Float {
+    val t = ((x - a) / (b - a)).coerceIn(0f, 1f); return t * t * (3 - 2 * t)
 }
