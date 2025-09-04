@@ -1,5 +1,6 @@
 // Axis rule: X-motion → WIDTH elongates; Y-motion → HEIGHT elongates
-// Slow travel: stiffness = 50f, critically damped
+// Slow travel: stiffness = 50f, critical damping
+// Starts at center of screen
 // Full-screen tap, 100.dp box, fixed orientation, no shadow/white
 
 @file:Suppress("MagicNumber")
@@ -23,30 +24,29 @@ import kotlin.math.hypot
 import kotlin.math.pow
 
 @Composable
-fun ReactiveMotion_AxisExact_Slow() {
+fun ReactiveMotion_AxisExact_Slow_Centered() {
     val objSize = 100.dp
-    val sizePx = with(LocalDensity.current) { objSize.toPx() }
+    val density = LocalDensity.current
+    val sizePx = with(density) { objSize.toPx() }
 
     // Position spring: stiffness 50, critical damping
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val posSpring = spring<Offset>(dampingRatio = 1f, stiffness = 50f)
 
-    // Deformation spring (snappy but smooth)
+    // Deformation spring
     val stretch = remember { Animatable(1f) }
     val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
 
     // Visible deformation
     val MAX_STRETCH = 2.0f
-    val MIN_SQUASH  = 1f / MAX_STRETCH
-    val VEL_FOR_MAX = 380f          // px/s for near-max stretch
-    val AXIS_SHARPNESS = 2.0f       // hard bias to dominant axis
-    val CLOSE_EPS = with(LocalDensity.current) { 18.dp.toPx() }
+    val MIN_SQUASH = 1f / MAX_STRETCH
+    val VEL_FOR_MAX = 380f
+    val AXIS_SHARPNESS = 2.0f
+    val CLOSE_EPS = with(density) { 18.dp.toPx() }
 
-    // Filters
     val VLPF = 0.55f
     val SLPF = 0.55f
 
-    // Kinematics
     var lastP by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFilt by remember { mutableStateOf(Offset.Zero) }
@@ -55,7 +55,13 @@ fun ReactiveMotion_AxisExact_Slow() {
     var latestTarget by remember { mutableStateOf(Offset.Zero) }
     var stretchTarget by remember { mutableStateOf(1f) }
 
-    // Drive deformation by SPEED (always visible, returns as it slows)
+    // Place box at center on first composition
+    LaunchedEffect(Unit) {
+        // Wait until layout gives us size
+        pos.snapTo(Offset.Zero) // will be replaced once we know screen size
+    }
+
+    // Observe pos for deformation
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
@@ -82,7 +88,7 @@ fun ReactiveMotion_AxisExact_Slow() {
 
     val scope = rememberCoroutineScope()
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF0E1116))
@@ -102,17 +108,21 @@ fun ReactiveMotion_AxisExact_Slow() {
             },
         contentAlignment = Alignment.TopStart
     ) {
-        // Axis mapping: X-dominant → width↑ ; Y-dominant → height↑
+        // Center initialization
+        LaunchedEffect(maxWidth, maxHeight) {
+            val center = Offset(maxWidth.toPx() / 2f, maxHeight.toPx() / 2f)
+            pos.snapTo(center)
+        }
+
+        // Axis mapping: X → width↑ ; Y → height↑
         val ax = abs(vFilt.x); val ay = abs(vFilt.y)
         val axP = ax.pow(AXIS_SHARPNESS); val ayP = ay.pow(AXIS_SHARPNESS)
         val sum = (axP + ayP).coerceAtLeast(1e-3f)
-        val wx = axP / sum              // weight for X dominance
-        val wy = 1f - wx                // weight for Y dominance
+        val wx = axP / sum; val wy = 1f - wx
 
         val s = stretch.value.coerceIn(1f, MAX_STRETCH)
         val inv = (1f / s).coerceIn(MIN_SQUASH, 1f)
 
-        // X-motion → scaleX = s, scaleY = inv; Y-motion → scaleY = s, scaleX = inv
         val scaleX = inv * wy + s * wx
         val scaleY = s * wy + inv * wx
 
