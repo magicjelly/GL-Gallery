@@ -167,5 +167,4 @@ fun ReactiveMotion_OppositeTail() {
         )
     }
 }
-
 private fun easeOut(t: Float) = 1f - (1f - t) * (1f - t)
