@@ -1,7 +1,6 @@
-// Axis rule: X-motion → WIDTH elongates; Y-motion → HEIGHT elongates
-// Slow travel: stiffness = 50f, critical damping
-// Starts at center of screen
-// Full-screen tap, 100.dp box, fixed orientation, no shadow/white
+// Fixes:
+// - Use toPx() (not ".topx") and call it inside a density scope
+// - Proper center init using BoxWithConstraints + LocalDensity
 
 @file:Suppress("MagicNumber")
 
@@ -10,7 +9,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -18,6 +16,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -29,15 +28,12 @@ fun ReactiveMotion_AxisExact_Slow_Centered() {
     val density = LocalDensity.current
     val sizePx = with(density) { objSize.toPx() }
 
-    // Position spring: stiffness 50, critical damping
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val posSpring = spring<Offset>(dampingRatio = 1f, stiffness = 50f)
 
-    // Deformation spring
     val stretch = remember { Animatable(1f) }
     val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
 
-    // Visible deformation
     val MAX_STRETCH = 2.0f
     val MIN_SQUASH = 1f / MAX_STRETCH
     val VEL_FOR_MAX = 380f
@@ -55,13 +51,6 @@ fun ReactiveMotion_AxisExact_Slow_Centered() {
     var latestTarget by remember { mutableStateOf(Offset.Zero) }
     var stretchTarget by remember { mutableStateOf(1f) }
 
-    // Place box at center on first composition
-    LaunchedEffect(Unit) {
-        // Wait until layout gives us size
-        pos.snapTo(Offset.Zero) // will be replaced once we know screen size
-    }
-
-    // Observe pos for deformation
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
@@ -105,16 +94,14 @@ fun ReactiveMotion_AxisExact_Slow_Centered() {
                         stretch.animateTo(1f, deformSpring)
                     }
                 }
-            },
-        contentAlignment = Alignment.TopStart
+            }
     ) {
-        // Center initialization
+        // Center on first layout
         LaunchedEffect(maxWidth, maxHeight) {
-            val center = Offset(maxWidth.toPx() / 2f, maxHeight.toPx() / 2f)
+            val center = with(density) { Offset(maxWidth.toPx() / 2f, maxHeight.toPx() / 2f) }
             pos.snapTo(center)
         }
 
-        // Axis mapping: X → width↑ ; Y → height↑
         val ax = abs(vFilt.x); val ay = abs(vFilt.y)
         val axP = ax.pow(AXIS_SHARPNESS); val ayP = ay.pow(AXIS_SHARPNESS)
         val sum = (axP + ayP).coerceAtLeast(1e-3f)
@@ -123,8 +110,8 @@ fun ReactiveMotion_AxisExact_Slow_Centered() {
         val s = stretch.value.coerceIn(1f, MAX_STRETCH)
         val inv = (1f / s).coerceIn(MIN_SQUASH, 1f)
 
-        val scaleX = inv * wy + s * wx
-        val scaleY = s * wy + inv * wx
+        val scaleX = inv * wy + s * wx      // X motion → width↑
+        val scaleY = s * wy + inv * wx      // Y motion → height↑
 
         Box(
             modifier = Modifier
