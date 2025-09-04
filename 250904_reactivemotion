@@ -1,5 +1,5 @@
-// Acceleration-driven elongation (accelerate → stretch, decelerate → return)
-// Axis-aware: moving in Y → widen (scaleX↑), moving in X → heighten (scaleY↑)
+// Significantly visible elongation: big stretch/squash + snappier accel detection.
+// Axis-aware (Y → width↑, X → height↑). Full-screen tap. Box = 100.dp.
 
 @file:Suppress("MagicNumber")
 
@@ -22,83 +22,82 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.pow
 
 @Composable
-fun ReactiveMotion_AccelAware() {
+fun ReactiveMotion_BigElongation() {
     val density = LocalDensity.current
     val objSize = 100.dp
     val sizePx = with(density) { objSize.toPx() }
 
-    // Slow travel; slight overdamp
+    // Snappier travel so acceleration is noticeable, but still smooth.
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
-    val posSpring = spring<Offset>(dampingRatio = 1.05f, stiffness = Spring.StiffnessVeryLow)
+    val posSpring = spring<Offset>(
+        dampingRatio = 0.9f,
+        stiffness = Spring.StiffnessLow
+    )
 
-    // Smooth, quick deformation that can finish by arrival
+    // Deformation spring (smooth, quick)
     val stretch = remember { Animatable(1f) }
-    val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
+    val deformSpring = spring<Float>(
+        dampingRatio = 1.05f,
+        stiffness = Spring.StiffnessMedium
+    )
 
-    val MAX_STRETCH = 1.25f
-    val MIN_SQUASH  = 1f / MAX_STRETCH
+    // >>> Big, obvious deformation caps <<<
+    val MAX_STRETCH = 1.9f       // up to ~2x along main axis
+    val MIN_SQUASH  = 0.52f      // ~0.5x on the other axis (area-ish preserved)
+    // Sensitivity (larger effect, easier to trigger)
+    val VLPF = 0.55f             // velocity filter
+    val SLPF = 0.6f              // speed filter
+    val DS_FOR_MAX = 350f        // ds/dt for near-max stretch (lower = more responsive)
+    val AXIS_SHARPNESS = 2.2f    // >1 biases hard to dominant axis
+    val VEL_EPS = 2f
+    val CLOSE_EPS = with(density) { 16.dp.toPx() }
 
-    // Normalization constants
-    val ACC_FOR_MAX = 3000f       // px/s^2 for near-max stretch
-    val VEL_EPS = 10f             // px/s to avoid noisy direction at near-stop
-    val CLOSE_EPS = with(density) { 18.dp.toPx() }
-
-    // Filters
-    val VLPF = 0.9f               // velocity low-pass
-    val ALPF = 0.85f              // acceleration low-pass
-
-    // State for kinematics
+    // Kinematics state
     var lastP by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFilt by remember { mutableStateOf(Offset.Zero) }
-    var vFiltPrev by remember { mutableStateOf(Offset.Zero) }
-    var aFilt by remember { mutableStateOf(Offset.Zero) }
+    var speedFilt by remember { mutableStateOf(0f) }
+    var lastSpeedFilt by remember { mutableStateOf(0f) }
 
-    // Targets
     var latestTarget by remember { mutableStateOf(Offset.Zero) }
     var stretchTarget by remember { mutableStateOf(1f) }
 
-    // Observe position → update v, a, and stretch target based on ACCELERATION
+    // Compute speed & ds/dt (acceleration of speed)
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
             val dt = (now - lastT).coerceAtLeast(1_000_000L) / 1e9f
 
-            // velocity
             val v = (p - lastP) * (1f / dt)
             vFilt = vFilt * VLPF + v * (1f - VLPF)
 
-            // acceleration (from filtered velocity)
-            val aRaw = (vFilt - vFiltPrev) * (1f / dt)
-            aFilt = aFilt * ALPF + aRaw * (1f - ALPF)
-
-            // scalar accel along motion direction (+ accelerating, - decelerating)
             val speed = hypot(vFilt.x, vFilt.y)
-            val vhat = if (speed > VEL_EPS) Offset(vFilt.x / speed, vFilt.y / speed) else Offset.Zero
-            val scalarAccel = aFilt.x * vhat.x + aFilt.y * vhat.y
+            val sPrev = speedFilt
+            speedFilt = sPrev * SLPF + speed * (1f - SLPF)
 
-            // Map accel→stretch: only positive accel stretches; negative accel returns to 1
-            val accelT = (scalarAccel / ACC_FOR_MAX).coerceIn(0f, 1f)
-            val accelStretch = 1f + (MAX_STRETCH - 1f) * easeOutQuad(accelT)
+            val dsdt = (speedFilt - lastSpeedFilt) / dt // >0 accelerating
+
+            // Map acceleration → stretch (big, obvious)
+            val t = (dsdt / DS_FOR_MAX).coerceIn(0f, 1f)
+            val accelStretch = 1f + (MAX_STRETCH - 1f) * (1f - (1f - t) * (1f - t))
 
             val remaining = (latestTarget - p).getDistance()
             val target =
-                if (remaining < CLOSE_EPS) 1f            // finish exactly at arrival
-                else if (scalarAccel <= 0f) 1f           // decelerating → return
-                else accelStretch                        // accelerating → elongate
+                if (remaining < CLOSE_EPS) 1f
+                else if (dsdt <= 0f) 1f
+                else accelStretch
 
-            if (kotlin.math.abs(target - stretchTarget) > 0.006f) stretchTarget = target
+            if (kotlin.math.abs(target - stretchTarget) > 0.003f) stretchTarget = target
 
-            vFiltPrev = vFilt
+            lastSpeedFilt = speedFilt
             lastP = p; lastT = now
         }
     }
 
-    // Smoothly follow stretch target
+    // Follow stretch target smoothly
     LaunchedEffect(stretchTarget) {
         stretch.animateTo(stretchTarget, deformSpring)
     }
@@ -119,23 +118,23 @@ fun ReactiveMotion_AccelAware() {
                     latestTarget = tgt
                     scope.launch {
                         pos.animateTo(tgt, animationSpec = posSpring, initialVelocity = vFilt)
-                        // safety pin
-                        stretch.animateTo(1f, deformSpring)
+                        stretch.animateTo(1f, deformSpring) // ensure rest at end
                     }
                 }
             },
         contentAlignment = Alignment.TopStart
     ) {
-        // Axis-aware elongation (based on |vx| vs |vy|)
+        // Axis dominance with sharpness (soft-argmax)
         val ax = abs(vFilt.x); val ay = abs(vFilt.y)
-        val denom = (ax + ay).coerceAtLeast(1e-3f)
-        val wy = ay / denom // 1 → Y-dominant ⇒ widen; 0 → X-dominant ⇒ heighten
+        val axP = ax.pow(AXIS_SHARPNESS); val ayP = ay.pow(AXIS_SHARPNESS)
+        val denom = (axP + ayP).coerceAtLeast(1e-3f)
+        val wy = ayP / denom // →1 if Y dominates (widen), →0 if X dominates (heighten)
 
-        val s = stretch.value
-        val inv = (1f / s).coerceAtLeast(MIN_SQUASH)
+        val s = stretch.value.coerceIn(1f, MAX_STRETCH)
+        val inv = (1f / s).coerceIn(MIN_SQUASH, 1f)
 
-        val scaleX = lerp(inv, s, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // Y move → width↑
-        val scaleY = lerp(s, inv, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // X move → height↑
+        val scaleX = lerp(inv, s, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // Y → width↑
+        val scaleY = lerp(s, inv, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // X → height↑
 
         Box(
             modifier = Modifier
@@ -144,7 +143,7 @@ fun ReactiveMotion_AccelAware() {
                     IntOffset((o.x - sizePx / 2f).toInt(), (o.y - sizePx / 2f).toInt())
                 }
                 .size(objSize)
-                .background(Color(0xFF2196F3))
+                .background(Color(0xFF1EB980)) // high-contrast teal
                 .graphicsLayer {
                     rotationZ = 0f
                     shadowElevation = 0f
@@ -156,4 +155,3 @@ fun ReactiveMotion_AccelAware() {
 }
 
 private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
-private fun easeOutQuad(t: Float) = 1f - (1f - t) * (1f - t)
