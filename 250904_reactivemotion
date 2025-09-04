@@ -1,8 +1,6 @@
-// ✅ Visible elongation (guaranteed):
-// - Elongates by SPEED (always), with extra boost on ACCELERATION (if any).
-// - Y-move → width ↑ ; X-move → height ↑
-// - Smooth return that finishes at arrival
-// - Full-screen tap; 100.dp square; fixed orientation; no shadow
+// Axis rule: X-motion → WIDTH elongates; Y-motion → HEIGHT elongates
+// Slow travel: stiffness = 50f, critically damped
+// Full-screen tap, 100.dp box, fixed orientation, no shadow/white
 
 @file:Suppress("MagicNumber")
 
@@ -22,88 +20,62 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.pow
 
 @Composable
-fun ReactiveMotion_Visible() {
-    val density = LocalDensity.current
+fun ReactiveMotion_AxisExact_Slow() {
     val objSize = 100.dp
-    val sizePx = with(density) { objSize.toPx() }
+    val sizePx = with(LocalDensity.current) { objSize.toPx() }
 
-    // Put the object near center initially so motion produces visible velocity
-    val screenCenter = remember { mutableStateOf<Offset?>(null) }
-
+    // Position spring: stiffness 50, critical damping
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
-    val posSpring = spring<Offset>(dampingRatio = 0.94f, stiffness = Spring.StiffnessMediumLow)
+    val posSpring = spring<Offset>(dampingRatio = 1f, stiffness = 50f)
 
+    // Deformation spring (snappy but smooth)
     val stretch = remember { Animatable(1f) }
-    val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessMedium)
+    val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
 
-    // Make effects BIG and easy to trigger
-    val MAX_STRETCH = 2.2f
+    // Visible deformation
+    val MAX_STRETCH = 2.0f
     val MIN_SQUASH  = 1f / MAX_STRETCH
-    val VEL_FOR_MAX = 450f        // px/s → hits near max stretch
-    val ACC_FOR_BOOST = 600f      // px/s^2 → adds extra 0.2 stretch
-    val BOOST = 0.2f              // extra stretch when accelerating
-    val CLOSE_EPS = with(density) { 18.dp.toPx() }
+    val VEL_FOR_MAX = 380f          // px/s for near-max stretch
+    val AXIS_SHARPNESS = 2.0f       // hard bias to dominant axis
+    val CLOSE_EPS = with(LocalDensity.current) { 18.dp.toPx() }
 
     // Filters
-    val VLPF = 0.5f   // velocity smoothing
-    val SLPF = 0.5f   // speed smoothing
-    val ALPF = 0.6f   // acceleration smoothing
+    val VLPF = 0.55f
+    val SLPF = 0.55f
 
     // Kinematics
     var lastP by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFilt by remember { mutableStateOf(Offset.Zero) }
     var speedFilt by remember { mutableStateOf(0f) }
-    var lastSpeedFilt by remember { mutableStateOf(0f) }
-    var aFilt by remember { mutableStateOf(0f) } // scalar accel along motion
 
     var latestTarget by remember { mutableStateOf(Offset.Zero) }
     var stretchTarget by remember { mutableStateOf(1f) }
 
-    // Drive deformation target by SPEED (base) + ACCEL (boost). Always visible.
+    // Drive deformation by SPEED (always visible, returns as it slows)
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
             val dt = (now - lastT).coerceAtLeast(1_000_000L) / 1e9f
-
             val v = (p - lastP) * (1f / dt)
             vFilt = vFilt * VLPF + v * (1f - VLPF)
 
             val speed = hypot(vFilt.x, vFilt.y)
-            val sPrev = speedFilt
-            speedFilt = sPrev * SLPF + speed * (1f - SLPF)
+            speedFilt = speedFilt * SLPF + speed * (1f - SLPF)
 
-            val dsdt = (speedFilt - lastSpeedFilt) / dt
-            aFilt = aFilt * ALPF + dsdt * (1f - ALPF)
+            var target = 1f + (MAX_STRETCH - 1f) *
+                (1f - (1f - (speedFilt / VEL_FOR_MAX).coerceIn(0f, 1f)).let { it * it })
 
-            // Base stretch from speed
-            val ts = (speedFilt / VEL_FOR_MAX).coerceIn(0f, 1f)
-            var target = 1f + (MAX_STRETCH - 1f) * easeOut(ts)
+            if ((latestTarget - p).getDistance() < CLOSE_EPS) target = 1f
+            if (kotlin.math.abs(target - stretchTarget) > 0.002f) stretchTarget = target
 
-            // Extra boost only while accelerating
-            if (aFilt > 0f) {
-                val tb = (aFilt / ACC_FOR_BOOST).coerceIn(0f, 1f)
-                target += BOOST * easeOut(tb)
-            }
-
-            // Return to 1 near destination
-            val remaining = (latestTarget - p).getDistance()
-            if (remaining < CLOSE_EPS) target = 1f
-
-            if (kotlin.math.abs(target - stretchTarget) > 0.002f) {
-                stretchTarget = target
-            }
-
-            lastSpeedFilt = speedFilt
             lastP = p; lastT = now
         }
     }
 
-    // Smoothly follow stretch target
     LaunchedEffect(stretchTarget) {
         stretch.animateTo(stretchTarget, deformSpring)
     }
@@ -116,12 +88,6 @@ fun ReactiveMotion_Visible() {
             .background(Color(0xFF0E1116))
             .pointerInput(Unit) {
                 detectTapGestures { tap ->
-                    if (screenCenter.value == null) {
-                        screenCenter.value = Offset(size.width / 2f, size.height / 2f)
-                        // jump once to center so first move has velocity
-                        scope.launch { pos.snapTo(screenCenter.value!!) }
-                        return@detectTapGestures
-                    }
                     val pad = sizePx / 2f
                     val tgt = Offset(
                         tap.x.coerceIn(pad, size.width - pad),
@@ -129,23 +95,26 @@ fun ReactiveMotion_Visible() {
                     )
                     latestTarget = tgt
                     scope.launch {
-                        pos.animateTo(tgt, animationSpec = posSpring, initialVelocity = vFilt)
-                        stretch.animateTo(1f, deformSpring) // finish exactly at rest
+                        pos.animateTo(tgt, animationSpec = posSpring)
+                        stretch.animateTo(1f, deformSpring)
                     }
                 }
             },
         contentAlignment = Alignment.TopStart
     ) {
-        // Axis-aware mix: Y-dominant → widen; X-dominant → heighten
+        // Axis mapping: X-dominant → width↑ ; Y-dominant → height↑
         val ax = abs(vFilt.x); val ay = abs(vFilt.y)
-        val denom = (ax + ay).coerceAtLeast(1e-3f)
-        val wy = ay / denom
+        val axP = ax.pow(AXIS_SHARPNESS); val ayP = ay.pow(AXIS_SHARPNESS)
+        val sum = (axP + ayP).coerceAtLeast(1e-3f)
+        val wx = axP / sum              // weight for X dominance
+        val wy = 1f - wx                // weight for Y dominance
 
         val s = stretch.value.coerceIn(1f, MAX_STRETCH)
         val inv = (1f / s).coerceIn(MIN_SQUASH, 1f)
 
-        val scaleX = lerp(inv, s, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // Y → width↑
-        val scaleY = lerp(s, inv, wy).coerceIn(MIN_SQUASH, MAX_STRETCH) // X → height↑
+        // X-motion → scaleX = s, scaleY = inv; Y-motion → scaleY = s, scaleX = inv
+        val scaleX = inv * wy + s * wx
+        val scaleY = s * wy + inv * wx
 
         Box(
             modifier = Modifier
@@ -154,7 +123,7 @@ fun ReactiveMotion_Visible() {
                     IntOffset((o.x - sizePx / 2f).toInt(), (o.y - sizePx / 2f).toInt())
                 }
                 .size(objSize)
-                .graphicsLayer {                      // place BEFORE background for clarity
+                .graphicsLayer {
                     rotationZ = 0f
                     shadowElevation = 0f
                     this.scaleX = scaleX
@@ -164,6 +133,3 @@ fun ReactiveMotion_Visible() {
         )
     }
 }
-
-private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
-private fun easeOut(t: Float) = 1f - (1f - t) * (1f - t)
