@@ -1,11 +1,12 @@
-// app/src/main/java/com/example/reactivemotion/MainActivity.kt
+// Slower, smoother, fixed-orientation reactive motion (full-screen tap)
+// - Much slower travel (overdamped, low stiffness)
+// - No rotation (keeps one orientation)
+// - Smooth return to size (decoupled stretch animator)
+// - Box is 100.dp x 100.dp
+// - No shadow, no white; solid color box
+
 @file:Suppress("MagicNumber")
 
-package com.example.reactivemotion
-
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
@@ -13,130 +14,111 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize(), color = Color(0xFF0E1116)) {
-                    ReactiveMotionDemo(
-                        modifier = Modifier.fillMaxSize(),
-                        canvasSize = 360.dp,
-                        objSize = 72.dp
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
-fun ReactiveMotionDemo(
-    modifier: Modifier = Modifier,
-    canvasSize: Dp = 320.dp,
-    objSize: Dp = 72.dp
-) {
+fun ReactiveMotionSlowSmooth() {
     val density = LocalDensity.current
+    val objSize = 100.dp
     val sizePx = with(density) { objSize.toPx() }
 
-    // ---- FIX 1: Provide VectorConverter so type is inferable
+    // Position spring — much slower, gently overdamped
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
-
-    // Separate springs for deformation
-    val stretch = remember { Animatable(1f) }
-    val angleDeg = remember { Animatable(0f) }
-
-    // Specs with explicit type params (prevents “not enough info to infer”)
     val posSpring = spring<Offset>(
-        dampingRatio = 0.95f,
-        stiffness = Spring.StiffnessMediumLow
+        dampingRatio = 1.05f,                  // slightly overdamped -> no ringing, slower feel
+        stiffness   = Spring.StiffnessVeryLow  // slow travel
     )
+
+    // Stretch (squash & stretch) — separate smooth animator
+    val stretch = remember { Animatable(1f) }
     val deformSpring = spring<Float>(
-        dampingRatio = 0.9f,
-        stiffness = Spring.StiffnessMedium
+        dampingRatio = 1.0f,                   // smooth, no wobble on return
+        stiffness   = Spring.StiffnessLow
     )
 
-    // Tuning
-    val VEL_FOR_MAX = with(density) { 1800f } // px/s at which stretch ~ caps
-    val MAX_STRETCH = 1.35f
-    val MIN_SQUASH = 1f / MAX_STRETCH
-    val LPF = 0.75f // velocity low-pass
+    // Stretch mapping
+    val MAX_STRETCH = 1.25f         // subtle elongation
+    val MIN_SQUASH  = 1f / MAX_STRETCH
+    val VEL_FOR_MAX = 600f          // lower because motion is slower, still visible
+    val LPF = 0.9f                  // heavy smoothing of velocity
 
-    // Velocity estimation from position deltas
+    // Velocity estimation
     var last by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFiltered by remember { mutableStateOf(Offset.Zero) }
 
-    // Observe position to drive deformation
+    // Drive a state target for stretch; animate in its own LaunchedEffect to avoid jank
+    var stretchTarget by remember { mutableStateOf(1f) }
+
+    // Observe position → update filtered velocity & target stretch (no direct animate here)
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
-            val dt = (now - lastT).coerceAtLeast(1_000_000L) / 1e9f // seconds
+            val dt = (now - lastT).coerceAtLeast(1_000_000L) / 1e9f
             val v = (p - last) * (1f / dt)
             vFiltered = vFiltered * LPF + v * (1f - LPF)
 
             val speed = hypot(vFiltered.x, vFiltered.y)
             val t = (speed / VEL_FOR_MAX).coerceIn(0f, 1f)
-            val targetStretch = 1f + (MAX_STRETCH - 1f) * easeOutQuad(t)
-            val targetAngle =
-                if (speed > 1f) Math.toDegrees(atan2(vFiltered.y.toDouble(), vFiltered.x.toDouble())).toFloat()
-                else angleDeg.value
+            val mapped = 1f + (MAX_STRETCH - 1f) * easeOutQuad(t)
 
-            // ---- FIX 2: animateTo is suspend → call inside this coroutine
-            stretch.animateTo(targetStretch, deformSpring)
-            angleDeg.animateTo(targetAngle, deformSpring)
+            // Only update if it meaningfully changes to prevent thrash
+            if (kotlin.math.abs(mapped - stretchTarget) > 0.005f) {
+                stretchTarget = mapped
+            }
 
-            last = p
-            lastT = now
+            last = p; lastT = now
         }
+    }
+
+    // Smoothly animate stretch toward target (decoupled from high-frequency updates)
+    LaunchedEffect(stretchTarget) {
+        stretch.animateTo(stretchTarget, deformSpring)
     }
 
     val scope = rememberCoroutineScope()
 
     Box(
-        modifier = modifier
-            .size(canvasSize)
-            .background(Color(0x00000000))
+        modifier = Modifier
+            .fillMaxSize() // full-screen tap area
+            .background(Color(0xFF0E1116))
             .pointerInput(Unit) {
                 detectTapGestures { tap ->
                     val pad = sizePx / 2f
                     val target = Offset(
-                        tap.x.coerceIn(pad, size.width - pad),
+                        tap.x.coerceIn(pad, size.width  - pad),
                         tap.y.coerceIn(pad, size.height - pad)
                     )
-                    // ---- FIX 2: animateTo is suspend → launch a coroutine
                     scope.launch {
-                        pos.animateTo(target, animationSpec = posSpring, initialVelocity = vFiltered)
+                        pos.animateTo(
+                            target,
+                            animationSpec = posSpring,
+                            initialVelocity = vFiltered // continuity
+                        )
                     }
                 }
             },
         contentAlignment = Alignment.TopStart
     ) {
-        val scaleXRaw = stretch.value
-        val scaleYRaw = 1f / scaleXRaw
-        val scaleX = scaleXRaw.coerceIn(1f, MAX_STRETCH)
-        val scaleY = max(MIN_SQUASH, min(1f, scaleYRaw))
+        // Keep orientation fixed: no rotation. Only scale X/Y.
+        val sxRaw = stretch.value
+        val syRaw = 1f / sxRaw
+        val sx = sxRaw.coerceIn(1f, MAX_STRETCH)
+        val sy = max(MIN_SQUASH, min(1f, syRaw))
 
         Box(
             modifier = Modifier
@@ -144,22 +126,20 @@ fun ReactiveMotionDemo(
                     val o = pos.value
                     IntOffset((o.x - sizePx / 2f).toInt(), (o.y - sizePx / 2f).toInt())
                 }
-                .size(objSize)
+                .size(objSize)                      // 100dp x 100dp
                 .graphicsLayer {
-                    rotationZ = angleDeg.value
-                    scaleX = scaleX
-                    scaleY = scaleY
-                    shadowElevation = 20f
+                    // Fixed orientation
+                    rotationZ = 0f
+                    scaleX = sx
+                    scaleY = sy
+                    // No shadow, no clipping/rounding
                     shape = RectangleShape
-                    clip = true
+                    clip = false
+                    shadowElevation = 0f
                 }
-                .clip(roundedBlob(stretch.value))
-                .background(Color(0xFF6AD3FF))
+                .background(Color(0xFF2196F3))      // solid color; no white
         )
     }
 }
-
-private fun roundedBlob(stretch: Float) =
-    androidx.compose.foundation.shape.RoundedCornerShape(percent = (min(100f, 70f / stretch)).toInt())
 
 private fun easeOutQuad(t: Float) = 1f - (1f - t) * (1f - t)
