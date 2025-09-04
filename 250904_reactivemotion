@@ -1,9 +1,8 @@
-// Slower, smoother, fixed-orientation reactive motion (full-screen tap)
-// - Much slower travel (overdamped, low stiffness)
-// - No rotation (keeps one orientation)
-// - Smooth return to size (decoupled stretch animator)
-// - Box is 100.dp x 100.dp
-// - No shadow, no white; solid color box
+// Reactive motion: axis-aware elongation, smooth return synced to arrival
+// - If moving in Y → elongate WIDTH (scaleX↑, scaleY↓)
+// - If moving in X → elongate HEIGHT (scaleY↑, scaleX↓)
+// - Return-to-original size is smooth and completes as the box arrives
+// - Full-screen tap; box = 100.dp; fixed orientation; no shadow/white
 
 @file:Suppress("MagicNumber")
 
@@ -19,52 +18,49 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
 @Composable
-fun ReactiveMotionSlowSmooth() {
+fun ReactiveMotionAxisAware() {
     val density = LocalDensity.current
     val objSize = 100.dp
     val sizePx = with(density) { objSize.toPx() }
 
-    // Position spring — much slower, gently overdamped
+    // Position spring: slow, slightly overdamped
     val pos = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
-    val posSpring = spring<Offset>(
-        dampingRatio = 1.05f,                  // slightly overdamped -> no ringing, slower feel
-        stiffness   = Spring.StiffnessVeryLow  // slow travel
-    )
+    val posSpring = spring<Offset>(dampingRatio = 1.05f, stiffness = Spring.StiffnessVeryLow)
 
-    // Stretch (squash & stretch) — separate smooth animator
+    // Deformation spring: fast-enough to finish by arrival, smooth (overdamped)
     val stretch = remember { Animatable(1f) }
-    val deformSpring = spring<Float>(
-        dampingRatio = 1.0f,                   // smooth, no wobble on return
-        stiffness   = Spring.StiffnessLow
-    )
+    val deformSpring = spring<Float>(dampingRatio = 1.05f, stiffness = Spring.StiffnessLow)
 
-    // Stretch mapping
-    val MAX_STRETCH = 1.25f         // subtle elongation
+    // Latest target to compute remaining distance
+    var latestTarget by remember { mutableStateOf(Offset.Zero) }
+
+    // Mapping & smoothing
+    val MAX_STRETCH = 1.25f           // cap
     val MIN_SQUASH  = 1f / MAX_STRETCH
-    val VEL_FOR_MAX = 600f          // lower because motion is slower, still visible
-    val LPF = 0.9f                  // heavy smoothing of velocity
+    val VEL_FOR_MAX = 600f            // speed at which stretch≈MAX
+    val LPF = 0.9f                    // heavy velocity smoothing
+    val CLOSE_EPS = with(density) { 18.dp.toPx() } // "arrived" threshold
 
-    // Velocity estimation
+    // Velocity estimate (filtered)
     var last by remember { mutableStateOf(Offset.Zero) }
     var lastT by remember { mutableStateOf(System.nanoTime()) }
     var vFiltered by remember { mutableStateOf(Offset.Zero) }
 
-    // Drive a state target for stretch; animate in its own LaunchedEffect to avoid jank
+    // Drive stretch target (decoupled to avoid jank)
     var stretchTarget by remember { mutableStateOf(1f) }
 
-    // Observe position → update filtered velocity & target stretch (no direct animate here)
+    // Observe pos → update filtered velocity & stretch target
     LaunchedEffect(Unit) {
         snapshotFlow { pos.value }.collect { p ->
             val now = System.nanoTime()
@@ -72,20 +68,25 @@ fun ReactiveMotionSlowSmooth() {
             val v = (p - last) * (1f / dt)
             vFiltered = vFiltered * LPF + v * (1f - LPF)
 
+            val remaining = (latestTarget - p).getDistance()
             val speed = hypot(vFiltered.x, vFiltered.y)
+
             val t = (speed / VEL_FOR_MAX).coerceIn(0f, 1f)
             val mapped = 1f + (MAX_STRETCH - 1f) * easeOutQuad(t)
 
-            // Only update if it meaningfully changes to prevent thrash
-            if (kotlin.math.abs(mapped - stretchTarget) > 0.005f) {
-                stretchTarget = mapped
+            // If we're very close to target, force return to 1 to finish exactly on arrival
+            val target = if (remaining < CLOSE_EPS) 1f else mapped
+
+            // Rate-limit updates to prevent micro-jitter
+            if (kotlin.math.abs(target - stretchTarget) > 0.006f) {
+                stretchTarget = target
             }
 
             last = p; lastT = now
         }
     }
 
-    // Smoothly animate stretch toward target (decoupled from high-frequency updates)
+    // Smooth spring toward target (separate animator)
     LaunchedEffect(stretchTarget) {
         stretch.animateTo(stretchTarget, deformSpring)
     }
@@ -94,31 +95,42 @@ fun ReactiveMotionSlowSmooth() {
 
     Box(
         modifier = Modifier
-            .fillMaxSize() // full-screen tap area
+            .fillMaxSize()
             .background(Color(0xFF0E1116))
             .pointerInput(Unit) {
                 detectTapGestures { tap ->
                     val pad = sizePx / 2f
-                    val target = Offset(
-                        tap.x.coerceIn(pad, size.width  - pad),
+                    val tgt = Offset(
+                        tap.x.coerceIn(pad, size.width - pad),
                         tap.y.coerceIn(pad, size.height - pad)
                     )
+                    latestTarget = tgt
                     scope.launch {
                         pos.animateTo(
-                            target,
+                            tgt,
                             animationSpec = posSpring,
-                            initialVelocity = vFiltered // continuity
+                            initialVelocity = vFiltered
                         )
+                        // Safety: ensure exact rest at end
+                        stretch.animateTo(1f, deformSpring)
                     }
                 }
             },
         contentAlignment = Alignment.TopStart
     ) {
-        // Keep orientation fixed: no rotation. Only scale X/Y.
-        val sxRaw = stretch.value
-        val syRaw = 1f / sxRaw
-        val sx = sxRaw.coerceIn(1f, MAX_STRETCH)
-        val sy = max(MIN_SQUASH, min(1f, syRaw))
+        // Axis-aware elongation:
+        // wy≈1 when |vy|≫|vx| ⇒ elongate WIDTH; wy≈0 when |vx|≫|vy| ⇒ elongate HEIGHT.
+        val ax = abs(vFiltered.x)
+        val ay = abs(vFiltered.y)
+        val denom = (ax + ay).coerceAtLeast(1e-3f)
+        val wy = ay / denom                      // weight for Y-dominant motion
+        val s = stretch.value                    // [1, MAX_STRETCH]
+        val inv = (1f / s).coerceAtLeast(MIN_SQUASH)
+
+        // Blend between the two rules to avoid snapping at axis crossover
+        // wy=1 → (scaleX=s, scaleY=inv), wy=0 → (scaleX=inv, scaleY=s)
+        val scaleX = lerp(inv, s, wy).coerceIn(MIN_SQUASH, MAX_STRETCH)
+        val scaleY = lerp(s, inv, wy).coerceIn(MIN_SQUASH, MAX_STRETCH)
 
         Box(
             modifier = Modifier
@@ -126,20 +138,17 @@ fun ReactiveMotionSlowSmooth() {
                     val o = pos.value
                     IntOffset((o.x - sizePx / 2f).toInt(), (o.y - sizePx / 2f).toInt())
                 }
-                .size(objSize)                      // 100dp x 100dp
+                .size(objSize)
+                .background(Color(0xFF2196F3))
                 .graphicsLayer {
-                    // Fixed orientation
                     rotationZ = 0f
-                    scaleX = sx
-                    scaleY = sy
-                    // No shadow, no clipping/rounding
-                    shape = RectangleShape
-                    clip = false
                     shadowElevation = 0f
+                    this.scaleX = scaleX
+                    this.scaleY = scaleY
                 }
-                .background(Color(0xFF2196F3))      // solid color; no white
         )
     }
 }
 
+private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 private fun easeOutQuad(t: Float) = 1f - (1f - t) * (1f - t)
