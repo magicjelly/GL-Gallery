@@ -1,0 +1,143 @@
+import android.graphics.RuntimeShader
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.android.awaitFrame
+
+// 1. The AGSL Shader Code
+const val WAVE_EDGE_SHADER = """
+    uniform float2 in_Resolution;
+    uniform float in_Time;
+    uniform float in_MessageCount; 
+
+    half4 main(in float2 fragCoord) {
+        vec2 uv = fragCoord / in_Resolution.xy;
+        vec2 centered = uv - 0.5;
+        float angle = atan(centered.y, centered.x);
+        
+        float baseAmplitude = 0.05;
+        float activeFrequency = 2.0 + (in_MessageCount * 1.5);
+        float activeSpeed = in_Time * (2.0 + in_MessageCount * 0.5);
+        
+        float wave1 = sin(angle * activeFrequency + activeSpeed);
+        float wave2 = sin(angle * (activeFrequency * 0.5) - (activeSpeed * 1.2));
+        float combinedWave = (wave1 + wave2) * 0.5 * baseAmplitude;
+        
+        float baseThickness = 0.015;
+        float edgeThickness = baseThickness + (combinedWave * (in_MessageCount * 0.01));
+        
+        float distX = min(uv.x, 1.0 - uv.x);
+        float distY = min(uv.y, 1.0 - uv.y);
+        float minDistToEdge = min(distX, distY);
+        
+        float core = 1.0 - smoothstep(0.0, edgeThickness * 0.5, minDistToEdge);
+        float glow = 1.0 - smoothstep(0.0, edgeThickness * 3.0, minDistToEdge);
+        
+        vec3 calmColor = vec3(0.0, 0.6, 1.0);
+        vec3 agitatedColor = vec3(1.0, 0.1, 0.4);
+        
+        float mixFactor = clamp((in_MessageCount - 1.0) / 4.0, 0.0, 1.0);
+        vec3 currentColor = mix(calmColor, agitatedColor, mixFactor);
+        
+        vec3 finalColor = (currentColor * glow * 0.8) + (vec3(1.0) * core);
+        
+        return half4(finalColor * glow, glow);
+    }
+"""
+
+// 2. The Main Activity Entry Point
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        EdgeLightingPrototypeScreen()
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("AGSL requires Android 13+")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 3. The Interactive Prototype Screen
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+fun EdgeLightingPrototypeScreen() {
+    var incomingMessages by remember { mutableFloatStateOf(1f) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        SmartEdgeLighting(messageCount = incomingMessages)
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Simulated Messages: ${incomingMessages.toInt()}",
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Slider(
+                value = incomingMessages,
+                onValueChange = { incomingMessages = it },
+                valueRange = 1f..10f,
+                steps = 8
+            )
+        }
+    }
+}
+
+// 4. The AGSL Render Component
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+fun SmartEdgeLighting(
+    modifier: Modifier = Modifier,
+    messageCount: Float = 1f
+) {
+    var time by remember { mutableFloatStateOf(0f) }
+    
+    LaunchedEffect(Unit) {
+        val startTime = System.nanoTime()
+        while (true) {
+            awaitFrame()
+            time = (System.nanoTime() - startTime) / 1_000_000_000f
+        }
+    }
+
+    val shader = remember { RuntimeShader(WAVE_EDGE_SHADER) }
+    val shaderBrush = remember(shader) { ShaderBrush(shader) }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .drawWithCache {
+                shader.setFloatUniform("in_Resolution", size.width, size.height)
+                shader.setFloatUniform("in_Time", time)
+                shader.setFloatUniform("in_MessageCount", messageCount)
+                
+                onDrawBehind {
+                    drawRect(brush = shaderBrush)
+                }
+            }
+    )
+}
