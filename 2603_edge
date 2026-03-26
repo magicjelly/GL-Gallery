@@ -36,35 +36,41 @@ const val AMBIENT_EDGE_SHADER = """
         // Normalized UV for gradients (0.0 to 1.0)
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // 1. Static Geometry: No wobbling, just a pristine line
-        float coreThickness = 2.0;  // Razor thin bright center
-        float glowThickness = 35.0; // Wide, luxurious soft glow
+        // 1. Static Geometry
+        float coreThickness = 2.0;  
+        float glowThickness = 35.0; 
         
         // Calculate sharp core and soft glow drop-offs
         float core = 1.0 - smoothstep(0.0, coreThickness, distFromEdge);
         float glow = 1.0 - smoothstep(0.0, glowThickness, distFromEdge);
         
-        // 2. Spatial Gradient: Anchor the visual weight to the top where the notification is.
-        // (uv.y assumes the canvas origin 0.0 is at the top of the screen)
+        // 2. Spatial Gradient (brighter at the top)
         float topBias = mix(0.1, 1.0, uv.y); 
         
-        // 3. Graceful Easing: A smooth, ambient breath instead of rapid flashing
-        // We use a slow sine wave mapped to 0.0 - 1.0 for a perfect ease-in/ease-out
+        // 3. Graceful Easing (the breath animation)
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // 4. Premium Colors: A rich, vibrant cyan/blue
+        // 4. Premium Colors
         vec3 premiumColor = vec3(0.1, 0.6, 1.0); 
-        
-        // Combine all elements. Boosted the glow multiplier to 1.5 so the color pops.
-        float finalAlpha = breathAlpha * topBias;
         vec3 finalColor = (premiumColor * glow * 1.5) + (vec3(1.0) * core);
+        
+        // THE FIX: Calculate actual light presence
+        // We isolate the alpha so it only exists where the core or glow exists
+        float lightPresence = max(glow, core);
+        
+        // Multiply our breath/bias by the physical light presence
+        // This forces the center of the screen to absolute 0.0 alpha
+        float pixelAlpha = lightPresence * breathAlpha * topBias;
         
         // Mask to the physical screen hardware bounds
         float screenMask = step(0.0, distFromEdge);
         
-        return half4(finalColor * finalAlpha * screenMask, finalAlpha * screenMask);
+        // Return pre-multiplied alpha. 
+        // A pixelAlpha of 0.0 means perfect transparency for the UI underneath.
+        return half4(finalColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
+
 
 
 
