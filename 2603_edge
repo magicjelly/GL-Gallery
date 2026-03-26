@@ -14,7 +14,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Updated AGSL Shader Code (Fixed 9 o'clock seam)
+// 1. The Updated AGSL Shader Code (Fixed Negative Thickness Triangles)
 const val WAVE_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
@@ -40,18 +40,19 @@ const val WAVE_EDGE_SHADER = """
         
         float baseAmplitude = 15.0; 
         
-        // THE FIX: Force frequencies to be whole integers to prevent the -PI/PI seam at 9 o'clock
         float freq1 = floor(2.0 + (in_MessageCount * 1.0)); 
-        float freq2 = max(1.0, floor(freq1 * 0.5)); // Ensure second wave is also an integer and never 0
+        float freq2 = max(1.0, floor(freq1 * 0.5)); 
         
         float activeSpeed = in_Time * (2.0 + in_MessageCount * 0.5);
         
-        // Superposition using the integer frequencies
-        float wave1 = sin(angle * freq1 + activeSpeed);
-        float wave2 = sin(angle * freq2 - (activeSpeed * 1.2));
+        // THE FIX: Add 1.0 and multiply by 0.5 to map the wave from [-1.0, 1.0] to [0.0, 1.0].
+        // Now the wave strictly bulges inward and never subtracts thickness.
+        float wave1 = (sin(angle * freq1 + activeSpeed) + 1.0) * 0.5;
+        float wave2 = (sin(angle * freq2 - (activeSpeed * 1.2)) + 1.0) * 0.5;
         float combinedWave = (wave1 + wave2) * 0.5 * baseAmplitude;
         
-        float baseThickness = 25.0; 
+        // Adjusted base thickness down slightly since the wave now only expands
+        float baseThickness = 12.0; 
         float edgeThickness = baseThickness + (combinedWave * (in_MessageCount * 1.5));
         
         float core = 1.0 - smoothstep(0.0, edgeThickness * 0.4, distFromEdge);
@@ -69,6 +70,7 @@ const val WAVE_EDGE_SHADER = """
         return half4(finalColor * glow * screenMask, glow * screenMask);
     }
 """
+
 
 // 2. The Main Activity Entry Point
 class MainActivity : ComponentActivity() {
