@@ -30,7 +30,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Premium Acrylic Volumetric Shader
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
@@ -46,40 +45,37 @@ const val AMBIENT_EDGE_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5);
         vec2 b = in_Resolution.xy * 0.5;
         
-        float d = sdRoundRect(p, b, in_CornerRadius);
-        float distFromEdge = -d; 
+        // Distance from physical edge
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        
+        // Prevent math from blowing up outside the screen bounds
+        float clampedDist = max(distFromEdge, 0.0);
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // Base Glow and Edge Core
-        float glow = exp(-max(distFromEdge, 0.0) * 0.05); 
-        float outerCore = exp(-max(distFromEdge, 0.0) * 0.8);
-        
-        // Acrylic Internal Reflection: A sharp secondary highlight 6 pixels inward
-        float internalReflection = 1.0 - smoothstep(0.0, 1.2, abs(distFromEdge - 6.0));
-        
-        // Acrylic Glass Body: Slight dimming between the core and the reflection
-        float glassBodyAlpha = 1.0 - (smoothstep(1.0, 6.0, distFromEdge) * (1.0 - smoothstep(6.0, 12.0, distFromEdge)) * 0.4);
+        // 1. Pure, uninterrupted exponential volumetric decay
+        float glow = exp(-clampedDist * 0.05); 
+        float core = exp(-clampedDist * 0.6);
         
         float topBias = mix(0.1, 1.0, uv.y); 
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // Combine structural highlights (bezel edge + inner reflection)
-        float structure = max(outerCore, internalReflection * 0.85);
+        // 2. Color Routing
+        // Using pow(core, 2.0) keeps the pure white strictly at the absolute 0px edge
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), pow(core, 2.0));
         
-        // Pure color routing: mix vibrant app color with pure white structure
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), structure);
+        // 3. Smooth intensity
+        // pow(glow, 0.8) plumps up the mid-tones so it doesn't wash out on white backgrounds
+        float intensity = max(pow(glow, 0.8), core) * breathAlpha * topBias;
         
-        // Boost the mid-tones, apply the structural highlights, multiply by glass body
-        float lightPresence = max(pow(glow, 0.6), structure) * glassBodyAlpha;
+        // 4. Sub-pixel Anti-Aliased Screen Mask
+        // Using a tight clamp instead of step() prevents harsh 1px black clipping borders
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
         
-        float pixelAlpha = lightPresence * breathAlpha * topBias;
-        pixelAlpha *= 0.95; // High peak opacity for luminous wow-factor
+        float finalAlpha = intensity * screenMask;
         
-        float screenMask = step(0.0, distFromEdge);
-        
-        // Pre-multiplied alpha return
-        return half4(pureColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
+        // Pre-multiplied alpha out. 
+        return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
