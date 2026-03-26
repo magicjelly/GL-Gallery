@@ -5,13 +5,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -20,20 +20,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
+// 1. The Premium Acrylic Volumetric Shader
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
     uniform half3 in_AppColor; 
 
-    // Signed Distance Field (SDF)
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -48,47 +51,37 @@ const val AMBIENT_EDGE_SHADER = """
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // 1. The Base Glow (Soft tail)
+        // Base Glow and Edge Core
         float glow = exp(-max(distFromEdge, 0.0) * 0.05); 
-        
-        // 2. The Absolute Edge (Outer Core)
         float outerCore = exp(-max(distFromEdge, 0.0) * 0.8);
         
-        // 3. THE ACRYLIC UPGRADE: Internal Specular Reflection
-        // We create a razor-sharp secondary line exactly 6 pixels inward.
-        // This simulates the light bouncing off the inner boundary of the glass.
+        // Acrylic Internal Reflection: A sharp secondary highlight 6 pixels inward
         float internalReflection = 1.0 - smoothstep(0.0, 1.2, abs(distFromEdge - 6.0));
         
-        // 4. THE ACRYLIC UPGRADE: The "Glass Body" Volume
-        // We slightly dim the alpha *between* the outer core and the internal reflection.
-        // This negative space tricks the eye into seeing physical transparent thickness.
+        // Acrylic Glass Body: Slight dimming between the core and the reflection
         float glassBodyAlpha = 1.0 - (smoothstep(1.0, 6.0, distFromEdge) * (1.0 - smoothstep(6.0, 12.0, distFromEdge)) * 0.4);
         
         float topBias = mix(0.1, 1.0, uv.y); 
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // Combine the structural highlights (the hard edges catching the light)
+        // Combine structural highlights (bezel edge + inner reflection)
         float structure = max(outerCore, internalReflection * 0.85);
         
-        // Mix the vibrant app color with the structural white highlights
+        // Pure color routing: mix vibrant app color with pure white structure
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), structure);
         
-        // Combine alpha: Boost the mid-tones, add the structure, and multiply by the glass body
+        // Boost the mid-tones, apply the structural highlights, multiply by glass body
         float lightPresence = max(pow(glow, 0.6), structure) * glassBodyAlpha;
         
         float pixelAlpha = lightPresence * breathAlpha * topBias;
-        
-        // Raised opacity to 0.95 to make the specular highlights truly ping
-        pixelAlpha *= 0.95; 
+        pixelAlpha *= 0.95; // High peak opacity for luminous wow-factor
         
         float screenMask = step(0.0, distFromEdge);
         
+        // Pre-multiplied alpha return
         return half4(pureColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
-
-
-
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
@@ -118,8 +111,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun NotificationSyncPrototype() {
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
-    
-    // Animation Trigger State
     var isNotificationActive by remember { mutableStateOf(false) }
     
     val appColors = listOf(
@@ -128,7 +119,6 @@ fun NotificationSyncPrototype() {
     )
     var selectedAppColor by remember { mutableStateOf(appColors[0]) }
 
-    // --- Animation Physics ---
     // Spring physics for the pill drop-down
     val pillOffsetY by animateDpAsState(
         targetValue = if (isNotificationActive) 32.dp else (-100).dp,
@@ -143,7 +133,6 @@ fun NotificationSyncPrototype() {
         label = "master_alpha"
     )
 
-    // Root Container with Tap Gestures
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -154,26 +143,17 @@ fun NotificationSyncPrototype() {
                 )
             }
     ) {
-        
-        // Background App Context
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 64.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(20) { index ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
-                        Text("Active App Content #$index", modifier = Modifier.padding(16.dp))
-                    }
-                }
-            }
-        }
+        // --- LAYER 1: The Background Image ---
+        // Replace 'sym_def_app_icon' with a real photo from your drawable folder 
+        // to see the true physical refraction of the Screen blend mode.
+        Image(
+            painter = painterResource(id = android.R.drawable.sym_def_app_icon),
+            contentDescription = "Background Photo",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
 
-        // The Edge Lighting Layer (Synced to tap state)
+        // --- LAYER 2: The Edge Lighting ---
         AmbientEdgeLighting(
             modifier = Modifier
                 .fillMaxSize()
@@ -182,7 +162,7 @@ fun NotificationSyncPrototype() {
             appColor = selectedAppColor
         )
 
-        // The Brief Notification Pill
+        // --- LAYER 3: The Notification Pill ---
         Card(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -200,24 +180,19 @@ fun NotificationSyncPrototype() {
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Dynamic App Icon Circular Container
                 Box(
                     modifier = Modifier
                         .size(40.dp)
                         .background(selectedAppColor, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Placeholder for a real icon vector
                     Box(
                         modifier = Modifier
                             .size(20.dp)
                             .background(Color.White, RoundedCornerShape(4.dp))
                     )
                 }
-                
                 Spacer(modifier = Modifier.width(16.dp))
-                
-                // Dummy Text Lines
                 Column(verticalArrangement = Arrangement.Center) {
                     Box(modifier = Modifier.width(120.dp).height(12.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f), RoundedCornerShape(4.dp)))
                     Spacer(modifier = Modifier.height(6.dp))
@@ -226,7 +201,7 @@ fun NotificationSyncPrototype() {
             }
         }
 
-        // Prototype Controls
+        // --- LAYER 4: Prototype Controls ---
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -250,7 +225,7 @@ fun NotificationSyncPrototype() {
                                 )
                                 .clickable(interactionSource = interactionSource, indication = null) { 
                                     selectedAppColor = color 
-                                    isNotificationActive = true // Auto-trigger to show color change
+                                    isNotificationActive = true
                                 }
                         )
                     }
@@ -302,7 +277,10 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
                 
                 onDrawBehind {
-                    drawRect(brush = shaderBrush)
+                    drawRect(
+                        brush = shaderBrush,
+                        blendMode = BlendMode.Screen // Act as physical, additive light
+                    )
                 }
             }
     )
