@@ -30,6 +30,95 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
+
+const val AMBIENT_EDGE_SHADER = """
+    uniform float2 in_Resolution;
+    uniform float in_Time;
+    uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; 
+
+    // Hash and Noise functions for Lava Flow
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = p * 2.02;
+        f += 0.2500 * noise(p); p = p * 2.03;
+        f += 0.1250 * noise(p); p = p * 2.01;
+        return f / 0.875;
+    }
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r);
+        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5);
+        vec2 b = in_Resolution.xy * 0.5;
+        
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float clampedDist = max(distFromEdge, 0.0);
+        
+        vec2 uv = fragCoord / in_Resolution.xy;
+        vec2 centered = uv - 0.5;
+        
+        // 1. Core Geometry
+        float baseGlow = exp(-clampedDist * 0.02); 
+        float edgeCore = exp(-clampedDist * 0.4);   
+        
+        // 2. THE LAVA FLOW
+        float angle = atan(centered.y, centered.x);
+        float noiseScale = 4.0; 
+        float flowSpeed = in_Time * 0.15; 
+        
+        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
+        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
+        float complexNoise = (flow1 + flow2) * 0.5;
+        
+        float noiseModulation = baseGlow * (0.2 + 0.8 * complexNoise);
+        float finalLavaPresence = max(noiseModulation, edgeCore);
+        
+        // 3. THE TEMPERATURE GRADIENT
+        vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
+        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
+        
+        float colorMix1 = 1.0 - smoothstep(0.0, 60.0, clampedDist + flow2 * 15.0);
+        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
+        
+        float coreShift = smoothstep(0.0, 2.0, clampedDist); 
+        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
+        
+        // 4. Alpha Finalization
+        float topBias = mix(0.15, 1.0, uv.y); 
+        
+        // THE FIX: Removed breathAlpha. The light is now a constant, steady presence.
+        float intensity = pow(finalLavaPresence, 0.6);
+        float pixelAlpha = intensity * topBias;
+        
+        pixelAlpha *= 0.95; 
+        
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
+        float finalAlpha = pixelAlpha * screenMask;
+        
+        return half4(pureColor * finalAlpha, finalAlpha);
+    }
+"""
+
+
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
