@@ -14,56 +14,58 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Transparent "Ambient Glass" Shader
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
 
+    // Signed Distance Field (SDF) for a perfect hardware curve
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
 
     half4 main(in float2 fragCoord) {
+        // Center coordinates for SDF
         vec2 p = fragCoord - (in_Resolution.xy * 0.5);
         vec2 b = in_Resolution.xy * 0.5;
         
         float d = sdRoundRect(p, b, in_CornerRadius);
-        float distFromEdge = -d; 
+        float distFromEdge = -d; // Positive values are inward from the bezel
         
+        // Normalized UV for gradients (0.0 to 1.0)
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        float coreThickness = 2.0;  
-        float glowThickness = 35.0; 
+        // 1. Static Geometry: No wobbling, just a pristine line
+        float coreThickness = 2.0;  // Razor thin bright center
+        float glowThickness = 35.0; // Wide, luxurious soft glow
         
+        // Calculate sharp core and soft glow drop-offs
         float core = 1.0 - smoothstep(0.0, coreThickness, distFromEdge);
         float glow = 1.0 - smoothstep(0.0, glowThickness, distFromEdge);
         
-        // Spatial Gradient (fixed to anchor at the top)
+        // 2. Spatial Gradient: Anchor the visual weight to the top where the notification is.
+        // (uv.y assumes the canvas origin 0.0 is at the top of the screen)
         float topBias = mix(0.1, 1.0, uv.y); 
         
-        // Graceful Easing
+        // 3. Graceful Easing: A smooth, ambient breath instead of rapid flashing
+        // We use a slow sine wave mapped to 0.0 - 1.0 for a perfect ease-in/ease-out
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        vec3 premiumColor = vec3(0.85, 0.92, 1.0);
+        // 4. Premium Colors: A rich, vibrant cyan/blue
+        vec3 premiumColor = vec3(0.1, 0.6, 1.0); 
         
-        // THE FIX: Calculate the actual structural opacity of the light
-        // If there is no core and no glow, structureAlpha is 0.0.
-        float structureAlpha = max(core, glow);
+        // Combine all elements. Boosted the glow multiplier to 1.5 so the color pops.
+        float finalAlpha = breathAlpha * topBias;
+        vec3 finalColor = (premiumColor * glow * 1.5) + (vec3(1.0) * core);
         
-        // Multiply our structural alpha by the animation and gradient
-        float finalAlpha = structureAlpha * breathAlpha * topBias;
-        
-        // Calculate the base color
-        vec3 baseColor = (premiumColor * glow * 0.5) + (vec3(1.0) * core);
-        
+        // Mask to the physical screen hardware bounds
         float screenMask = step(0.0, distFromEdge);
         
-        // Pre-multiply the alpha against the final color
-        return half4(baseColor * finalAlpha * screenMask, finalAlpha * screenMask);
+        return half4(finalColor * finalAlpha * screenMask, finalAlpha * screenMask);
     }
 """
+
 
 
 // 2. Main Activity
