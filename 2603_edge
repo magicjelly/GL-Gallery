@@ -27,7 +27,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Volumetric Edge Shader (Unchanged)
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
@@ -44,26 +43,45 @@ const val AMBIENT_EDGE_SHADER = """
         vec2 b = in_Resolution.xy * 0.5;
         
         float d = sdRoundRect(p, b, in_CornerRadius);
-        float distFromEdge = -d; 
+        
+        // Shift the light slightly inward (Bezel Bleed technique) so it sits 
+        // thicker on the actual display pixels rather than hiding under the hardware bezel.
+        float distFromEdge = -(d + 2.0); 
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        float core = exp(-max(distFromEdge, 0.0) * 0.5); 
-        float glow = exp(-max(distFromEdge, 0.0) * 0.07); 
+        // 1. The Neon Tube: Three distinct exponential falloffs
+        float core = exp(-max(distFromEdge, 0.0) * 0.8);       // Razor sharp, hot center
+        float midGlow = exp(-max(distFromEdge, 0.0) * 0.15);   // Rich, vibrant color band
+        float outerGlow = exp(-max(distFromEdge, 0.0) * 0.04); // Wide, luxurious soft tail
         
-        float topBias = mix(0.1, 1.0, uv.y); 
-        float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
+        float topBias = mix(0.15, 1.0, uv.y); 
+        float breathAlpha = (sin(in_Time * 4.0) + 1.0) * 0.5; // Slightly sped up the breath
         
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), core);
+        // 2. Chromatic Layering
+        // Create an artificially deeper root color to fight the white background washout
+        vec3 deepRootColor = vec3(in_AppColor) * 0.4; 
         
-        float pixelAlpha = max(glow, core) * breathAlpha * topBias;
-        pixelAlpha *= 0.65; 
+        // Blend 1: Soft tail to Rich Mid-band
+        vec3 colorStage1 = mix(deepRootColor, vec3(in_AppColor), midGlow);
+        
+        // Blend 2: Rich Mid-band to Hot White Core
+        // We use pow(core, 1.5) to keep the white strictly in the absolute center
+        vec3 pureColor = mix(colorStage1, vec3(1.0), pow(core, 1.5));
+        
+        // Combine the alpha presence
+        float lightPresence = max(outerGlow, core);
+        float pixelAlpha = lightPresence * breathAlpha * topBias;
+        
+        // Boost max opacity slightly for light backgrounds
+        pixelAlpha *= 0.85; 
         
         float screenMask = step(0.0, distFromEdge);
         
         return half4(pureColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
+
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
