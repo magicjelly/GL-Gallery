@@ -48,33 +48,45 @@ const val AMBIENT_EDGE_SHADER = """
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // REVERTED: Pure volumetric exponential decay
-        // Decreased multipliers slightly to widen the physical spread of the light
-        float core = exp(-max(distFromEdge, 0.0) * 0.4); 
+        // 1. The Base Glow (Soft tail)
         float glow = exp(-max(distFromEdge, 0.0) * 0.05); 
+        
+        // 2. The Absolute Edge (Outer Core)
+        float outerCore = exp(-max(distFromEdge, 0.0) * 0.8);
+        
+        // 3. THE ACRYLIC UPGRADE: Internal Specular Reflection
+        // We create a razor-sharp secondary line exactly 6 pixels inward.
+        // This simulates the light bouncing off the inner boundary of the glass.
+        float internalReflection = 1.0 - smoothstep(0.0, 1.2, abs(distFromEdge - 6.0));
+        
+        // 4. THE ACRYLIC UPGRADE: The "Glass Body" Volume
+        // We slightly dim the alpha *between* the outer core and the internal reflection.
+        // This negative space tricks the eye into seeing physical transparent thickness.
+        float glassBodyAlpha = 1.0 - (smoothstep(1.0, 6.0, distFromEdge) * (1.0 - smoothstep(6.0, 12.0, distFromEdge)) * 0.4);
         
         float topBias = mix(0.1, 1.0, uv.y); 
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // REVERTED: Pure color routing. No dark roots. 
-        // Just vibrant app color mixing perfectly into a pure white hot-center.
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), core);
+        // Combine the structural highlights (the hard edges catching the light)
+        float structure = max(outerCore, internalReflection * 0.85);
         
-        // THE FIX: Mid-Tone Alpha Boost
-        // Using pow(glow, 0.6) boosts the opacity of the mid-tones before they fade out.
-        // This gives the light enough "body" to show up beautifully on white screens.
-        float lightPresence = max(pow(glow, 0.6), core);
+        // Mix the vibrant app color with the structural white highlights
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), structure);
+        
+        // Combine alpha: Boost the mid-tones, add the structure, and multiply by the glass body
+        float lightPresence = max(pow(glow, 0.6), structure) * glassBodyAlpha;
         
         float pixelAlpha = lightPresence * breathAlpha * topBias;
         
-        // Raised the peak opacity from 0.65 to 0.90 to give it true luminance
-        pixelAlpha *= 0.90; 
+        // Raised opacity to 0.95 to make the specular highlights truly ping
+        pixelAlpha *= 0.95; 
         
         float screenMask = step(0.0, distFromEdge);
         
         return half4(pureColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
+
 
 
 
