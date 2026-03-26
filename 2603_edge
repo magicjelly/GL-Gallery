@@ -21,14 +21,14 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Finalized AGSL Shader Code
+// 1. The Ultra-Premium "Volumetric Glass" Shader
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
     uniform half3 in_AppColor; 
 
-    // Signed Distance Field (SDF) for a perfect hardware curve
+    // Signed Distance Field (SDF)
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -43,27 +43,33 @@ const val AMBIENT_EDGE_SHADER = """
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        float coreThickness = 2.0;  
-        float glowThickness = 35.0; 
-        
-        float core = 1.0 - smoothstep(0.0, coreThickness, distFromEdge);
-        float glow = 1.0 - smoothstep(0.0, glowThickness, distFromEdge);
+        // WOW FACTOR: Exponential OLED Light Decay
+        // This mimics how real physical light scatters through glass.
+        // It creates a sharp hot-center that bleeds into an incredibly soft, infinite tail.
+        float core = exp(-max(distFromEdge, 0.0) * 0.5); 
+        float glow = exp(-max(distFromEdge, 0.0) * 0.07); 
         
         float topBias = mix(0.1, 1.0, uv.y); 
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // Apply the dynamic App Color passed from Jetpack Compose
-        vec3 finalColor = (vec3(in_AppColor) * glow * 1.5) + (vec3(1.0) * core);
+        // THE FIX: Pure Color Routing
+        // We mix the pure app color with a pure white core. 
+        // The RGB values NEVER drop to black, completely eliminating the dark fringe.
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), core);
         
-        // Calculate transparency so the center of the screen is completely clear
-        float lightPresence = max(glow, core);
-        float pixelAlpha = lightPresence * breathAlpha * topBias;
+        // We calculate the transparency entirely separately
+        float pixelAlpha = max(glow, core) * breathAlpha * topBias;
+        
+        // Tone down the overall maximum opacity slightly so it remains subtle and elegant
+        pixelAlpha *= 0.65; 
         
         float screenMask = step(0.0, distFromEdge);
         
-        return half4(finalColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
+        // Return perfectly pre-multiplied alpha.
+        return half4(pureColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
+
 
 // 2. Main Activity Entry Point
 class MainActivity : ComponentActivity() {
