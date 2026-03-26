@@ -1,9 +1,34 @@
+import android.graphics.RuntimeShader
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.android.awaitFrame
+
+// 1. The Finalized AGSL Shader Code
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; // Extracted App Icon Color
+    uniform half3 in_AppColor; 
 
+    // Signed Distance Field (SDF) for a perfect hardware curve
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -30,31 +55,57 @@ const val AMBIENT_EDGE_SHADER = """
         // Apply the dynamic App Color passed from Jetpack Compose
         vec3 finalColor = (vec3(in_AppColor) * glow * 1.5) + (vec3(1.0) * core);
         
+        // Calculate transparency so the center of the screen is completely clear
         float lightPresence = max(glow, core);
         float pixelAlpha = lightPresence * breathAlpha * topBias;
+        
         float screenMask = step(0.0, distFromEdge);
         
         return half4(finalColor * pixelAlpha * screenMask, pixelAlpha * screenMask);
     }
 """
 
+// 2. Main Activity Entry Point
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        EdgeLightingTransparencyTest()
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("AGSL requires Android 13+")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 3. The Interactive UI Prototype Screen
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun EdgeLightingTransparencyTest() {
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
     
-    // Simulate extracting colors from app icons
     val appColors = listOf(
-        Color(0xFF1999FF), // Default Cyan
-        Color(0xFF25D366), // WhatsApp Green
-        Color(0xFFEA4335), // Gmail Red
-        Color(0xFFFFFC00), // Snapchat Yellow
-        Color(0xFFE1306C)  // Instagram Magenta
+        Color(0xFF1999FF), // Cyan
+        Color(0xFF25D366), // Green
+        Color(0xFFEA4335), // Red
+        Color(0xFFFFFC00), // Yellow
+        Color(0xFFE1306C)  // Magenta
     )
     var selectedAppColor by remember { mutableStateOf(appColors[0]) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         
+        // Dummy App Content Layer
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 64.dp),
@@ -62,7 +113,9 @@ fun EdgeLightingTransparencyTest() {
         ) {
             items(20) { index ->
                 Card(
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
@@ -76,13 +129,14 @@ fun EdgeLightingTransparencyTest() {
             }
         }
 
-        // Pass the selected color to the shader wrapper
+        // The Edge Lighting Overlay
         AmbientEdgeLighting(
             modifier = Modifier.fillMaxSize(),
             cornerRadius = hardwareCornerRadius,
             appColor = selectedAppColor
         )
 
+        // UI Controls Layer
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -91,13 +145,16 @@ fun EdgeLightingTransparencyTest() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // App Color Selector UI
+            // App Color Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     appColors.forEach { color ->
+                        val interactionSource = remember(color) { MutableInteractionSource() }
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
@@ -107,16 +164,24 @@ fun EdgeLightingTransparencyTest() {
                                     color = MaterialTheme.colorScheme.onSurface,
                                     shape = CircleShape
                                 )
-                                .clickable { selectedAppColor = color }
+                                .clickable(
+                                    interactionSource = interactionSource,
+                                    indication = null // Disables ripple, prevents crash
+                                ) { 
+                                    selectedAppColor = color 
+                                }
                         )
                     }
                 }
             }
 
-            // Radius Slider UI
+            // Radius Slider
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Corner Radius Match: ${hardwareCornerRadius.toInt()}px", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = "Corner Radius Match: ${hardwareCornerRadius.toInt()}px", 
+                        style = MaterialTheme.typography.labelLarge
+                    )
                     Slider(
                         value = hardwareCornerRadius,
                         onValueChange = { hardwareCornerRadius = it },
@@ -128,12 +193,13 @@ fun EdgeLightingTransparencyTest() {
     }
 }
 
+// 4. The AGSL Render Component
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun AmbientEdgeLighting(
     modifier: Modifier = Modifier,
     cornerRadius: Float = 120f,
-    appColor: Color // New parameter to receive the Compose Color
+    appColor: Color 
 ) {
     var time by remember { mutableFloatStateOf(0f) }
     
@@ -156,8 +222,7 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_Time", time)
                 shader.setFloatUniform("in_CornerRadius", cornerRadius)
                 
-                // Inject the App Color into the AGSL uniform.
-                // Compose Color values (.red, .green, .blue) are 0.0 to 1.0 Floats, matching AGSL half3 perfectly.
+                // Pass the Color channels to the shader
                 shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
                 
                 onDrawBehind {
