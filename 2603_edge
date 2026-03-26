@@ -80,16 +80,24 @@ const val AMBIENT_EDGE_SHADER = """
         float baseGlow = exp(-clampedDist * 0.02); 
         float edgeCore = exp(-clampedDist * 0.4);   
         
-        // 2. THE LAVA FLOW
+        // 2. THE LAVA FLOW (Aggressive & Fast)
         float angle = atan(centered.y, centered.x);
-        float noiseScale = 4.0; 
-        float flowSpeed = in_Time * 0.15; 
         
-        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
-        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
-        float complexNoise = (flow1 + flow2) * 0.5;
+        // Decreased scale for wider, more obvious waves
+        float noiseScale = 2.5; 
         
-        float noiseModulation = baseGlow * (0.2 + 0.8 * complexNoise);
+        // Increased speed drastically (4x faster)
+        float flowSpeed = in_Time * 0.6; 
+        
+        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.015));
+        float flow2 = fBm(vec2(angle * (noiseScale * 0.7) - (flowSpeed * 1.1), clampedDist * 0.025));
+        
+        // THE FIX: Apply a power curve to sharpen peaks and deepen troughs
+        float rawNoise = (flow1 + flow2) * 0.5;
+        float complexNoise = pow(rawNoise, 2.0); 
+        
+        // Heavily weight the complex noise so it dictates the visual flow
+        float noiseModulation = baseGlow * (0.1 + 1.2 * complexNoise);
         float finalLavaPresence = max(noiseModulation, edgeCore);
         
         // 3. THE TEMPERATURE GRADIENT
@@ -105,10 +113,10 @@ const val AMBIENT_EDGE_SHADER = """
         // 4. Alpha Finalization
         float topBias = mix(0.15, 1.0, uv.y); 
         
-        // THE FIX: Removed breathAlpha. The light is now a constant, steady presence.
         float intensity = pow(finalLavaPresence, 0.6);
         float pixelAlpha = intensity * topBias;
         
+        // Keep the master brightness high so the additive blending pops
         pixelAlpha *= 0.95; 
         
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
