@@ -14,7 +14,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Updated AGSL Shader Code with Rounded Corner SDF
+// 1. The Updated AGSL Shader Code (Fixed 9 o'clock seam)
 const val WAVE_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
@@ -28,46 +28,37 @@ const val WAVE_EDGE_SHADER = """
     }
 
     half4 main(in float2 fragCoord) {
-        // Shift coordinate origin to the center of the screen
         vec2 p = fragCoord - (in_Resolution.xy * 0.5);
-        
-        // Define the bounds of the box (half-width and half-height)
         vec2 b = in_Resolution.xy * 0.5;
         
-        // Get the distance to our rounded box boundary. 
-        // Negative values are inside the screen, positive are outside.
         float d = sdRoundRect(p, b, in_CornerRadius);
-        
-        // Invert so the absolute edge is 0.0, and positive values grow inward
         float distFromEdge = -d;
         
-        // Create an angle for the wave math (-0.5 to 0.5 space)
         vec2 uv = fragCoord / in_Resolution.xy;
         vec2 centered = uv - 0.5;
         float angle = atan(centered.y, centered.x);
         
-        // Scale wave dynamics based on message volume
-        float baseAmplitude = 15.0; // Now in pixels
-        float activeFrequency = 2.0 + (in_MessageCount * 1.5);
+        float baseAmplitude = 15.0; 
+        
+        // THE FIX: Force frequencies to be whole integers to prevent the -PI/PI seam at 9 o'clock
+        float freq1 = floor(2.0 + (in_MessageCount * 1.0)); 
+        float freq2 = max(1.0, floor(freq1 * 0.5)); // Ensure second wave is also an integer and never 0
+        
         float activeSpeed = in_Time * (2.0 + in_MessageCount * 0.5);
         
-        // Superposition of waves
-        float wave1 = sin(angle * activeFrequency + activeSpeed);
-        float wave2 = sin(angle * (activeFrequency * 0.5) - (activeSpeed * 1.2));
+        // Superposition using the integer frequencies
+        float wave1 = sin(angle * freq1 + activeSpeed);
+        float wave2 = sin(angle * freq2 - (activeSpeed * 1.2));
         float combinedWave = (wave1 + wave2) * 0.5 * baseAmplitude;
         
-        // Dynamic thickness in pixels
         float baseThickness = 25.0; 
         float edgeThickness = baseThickness + (combinedWave * (in_MessageCount * 1.5));
         
-        // Calculate core and glow drop-offs based on the exact distance to the rounded edge
         float core = 1.0 - smoothstep(0.0, edgeThickness * 0.4, distFromEdge);
         float glow = 1.0 - smoothstep(0.0, edgeThickness * 2.5, distFromEdge);
         
-        // Mask out anything that mathematically spills outside the rounded corners
         float screenMask = step(0.0, distFromEdge);
         
-        // Color shifting logic
         vec3 calmColor = vec3(0.0, 0.6, 1.0);
         vec3 agitatedColor = vec3(1.0, 0.1, 0.4);
         float mixFactor = clamp((in_MessageCount - 1.0) / 4.0, 0.0, 1.0);
@@ -75,7 +66,6 @@ const val WAVE_EDGE_SHADER = """
         
         vec3 finalColor = (currentColor * glow * 0.8) + (vec3(1.0) * core);
         
-        // Apply the screen mask to keep the corners incredibly crisp
         return half4(finalColor * glow * screenMask, glow * screenMask);
     }
 """
