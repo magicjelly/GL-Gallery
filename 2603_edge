@@ -36,6 +36,32 @@ const val AMBIENT_EDGE_SHADER = """
     uniform float in_CornerRadius; 
     uniform half3 in_AppColor; 
 
+    // Hash function to generate noise bedrock
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    // 2D Noise based on interpolation of hash values
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
+    // Fractal Brownian Motion: Layer multiple noise octaves
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = p * 2.02;
+        f += 0.2500 * noise(p); p = p * 2.03;
+        f += 0.1250 * noise(p); p = p * 2.01;
+        return f / 0.875; // Normalize to 0.0 - 1.0
+    }
+
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -45,39 +71,67 @@ const val AMBIENT_EDGE_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5);
         vec2 b = in_Resolution.xy * 0.5;
         
-        // Distance from physical edge
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        
-        // Prevent math from blowing up outside the screen bounds
         float clampedDist = max(distFromEdge, 0.0);
         
         vec2 uv = fragCoord / in_Resolution.xy;
+        vec2 centered = uv - 0.5;
         
-        // 1. Pure, uninterrupted exponential volumetric decay
-        float glow = exp(-clampedDist * 0.05); 
-        float core = exp(-clampedDist * 0.6);
+        // 1. Core Geometry and Volumetric Falloff (SDF)
+        float baseGlow = exp(-clampedDist * 0.035); // Very soft base
+        float edgeCore = exp(-clampedDist * 0.6);   // Sharp hardware core
         
-        float topBias = mix(0.1, 1.0, uv.y); 
+        // 2. THE LAVA FLOW: Map complex noise to the inner boundary
+        // We use atan2() to wrap the noise around the rectangular boundary perfectly.
+        float angle = atan(centered.y, centered.x);
+        
+        // Layer two fBm noise patterns moving against each other
+        float noiseScale = 3.5;
+        float flowSpeed = in_Time * 0.15; // Set slow for lava feel
+        
+        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
+        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
+        
+        // Combine them for interference patterns
+        float complexNoise = (flow1 + flow2) * 0.5;
+        
+        // Skew the noise so it primarily adds complexity to the inner glow
+        // but preserves the hot, bright core near the hardware edge.
+        float noiseModulation = (clampedDist * 0.02) * complexNoise;
+        float finalLavaPresence = max(baseGlow + noiseModulation, edgeCore);
+        
+        // 3. THE TEMPERATURE GRADIENT: Hot White -> App Color -> Deep Root
+        // Programmatically generate a "cooler" deep root from the dynamic app color
+        vec3 deepRootColor = vec3(in_AppColor) * 0.25; // Darken it 
+        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); // Add deep blue bias
+        
+        // Blend Stage 1: Cooler Flow into Rich App Color band
+        // We use the raw fBm values for complexity in the color blend
+        float colorMix1 = 1.0 - smoothstep(0.0, 30.0, clampedDist + flow2 * 10.0);
+        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
+        
+        // Blend Stage 2: Rich App Color into Hot White Core
+        float coreShift = smoothstep(0.0, 2.0, clampedDist); // Tight blend
+        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
+        
+        // 4. Alpha Finalization
+        float topBias = mix(0.15, 1.0, uv.y); 
         float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
         
-        // 2. Color Routing
-        // Using pow(core, 2.0) keeps the pure white strictly at the absolute 0px edge
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), pow(core, 2.0));
+        // Use exponential curves for smooth exponential decay toward the center
+        // but inject the lava noise complexity into the final alpha presence
+        float intensity = pow(finalLavaPresence, 0.7);
+        float pixelAlpha = intensity * breathAlpha * topBias;
+        pixelAlpha *= 0.95; // Keep peak brightness high
         
-        // 3. Smooth intensity
-        // pow(glow, 0.8) plumps up the mid-tones so it doesn't wash out on white backgrounds
-        float intensity = max(pow(glow, 0.8), core) * breathAlpha * topBias;
-        
-        // 4. Sub-pixel Anti-Aliased Screen Mask
-        // Using a tight clamp instead of step() prevents harsh 1px black clipping borders
+        // AA Screen Mask for perfect hardware corner rendering
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
+        float finalAlpha = pixelAlpha * screenMask;
         
-        float finalAlpha = intensity * screenMask;
-        
-        // Pre-multiplied alpha out. 
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
