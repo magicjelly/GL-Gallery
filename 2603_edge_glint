@@ -155,6 +155,9 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 // SHADER 6: VOLUMETRIC DISPERSION (The NameDrop Material)
 // ==========================================
+// ==========================================
+// SHADER 6: VOLUMETRIC DISPERSION (Fixed Duplicate Symbol)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -178,7 +181,6 @@ const val FLUID_SHADER = """
         float energyField = 0.0;
         vec2 fieldGradient = vec2(0.0); 
         
-        // Keep the exact same kinetic motion math, but treat them as energy nodes, not water droplets
         for(float i = 1.0; i <= 4.0; i++) {
             float mass = ((i == 1.0) ? 4500.0 : 600.0) * in_FluidVolume; 
             
@@ -199,40 +201,35 @@ const val FLUID_SHADER = """
             fieldGradient += diff * (nodeEnergy / distSq); 
         }
         
-        // NO HARD BORDERS. Normalize the energy field into a smooth 0.0 to 1.0 gradient.
-        // We use the Amplitude slider to let you control how "wide" the energy spreads.
         float widthControl = max(200.0 - in_Amplitude, 10.0);
         float normalizedEnergy = clamp(energyField / widthControl, 0.0, 1.0);
         
-        // Calculate the distortion vector based on the slope of the energy field
         vec2 distortion = -normalize(fieldGradient + vec2(0.0001)) * pow(normalizedEnergy, 1.5) * 150.0;
         
-        // Hardware edge mask
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
         float activeMask = screenMask * in_MasterAlpha;
         
-        // 1. THE SECRET SAUCE: CHROMATIC ABERRATION (Glass Refraction)
-        // We read the background 3 separate times, warping the Red, Green, and Blue channels at slightly different distances
+        // 1. CHROMATIC ABERRATION (Glass Refraction)
         vec2 coordR = fragCoord + (distortion * 1.2 * activeMask);
         vec2 coordG = fragCoord + (distortion * 1.0 * activeMask);
         vec2 coordB = fragCoord + (distortion * 0.8 * activeMask);
         
-        float r = in_Background.eval(coordR).r;
-        float g = in_Background.eval(coordG).g;
-        float b = in_Background.eval(coordB).b;
-        vec3 refractedBG = vec3(r, g, b);
+        // FIX: Renamed variables to avoid clashing with 'vec2 b' above
+        float bgR = in_Background.eval(coordR).r;
+        float bgG = in_Background.eval(coordG).g;
+        float bgB = in_Background.eval(coordB).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
         
         // 2. VOLUMETRIC GLOW
-        // A soft, additive light source embedded INSIDE the glass. No hard edges, just pure luminance.
         float glowMask = pow(normalizedEnergy, 2.0) * activeMask;
         vec3 volumetricLight = in_AppColor * glowMask * 2.5; 
         
-        // Final Output: The color-split wallpaper + the pure light energy
         vec3 finalColor = refractedBG + volumetricLight;
         
         return half4(finalColor, 1.0);
     }
 """
+
 
 
 
