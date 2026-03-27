@@ -152,6 +152,9 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 // SHADER 6: BIOLUMINESCENT FLUID (The "Liquid Silica" Premium Finish)
 // ==========================================
+// ==========================================
+// SHADER 6: VOLUMETRIC DISPERSION (The NameDrop Material)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -168,16 +171,16 @@ const val FLUID_SHADER = """
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float clampedDist = max(distFromEdge, 0.0);
         
         float time = in_Time * in_Speed * 0.15; 
         vec2 physicalGravity = in_Gravity * 0.8; 
         
-        float fluidDensity = 0.0;
-        vec2 fluidGradient = vec2(0.0); 
+        float energyField = 0.0;
+        vec2 fieldGradient = vec2(0.0); 
         
+        // Keep the exact same kinetic motion math, but treat them as energy nodes, not water droplets
         for(float i = 1.0; i <= 4.0; i++) {
-            float mass = ((i == 1.0) ? 3500.0 : 400.0) * in_FluidVolume; 
+            float mass = ((i == 1.0) ? 4500.0 : 600.0) * in_FluidVolume; 
             
             vec2 gravityDriftPos = vec2(
                 sin(time * i) * (0.05 * i) + 0.5 + physicalGravity.x,
@@ -186,50 +189,51 @@ const val FLUID_SHADER = """
             
             vec2 staticOffset = vec2(sin(i * 2.0), cos(i * 2.0)) * (8.0 * i);
             vec2 magneticTouchPos = in_TouchPos + staticOffset;
-            vec2 finalDropPos = mix(gravityDriftPos, magneticTouchPos, in_TouchActive);
+            vec2 finalNodePos = mix(gravityDriftPos, magneticTouchPos, in_TouchActive);
             
-            vec2 diff = fragCoord - finalDropPos;
+            vec2 diff = fragCoord - finalNodePos;
             float distSq = dot(diff, diff) + 1.0; 
-            float dropDensity = (in_NoiseScale * mass) / distSq;
+            float nodeEnergy = (in_NoiseScale * mass) / distSq;
             
-            fluidDensity += dropDensity;
-            fluidGradient += diff * (dropDensity / distSq); 
+            energyField += nodeEnergy;
+            fieldGradient += diff * (nodeEnergy / distSq); 
         }
         
-        float threshold = 1.0 - (in_Amplitude / 200.0); 
-        float isFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
+        // NO HARD BORDERS. Normalize the energy field into a smooth 0.0 to 1.0 gradient.
+        // We use the Amplitude slider to let you control how "wide" the energy spreads.
+        float widthControl = max(200.0 - in_Amplitude, 10.0);
+        float normalizedEnergy = clamp(energyField / widthControl, 0.0, 1.0);
+        
+        // Calculate the distortion vector based on the slope of the energy field
+        vec2 distortion = -normalize(fieldGradient + vec2(0.0001)) * pow(normalizedEnergy, 1.5) * 150.0;
+        
+        // Hardware edge mask
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float activeMask = isFluid * screenMask * in_MasterAlpha;
+        float activeMask = screenMask * in_MasterAlpha;
         
-        vec3 normal = normalize(vec3(-fluidGradient.x, -fluidGradient.y, 0.05));
+        // 1. THE SECRET SAUCE: CHROMATIC ABERRATION (Glass Refraction)
+        // We read the background 3 separate times, warping the Red, Green, and Blue channels at slightly different distances
+        vec2 coordR = fragCoord + (distortion * 1.2 * activeMask);
+        vec2 coordG = fragCoord + (distortion * 1.0 * activeMask);
+        vec2 coordB = fragCoord + (distortion * 0.8 * activeMask);
         
-        // 1. REFRACTION
-        vec2 refractedCoord = fragCoord + (normal.xy * 60.0 * activeMask);
-        half4 bgColor = in_Background.eval(refractedCoord);
+        float r = in_Background.eval(coordR).r;
+        float g = in_Background.eval(coordG).g;
+        float b = in_Background.eval(coordB).b;
+        vec3 refractedBG = vec3(r, g, b);
         
-        // 2. VOLUME ABSORPTION (Fixes pure white backgrounds)
-        // Darkens the background beneath the fluid, tinting it heavily with the App Color
-        vec3 volumeTint = mix(bgColor.rgb, bgColor.rgb * in_AppColor * 0.35, activeMask);
+        // 2. VOLUMETRIC GLOW
+        // A soft, additive light source embedded INSIDE the glass. No hard edges, just pure luminance.
+        float glowMask = pow(normalizedEnergy, 2.0) * activeMask;
+        vec3 volumetricLight = in_AppColor * glowMask * 2.5; 
         
-        // 3. LUMINOUS CORE (Fixes pure black backgrounds)
-        // The thickest parts burn with a hot, frosted white/color mix
-        float coreIntensity = smoothstep(threshold, threshold + 0.25, fluidDensity);
-        vec3 hotCore = mix(in_AppColor, vec3(1.0), coreIntensity * 0.6) * 0.9;
-        
-        // 4. SPECULAR & FRESNEL (The 3D wet look)
-        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0));
-        float gloss = pow(max(dot(normal, lightDir), 0.0), 48.0) * 1.5; // Razor sharp white hits
-        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0); // Colorful glowing edges
-        
-        vec3 surfaceLight = (vec3(1.0) * gloss) + (in_AppColor * fresnel * 2.0);
-        
-        // COMPOSITE EVERYTHING
-        vec3 fluidColor = volumeTint + (hotCore * activeMask) + (surfaceLight * activeMask);
-        vec3 finalColor = mix(bgColor.rgb, fluidColor, activeMask);
+        // Final Output: The color-split wallpaper + the pure light energy
+        vec3 finalColor = refractedBG + volumetricLight;
         
         return half4(finalColor, 1.0);
     }
 """
+
 
 
 const val WAVE_SHADER = """
