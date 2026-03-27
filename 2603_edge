@@ -12,7 +12,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,25 +25,26 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
-// 1. The Tunable Lava Shader
+// 1. The Tunable Lava Shader with Direct GPU Alpha
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
     uniform half3 in_AppColor; 
     
-    // New Tunable Uniforms
     uniform float in_Speed;
-    uniform float in_Spread; // Controls thickness
-    uniform float in_Amplitude; // Controls how deep the lava pushes inward
-    uniform float in_NoiseScale; // Controls the size of the lava waves
+    uniform float in_Spread; 
+    uniform float in_Amplitude; 
+    uniform float in_NoiseScale; 
+    
+    // Direct alpha control to prevent Android layer-allocation jank
+    uniform float in_MasterAlpha; 
 
     float hash(vec2 p) {
         return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -83,7 +83,6 @@ const val AMBIENT_EDGE_SHADER = """
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // GLOBAL NOISE MAPPING (Tuned by UI)
         vec2 noiseUV = uv * vec2(in_NoiseScale, in_NoiseScale * 2.0); 
         
         float time = in_Time * in_Speed; 
@@ -92,35 +91,31 @@ const val AMBIENT_EDGE_SHADER = """
         
         float complexNoise = pow((flow1 + flow2) * 0.5, 2.0); 
         
-        // SPATIAL DISTORTION (Tuned by UI)
         float distortedDist = max(clampedDist - (complexNoise * in_Amplitude), 0.0);
         
-        // CORE GEOMETRY (Thickness Tuned by UI)
-        // We invert the spread so a higher UI slider value = a thicker, wider glow
         float decayFactor = 1.0 / in_Spread;
         float baseGlow = exp(-distortedDist * decayFactor); 
         
         float edgeCore = exp(-clampedDist * 0.5);   
         float finalLavaPresence = max(baseGlow, edgeCore);
         
-        // TEMPERATURE GRADIENT
         vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
         deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
         
-        // Dynamically widen the color band based on the thickness slider
         float colorMix1 = 1.0 - smoothstep(0.0, in_Spread * 2.0, distortedDist);
         vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
         
         float coreShift = smoothstep(0.0, 2.0, clampedDist); 
         vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
         
-        // ALPHA FINALIZATION
         float topBias = mix(0.15, 1.0, uv.y); 
         float pixelAlpha = finalLavaPresence * topBias;
         pixelAlpha *= 0.95; 
         
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float finalAlpha = pixelAlpha * screenMask;
+        
+        // Final alpha multiplication directly on the GPU
+        float finalAlpha = pixelAlpha * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
@@ -149,22 +144,17 @@ class MainActivity : ComponentActivity() {
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun NotificationSyncPrototype() {
-    // Spatial Hardware & Animation States
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
     var isNotificationActive by remember { mutableStateOf(false) }
     
-    // Tuning Rig States
     var flowSpeed by remember { mutableFloatStateOf(1.5f) }
     var thickness by remember { mutableFloatStateOf(40f) }
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
     val appColors = listOf(
-        Color(0xFF1999FF), // Cyan
-        Color(0xFF25D366), // Green
-        Color(0xFFEA4335), // Red
-        Color(0xFFFFFC00), // Yellow
-        Color(0xFFFFFFFF)  // Pure White added
+        Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), 
+        Color(0xFFFFFC00), Color(0xFFFFFFFF)
     )
     var selectedAppColor by remember { mutableStateOf(appColors[0]) }
 
@@ -191,8 +181,9 @@ fun NotificationSyncPrototype() {
             }
     ) {
         // --- LAYER 1: Background ---
+        // Assumes you have dropped a test photo in your drawable folder to replace the default icon
         Image(
-            painter = painterResource(id = android.R.drawable.sym_def_app_icon), // Replace with photo
+            painter = painterResource(id = android.R.drawable.sym_def_app_icon),
             contentDescription = "Background",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -200,15 +191,14 @@ fun NotificationSyncPrototype() {
 
         // --- LAYER 2: Tunable Edge Lighting ---
         AmbientEdgeLighting(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { alpha = masterAlpha },
+            modifier = Modifier.fillMaxSize(), // graphicsLayer removed completely
             cornerRadius = hardwareCornerRadius,
             appColor = selectedAppColor,
             speed = flowSpeed,
             thickness = thickness,
             amplitude = amplitude,
-            noiseScale = noiseScale
+            noiseScale = noiseScale,
+            masterAlpha = masterAlpha // Passed directly to the shader
         )
 
         // --- LAYER 3: Notification Pill ---
@@ -225,7 +215,6 @@ fun NotificationSyncPrototype() {
         ) {
             Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(40.dp).background(selectedAppColor, CircleShape), contentAlignment = Alignment.Center) {
-                    // Check if color is white to tint the inner icon dark for visibility
                     val innerTint = if (selectedAppColor == Color(0xFFFFFFFF)) Color.Black else Color.White
                     Box(modifier = Modifier.size(20.dp).background(innerTint, RoundedCornerShape(4.dp)))
                 }
@@ -239,18 +228,16 @@ fun NotificationSyncPrototype() {
         }
 
         // --- LAYER 4: Tuning Rig Controls ---
-        // Wrapped in a scrolling column so it doesn't block the whole screen
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .fillMaxHeight(0.6f) // Take up bottom 60% of screen
+                .fillMaxHeight(0.6f)
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 24.dp)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Color Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     appColors.forEach { color ->
@@ -260,7 +247,7 @@ fun NotificationSyncPrototype() {
                                 .size(40.dp)
                                 .background(color, CircleShape)
                                 .border(
-                                    width = if (selectedAppColor == color) 3.dp else 1.dp, // Slight border so white is visible
+                                    width = if (selectedAppColor == color) 3.dp else 1.dp,
                                     color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray,
                                     shape = CircleShape
                                 )
@@ -273,7 +260,6 @@ fun NotificationSyncPrototype() {
                 }
             }
 
-            // Tuning Sliders
             TuningSlider("Speed", flowSpeed, 0.1f..5.0f) { flowSpeed = it }
             TuningSlider("Thickness", thickness, 10f..150f) { thickness = it }
             TuningSlider("Amplitude (Inward Push)", amplitude, 0f..200f) { amplitude = it }
@@ -303,7 +289,8 @@ fun AmbientEdgeLighting(
     speed: Float,
     thickness: Float,
     amplitude: Float,
-    noiseScale: Float
+    noiseScale: Float,
+    masterAlpha: Float 
 ) {
     var time by remember { mutableFloatStateOf(0f) }
     
@@ -320,18 +307,16 @@ fun AmbientEdgeLighting(
 
     Box(
         modifier = modifier
-            .fillMaxSize()
             .drawWithCache {
                 shader.setFloatUniform("in_Resolution", size.width, size.height)
                 shader.setFloatUniform("in_Time", time)
                 shader.setFloatUniform("in_CornerRadius", cornerRadius)
                 shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
-                
-                // Pass the tuning variables into the shader
                 shader.setFloatUniform("in_Speed", speed)
                 shader.setFloatUniform("in_Spread", thickness)
                 shader.setFloatUniform("in_Amplitude", amplitude)
                 shader.setFloatUniform("in_NoiseScale", noiseScale)
+                shader.setFloatUniform("in_MasterAlpha", masterAlpha) 
                 
                 onDrawBehind {
                     drawRect(
