@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -41,10 +42,7 @@ const val LAVA_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    
-    // THE FIX: Added these so the Kotlin component has a place to send the data
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -86,7 +84,6 @@ const val GLINT_SHADER = """
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    
     const float PI = 3.14159265359;
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -117,7 +114,6 @@ const val PRISMATIC_SHADER = """
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
@@ -142,7 +138,6 @@ const val SPARK_SHADER = """
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -162,16 +157,14 @@ const val SPARK_SHADER = """
     }
 """
 
-
 // ==========================================
-// SHADER 4: THE AURA (Seamless Fix)
+// SHADER 4: THE AURA
 // ==========================================
 const val AURA_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -183,43 +176,31 @@ const val AURA_SHADER = """
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
-
     half4 main(in float2 fragCoord) {
         vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY);
         vec2 p = fragCoord - pillCenter;
-        
         float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5);
         float distFromPill = max(d, 0.0);
-        
-        float angle = atan(-p.y, p.x);
-        float time = in_Time * in_Speed * 0.3;
-        
-        // THE SEAMLESS FIX: Map the angle to a continuous circle in the noise domain
+        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.3;
         vec2 radialUV = vec2(cos(angle), sin(angle)) * max(in_NoiseScale, 1.0);
-        
-        // Offset the noise by the distance to make it flow outward
         float n = fBm(radialUV + vec2(distFromPill * 0.01 - time, time * 0.5));
-        
         float decay = 1.0 / max(in_Spread, 1.0);
         float baseGlow = exp(-distFromPill * decay * 1.5) * 0.4; 
         float noiseGlow = exp(-distFromPill * decay * 2.5) * n * (in_Amplitude * 0.02);
-        
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(noiseGlow * 1.5, 0.0, 1.0));
         float finalAlpha = clamp(baseGlow + noiseGlow, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha;
-        
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 // ==========================================
-// SHADER 5: SUNLIGHT RAYS (Volumetric Beams)
+// SHADER 5: SUNLIGHT RAYS
 // ==========================================
 const val SUNLIGHT_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -228,34 +209,138 @@ const val SUNLIGHT_SHADER = """
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
-
     half4 main(in float2 fragCoord) {
         vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY);
         vec2 p = fragCoord - pillCenter;
-        
         float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5);
         float distFromPill = max(d, 0.0);
-        
-        float angle = atan(-p.y, p.x);
-        float time = in_Time * in_Speed * 0.15;
-        
-        // Two layers of seamless circular coordinates rotating in opposite directions
+        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.15;
         vec2 uv1 = vec2(cos(angle + time), sin(angle + time)) * max(in_NoiseScale, 1.0) * 1.5;
         vec2 uv2 = vec2(cos(angle - time * 0.8), sin(angle - time * 0.8)) * max(in_NoiseScale, 1.0) * 3.0;
-        
-        // Aggressively multiply the noise layers to isolate sharp "god rays"
         float rays = pow(noise(uv1) * noise(uv2), 1.8) * (in_Amplitude * 0.05);
-        
         float decay = 1.0 / max(in_Spread, 1.0);
-        float rayBloom = rays * exp(-distFromPill * decay * 0.4); // Rays travel extremely far
-        float coreBloom = exp(-distFromPill * decay * 1.5) * 0.4; // Hot ambient center behind pill
-        
+        float rayBloom = rays * exp(-distFromPill * decay * 0.4); 
+        float coreBloom = exp(-distFromPill * decay * 1.5) * 0.4; 
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(rayBloom * 1.5, 0.0, 1.0));
         float finalAlpha = clamp(coreBloom + rayBloom, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha;
+        return half4(pureColor * finalAlpha, finalAlpha);
+    }
+"""
+
+// ==========================================
+// SHADER 6: BIOLUMINESCENT FLUID (Gravity/Gyro)
+// ==========================================
+const val FLUID_SHADER = """
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float clampedDist = max(distFromEdge, 0.0);
+        vec2 uv = fragCoord / in_Resolution.xy;
+        
+        float time = in_Time * in_Speed * 0.5;
+        
+        // Simulating Hardware Gyroscope / Gravity vector sloshing
+        vec2 simulatedGravity = vec2(sin(time * 0.8) * 0.3, cos(time * 0.5) * 0.3);
+        
+        // Generate metaball "droplets" that drift along the edge
+        float fluidDensity = 0.0;
+        for(float i = 1.0; i <= 5.0; i++) {
+            // Calculate drifting positions for droplets, influenced by "gravity"
+            vec2 dropPos = vec2(
+                sin(time * 1.1 * i) * 0.4 + 0.5 + simulatedGravity.x,
+                cos(time * 0.9 * i) * 0.4 + 0.5 + simulatedGravity.y
+            ) * in_Resolution.xy;
+            
+            float distToDrop = length(fragCoord - dropPos);
+            // Inverse square falloff creates the "sticky" metaball merging effect
+            fluidDensity += (in_NoiseScale * 1000.0) / (distToDrop * distToDrop);
+        }
+        
+        // Gate the density to create hard, viscous fluid surfaces
+        float threshold = 1.0 - (in_Amplitude / 200.0); 
+        float viscousFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
+        
+        // Constrain the fluid physically to the hardware bezel
+        float decayFactor = 1.0 / max(in_Spread, 1.0);
+        float edgeCore = exp(-clampedDist * decayFactor * 0.5);   
+        
+        // Multiply the fluid by the edge glow so it only exists on the physical glass curve
+        float finalPresence = viscousFluid * edgeCore * 1.5;
+        
+        // Deep bioluminescent coloring
+        vec3 deepColor = mix(vec3(0.0, 0.1, 0.2), vec3(in_AppColor), fluidDensity);
+        vec3 pureColor = mix(deepColor, vec3(1.0), smoothstep(threshold + 0.2, threshold + 0.5, fluidDensity));
+        
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
+// ==========================================
+// SHADER 7: RESONANT CYMATICS (Haptic Soundwave)
+// ==========================================
+const val WAVE_SHADER = """
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+
+    const float PI = 3.14159265359;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        
+        vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
+        float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
+        float time = in_Time * in_Speed * 3.0;
+
+        // SYNTHETIC AUDIO FFT GENERATOR
+        // This simulates a complex music soundwave bouncing along the bezel
+        float freq1 = sin(angle * (in_NoiseScale * 10.0) + time) * 0.5; // High freq
+        float freq2 = cos(angle * (in_NoiseScale * 5.0) - time * 0.8) * 0.3; // Mid freq
+        float beat = sin(time * 2.0) * 0.2; // Low frequency bass thump
+        
+        // Combine frequencies into an audio waveform displacement value
+        float audioWaveform = (freq1 + freq2 + beat) * (in_Amplitude * 0.5);
+        
+        // Calculate the physical distance, but subtract the audio waveform
+        // This violently warps the distance field to the beat of the "music"
+        float rawDist = -sdRoundRect(p, b, in_CornerRadius); 
+        float warpedDist = max(rawDist - audioWaveform, 0.0);
+        
+        float decayFactor = 1.0 / max(in_Spread, 1.0);
+        
+        // The core hardware edge remains steady, but the glow ripples outward
+        float edgeCore = exp(-max(rawDist, 0.0) * decayFactor * 2.0); 
+        float rippleGlow = exp(-warpedDist * decayFactor); 
+        
+        float finalPresence = max(edgeCore, rippleGlow);
+        
+        // High-contrast color mapping for a sharp, kinetic visualizer look
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(audioWaveform * 0.02, 0.0, 1.0));
+        
+        float screenMask = clamp(rawDist * 10.0, 0.0, 1.0);
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
+        
+        return half4(pureColor * finalAlpha, finalAlpha);
+    }
+"""
+
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
@@ -288,15 +373,17 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    val effects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays")
-    var selectedEffectIndex by remember { mutableIntStateOf(5) } // Default to the new Rays effect
+    val effects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays", "Fluid", "Wave")
+    var selectedEffectIndex by remember { mutableIntStateOf(6) } 
     val activeShaderString = when(selectedEffectIndex) {
         0 -> LAVA_SHADER
         1 -> GLINT_SHADER
         2 -> PRISMATIC_SHADER
         3 -> SPARK_SHADER
         4 -> AURA_SHADER
-        else -> SUNLIGHT_SHADER
+        5 -> SUNLIGHT_SHADER
+        6 -> FLUID_SHADER
+        else -> WAVE_SHADER
     }
     
     val appColors = listOf(Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), Color(0xFFFFFC00), Color(0xFFFFFFFF))
@@ -358,14 +445,17 @@ fun NotificationSyncPrototype() {
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                // Modified Row modifier to allow horizontal scrolling if buttons get squished
-                Row(modifier = Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                // ADDED horizontalScroll so all 8 buttons fit gracefully
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), 
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     effects.forEachIndexed { index, name ->
                         val isSelected = selectedEffectIndex == index
                         TextButton(
                             onClick = { selectedEffectIndex = index; isNotificationActive = true },
                             colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface),
-                            contentPadding = PaddingValues(horizontal = 4.dp) // Tighter padding for 6 items
+                            contentPadding = PaddingValues(horizontal = 8.dp) 
                         ) {
                             Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
                         }
@@ -389,7 +479,7 @@ fun NotificationSyncPrototype() {
             TuningSlider("Speed / Time Scale", flowSpeed, 0.1f..5.0f) { flowSpeed = it }
             TuningSlider("Spread / Thickness", thickness, 10f..150f) { thickness = it }
             TuningSlider("Amplitude / Density", amplitude, 0f..200f) { amplitude = it }
-            TuningSlider("Noise / Sharpness", noiseScale, 1.0f..10.0f) { noiseScale = it }
+            TuningSlider("Noise / Freq / Radius", noiseScale, 1.0f..10.0f) { noiseScale = it }
         }
     }
 }
@@ -421,7 +511,10 @@ fun AmbientEdgeLighting(
         }
     }
 
-    val shader = remember(shaderString) { RuntimeShader(shaderString) }
+    val shader = remember(shaderString) { 
+        val safeString = shaderString.filter { it.code in 0..127 }
+        RuntimeShader(safeString) 
+    }
     val shaderBrush = remember(shader) { ShaderBrush(shader) }
 
     Box(
