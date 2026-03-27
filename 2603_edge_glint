@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -219,6 +221,69 @@ const val SPARK_SHADER = """
     }
 """
 
+// ==========================================
+// SHADER 4: PILL AURA (Volumetric Z-Axis Glow)
+// ==========================================
+const val AURA_SHADER = """
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    
+    // UI Tracking Uniforms
+    uniform float in_PillCenterY;
+    uniform float in_PillWidth;
+    uniform float in_PillHeight;
+
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+    }
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = p * 2.02;
+        f += 0.2500 * noise(p); p = p * 2.03;
+        f += 0.1250 * noise(p); p = p * 2.01;
+        return f / 0.875;
+    }
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        // Track the exact center of the floating UI pill
+        vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY);
+        vec2 p = fragCoord - pillCenter;
+        
+        // Match the pill geometry perfectly
+        float radius = in_PillHeight * 0.5;
+        vec2 b = vec2(in_PillWidth * 0.5, in_PillHeight * 0.5);
+        float d = sdRoundRect(p, b, radius);
+        float distFromPill = max(d, 0.0);
+        
+        float angle = atan(-p.y, p.x);
+        float time = in_Time * in_Speed * 0.3;
+        
+        // Generate magnetic flow around the pill
+        float n = fBm(vec2(angle * max(in_NoiseScale, 1.0) + time, distFromPill * 0.01 - time));
+        
+        float decay = 1.0 / max(in_Spread, 1.0);
+        float baseGlow = exp(-distFromPill * decay * 1.5) * 0.4; 
+        
+        float noiseGlow = exp(-distFromPill * decay * 2.5) * n * (in_Amplitude * 0.02);
+        float finalPresence = baseGlow + noiseGlow;
+        
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(noiseGlow * 1.5, 0.0, 1.0));
+        
+        // Exclude the space inside the pill so light only casts outward
+        float mask = smoothstep(0.0, 2.0, d); 
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * mask * in_MasterAlpha;
+        
+        return half4(pureColor * finalAlpha, finalAlpha);
+    }
+"""
+
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -239,6 +304,9 @@ class MainActivity : ComponentActivity() {
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun NotificationSyncPrototype() {
+    val density = LocalDensity.current
+    val config = LocalConfiguration.current
+    
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
     var isNotificationActive by remember { mutableStateOf(false) }
     
@@ -247,14 +315,14 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    // Shader Selection State (Now with 4 effects)
-    val effects = listOf("Lava", "Glint", "Prism", "Sparks")
-    var selectedEffectIndex by remember { mutableIntStateOf(0) }
+    val effects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura")
+    var selectedEffectIndex by remember { mutableIntStateOf(4) } // Default to the new Aura
     val activeShaderString = when(selectedEffectIndex) {
         0 -> LAVA_SHADER
         1 -> GLINT_SHADER
         2 -> PRISMATIC_SHADER
-        else -> SPARK_SHADER
+        3 -> SPARK_SHADER
+        else -> AURA_SHADER
     }
     
     val appColors = listOf(Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), Color(0xFFFFFC00), Color(0xFFFFFFFF))
@@ -262,6 +330,12 @@ fun NotificationSyncPrototype() {
 
     val pillOffsetY by animateDpAsState(targetValue = if (isNotificationActive) 32.dp else (-100).dp, animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f), label = "pill")
     val masterAlpha by animateFloatAsState(targetValue = if (isNotificationActive) 1f else 0f, animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing), label = "alpha")
+
+    // Calculate pill geometry in pure pixels for the GPU Aura
+    val screenWidthPx = with(density) { config.screenWidthDp.dp.toPx() }
+    val pillWidthPx = screenWidthPx * 0.9f
+    val pillHeightPx = with(density) { 64.dp.toPx() }
+    val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
 
     Box(
         modifier = Modifier.fillMaxSize().pointerInput(Unit) {
@@ -274,20 +348,22 @@ fun NotificationSyncPrototype() {
             contentDescription = "Background", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()
         )
 
-        // --- LAYER 2: Tunable Edge Lighting (Hot-swappable shader) ---
+        // --- LAYER 2: GPU Render Engine ---
         AmbientEdgeLighting(
             modifier = Modifier.fillMaxSize(),
             shaderString = activeShaderString,
             cornerRadius = hardwareCornerRadius, appColor = selectedAppColor,
             speed = flowSpeed, thickness = thickness, amplitude = amplitude, noiseScale = noiseScale,
-            masterAlpha = masterAlpha 
+            masterAlpha = masterAlpha,
+            // Pass the pill physics directly to the GPU
+            pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx 
         )
 
         // --- LAYER 3: Notification Pill ---
         Card(
             modifier = Modifier.align(Alignment.TopCenter).offset(y = pillOffsetY).alpha(masterAlpha).fillMaxWidth(0.9f).height(64.dp),
             shape = RoundedCornerShape(32.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp) // Disabled UI shadow so the GPU light shadow pops
         ) {
             Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(40.dp).background(selectedAppColor, CircleShape), contentAlignment = Alignment.Center) {
@@ -309,16 +385,12 @@ fun NotificationSyncPrototype() {
                 .padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Effect Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     effects.forEachIndexed { index, name ->
                         val isSelected = selectedEffectIndex == index
                         TextButton(
-                            onClick = { 
-                                selectedEffectIndex = index
-                                isNotificationActive = true 
-                            },
+                            onClick = { selectedEffectIndex = index; isNotificationActive = true },
                             colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         ) {
                             Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
@@ -327,7 +399,6 @@ fun NotificationSyncPrototype() {
                 }
             }
 
-            // Color Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     appColors.forEach { color ->
@@ -335,24 +406,20 @@ fun NotificationSyncPrototype() {
                         Box(
                             modifier = Modifier.size(40.dp).background(color, CircleShape)
                                 .border(width = if (selectedAppColor == color) 3.dp else 1.dp, color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
-                                .clickable(interactionSource = interactionSource, indication = null) { 
-                                    selectedAppColor = color; isNotificationActive = true
-                                }
+                                .clickable(interactionSource = interactionSource, indication = null) { selectedAppColor = color; isNotificationActive = true }
                         )
                     }
                 }
             }
 
-            // Universal Tuning Sliders
             TuningSlider("Speed / Time Scale", flowSpeed, 0.1f..5.0f) { flowSpeed = it }
             TuningSlider("Spread / Thickness", thickness, 10f..150f) { thickness = it }
-            TuningSlider("Amplitude / Tail / Density", amplitude, 0f..200f) { amplitude = it }
-            TuningSlider("Noise / Sharpness / Size", noiseScale, 1.0f..10.0f) { noiseScale = it }
+            TuningSlider("Amplitude / Density", amplitude, 0f..200f) { amplitude = it }
+            TuningSlider("Noise / Sharpness", noiseScale, 1.0f..10.0f) { noiseScale = it }
         }
     }
 }
 
-// Ensure there is only ONE TuningSlider composable in your file to avoid conflicts!
 @Composable
 fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onValueChange: (Float) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
@@ -363,14 +430,12 @@ fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Fl
     }
 }
 
-// 4. The AGSL Render Component
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun AmbientEdgeLighting(
-    modifier: Modifier = Modifier,
-    shaderString: String, 
-    cornerRadius: Float = 120f,
-    appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float 
+    modifier: Modifier = Modifier, shaderString: String, cornerRadius: Float = 120f,
+    appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float,
+    pillCenterY: Float, pillWidth: Float, pillHeight: Float 
 ) {
     var time by remember { mutableFloatStateOf(0f) }
     
@@ -397,6 +462,11 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_Amplitude", amplitude)
                 shader.setFloatUniform("in_NoiseScale", noiseScale)
                 shader.setFloatUniform("in_MasterAlpha", masterAlpha) 
+                
+                // Track the pill
+                shader.setFloatUniform("in_PillCenterY", pillCenterY)
+                shader.setFloatUniform("in_PillWidth", pillWidth)
+                shader.setFloatUniform("in_PillHeight", pillHeight)
                 
                 onDrawBehind { drawRect(brush = shaderBrush, blendMode = BlendMode.Plus) }
             }
