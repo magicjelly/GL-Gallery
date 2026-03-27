@@ -12,8 +12,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,11 +33,18 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
+// 1. The Tunable Lava Shader
 const val AMBIENT_EDGE_SHADER = """
     uniform float2 in_Resolution;
     uniform float in_Time;
     uniform float in_CornerRadius; 
     uniform half3 in_AppColor; 
+    
+    // New Tunable Uniforms
+    uniform float in_Speed;
+    uniform float in_Spread; // Controls thickness
+    uniform float in_Amplitude; // Controls how deep the lava pushes inward
+    uniform float in_NoiseScale; // Controls the size of the lava waves
 
     float hash(vec2 p) {
         return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -73,46 +83,39 @@ const val AMBIENT_EDGE_SHADER = """
         
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // 1. GLOBAL NOISE MAPPING
-        // Stretch the noise slightly taller than wide for a natural vertical flow
-        vec2 noiseUV = uv * vec2(3.0, 6.0); 
+        // GLOBAL NOISE MAPPING (Tuned by UI)
+        vec2 noiseUV = uv * vec2(in_NoiseScale, in_NoiseScale * 2.0); 
         
-        // Move the noise rapidly diagonally
-        float time = in_Time * 1.5; 
+        float time = in_Time * in_Speed; 
         float flow1 = fBm(noiseUV + vec2(time * 0.5, -time * 0.8));
         float flow2 = fBm(noiseUV * 1.5 - vec2(-time * 0.3, time * 1.1));
         
-        // Square the noise to create sharp, highly contrasting peaks and valleys
         float complexNoise = pow((flow1 + flow2) * 0.5, 2.0); 
         
-        // 2. THE SECRET SAUCE: SPATIAL DISTORTION
-        // We subtract the noise * 80 from the physical distance. 
-        // This physically pushes the light up to 80 pixels deeper into the screen where the noise is bright!
-        float distortedDist = max(clampedDist - (complexNoise * 80.0), 0.0);
+        // SPATIAL DISTORTION (Tuned by UI)
+        float distortedDist = max(clampedDist - (complexNoise * in_Amplitude), 0.0);
         
-        // 3. CORE GEOMETRY
-        // The base glow uses the highly warped, flowing distance
-        float baseGlow = exp(-distortedDist * 0.035); 
+        // CORE GEOMETRY (Thickness Tuned by UI)
+        // We invert the spread so a higher UI slider value = a thicker, wider glow
+        float decayFactor = 1.0 / in_Spread;
+        float baseGlow = exp(-distortedDist * decayFactor); 
         
-        // The absolute edge core remains tied strictly to the hardware so the bezel line is never broken
         float edgeCore = exp(-clampedDist * 0.5);   
-        
         float finalLavaPresence = max(baseGlow, edgeCore);
         
-        // 4. THE TEMPERATURE GRADIENT
+        // TEMPERATURE GRADIENT
         vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
         deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
         
-        // The color bands also follow the warped spatial distance
-        float colorMix1 = 1.0 - smoothstep(0.0, 70.0, distortedDist);
+        // Dynamically widen the color band based on the thickness slider
+        float colorMix1 = 1.0 - smoothstep(0.0, in_Spread * 2.0, distortedDist);
         vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
         
         float coreShift = smoothstep(0.0, 2.0, clampedDist); 
         vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
         
-        // 5. ALPHA FINALIZATION
+        // ALPHA FINALIZATION
         float topBias = mix(0.15, 1.0, uv.y); 
-        
         float pixelAlpha = finalLavaPresence * topBias;
         pixelAlpha *= 0.95; 
         
@@ -122,390 +125,6 @@ const val AMBIENT_EDGE_SHADER = """
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
-
-const val AMBIENT_EDGE_SHADER = """
-    uniform float2 in_Resolution;
-    uniform float in_Time;
-    uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; 
-
-    // Hash and Noise functions for Lava Flow
-    float hash(vec2 p) {
-        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    float noise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float a = hash(i);
-        float b = hash(i + vec2(1.0, 0.0));
-        float c = hash(i + vec2(0.0, 1.0));
-        float d = hash(i + vec2(1.0, 1.0));
-        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    float fBm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        return f / 0.875;
-    }
-
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r);
-        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
-
-    half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5);
-        vec2 b = in_Resolution.xy * 0.5;
-        
-        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float clampedDist = max(distFromEdge, 0.0);
-        
-        vec2 uv = fragCoord / in_Resolution.xy;
-        vec2 centered = uv - 0.5;
-        
-        // 1. Core Geometry
-        float baseGlow = exp(-clampedDist * 0.02); 
-        float edgeCore = exp(-clampedDist * 0.4);   
-        
-        // 2. THE LAVA FLOW (Aggressive & Fast)
-        float angle = atan(centered.y, centered.x);
-        
-        // Decreased scale for wider, more obvious waves
-        float noiseScale = 2.5; 
-        
-        // Increased speed drastically (4x faster)
-        float flowSpeed = in_Time * 0.6; 
-        
-        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.015));
-        float flow2 = fBm(vec2(angle * (noiseScale * 0.7) - (flowSpeed * 1.1), clampedDist * 0.025));
-        
-        // THE FIX: Apply a power curve to sharpen peaks and deepen troughs
-        float rawNoise = (flow1 + flow2) * 0.5;
-        float complexNoise = pow(rawNoise, 2.0); 
-        
-        // Heavily weight the complex noise so it dictates the visual flow
-        float noiseModulation = baseGlow * (0.1 + 1.2 * complexNoise);
-        float finalLavaPresence = max(noiseModulation, edgeCore);
-        
-        // 3. THE TEMPERATURE GRADIENT
-        vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
-        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
-        
-        float colorMix1 = 1.0 - smoothstep(0.0, 60.0, clampedDist + flow2 * 15.0);
-        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
-        
-        float coreShift = smoothstep(0.0, 2.0, clampedDist); 
-        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
-        
-        // 4. Alpha Finalization
-        float topBias = mix(0.15, 1.0, uv.y); 
-        
-        float intensity = pow(finalLavaPresence, 0.6);
-        float pixelAlpha = intensity * topBias;
-        
-        // Keep the master brightness high so the additive blending pops
-        pixelAlpha *= 0.95; 
-        
-        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float finalAlpha = pixelAlpha * screenMask;
-        
-        return half4(pureColor * finalAlpha, finalAlpha);
-    }
-"""
-
-
-const val AMBIENT_EDGE_SHADER = """
-    uniform float2 in_Resolution;
-    uniform float in_Time;
-    uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; 
-
-    // Hash and Noise functions for Lava Flow
-    float hash(vec2 p) {
-        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    float noise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float a = hash(i);
-        float b = hash(i + vec2(1.0, 0.0));
-        float c = hash(i + vec2(0.0, 1.0));
-        float d = hash(i + vec2(1.0, 1.0));
-        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    float fBm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        return f / 0.875;
-    }
-
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r);
-        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
-
-    half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5);
-        vec2 b = in_Resolution.xy * 0.5;
-        
-        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float clampedDist = max(distFromEdge, 0.0);
-        
-        vec2 uv = fragCoord / in_Resolution.xy;
-        vec2 centered = uv - 0.5;
-        
-        // 1. Core Geometry - WIDENED
-        // Relaxed from 0.06 to 0.02 to give the lava physical thickness to churn
-        float baseGlow = exp(-clampedDist * 0.02); 
-        float edgeCore = exp(-clampedDist * 0.4);   
-        
-        // 2. THE LAVA FLOW
-        float angle = atan(centered.y, centered.x);
-        float noiseScale = 4.0; // Slightly more granular chunks
-        float flowSpeed = in_Time * 0.15; 
-        
-        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
-        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
-        float complexNoise = (flow1 + flow2) * 0.5;
-        
-        // THE FIX: Increased contrast in the noise modulation
-        // (0.2 + 0.8 * noise) creates deeper valleys and brighter peaks in the flow
-        float noiseModulation = baseGlow * (0.2 + 0.8 * complexNoise);
-        float finalLavaPresence = max(noiseModulation, edgeCore);
-        
-        // 3. THE TEMPERATURE GRADIENT
-        vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
-        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
-        
-        // WIDENED the color band from 20.0 to 60.0 so the vibrant color extends inward
-        float colorMix1 = 1.0 - smoothstep(0.0, 60.0, clampedDist + flow2 * 15.0);
-        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
-        
-        float coreShift = smoothstep(0.0, 2.0, clampedDist); 
-        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
-        
-        // 4. Alpha Finalization
-        float topBias = mix(0.15, 1.0, uv.y); 
-        float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
-        
-        // Reduced the power curve slightly so the mid-tones stay thick
-        float intensity = pow(finalLavaPresence, 0.6);
-        float pixelAlpha = intensity * breathAlpha * topBias;
-        pixelAlpha *= 0.95; 
-        
-        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float finalAlpha = pixelAlpha * screenMask;
-        
-        // Using BlendMode.Plus in Compose, so we return pure pre-multiplied alpha
-        return half4(pureColor * finalAlpha, finalAlpha);
-    }
-"""
-
-
-const val AMBIENT_EDGE_SHADER = """
-    uniform float2 in_Resolution;
-    uniform float in_Time;
-    uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; 
-
-    // Hash and Noise functions for Lava Flow
-    float hash(vec2 p) {
-        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    float noise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float a = hash(i);
-        float b = hash(i + vec2(1.0, 0.0));
-        float c = hash(i + vec2(0.0, 1.0));
-        float d = hash(i + vec2(1.0, 1.0));
-        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    float fBm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        return f / 0.875;
-    }
-
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r);
-        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
-
-    half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5);
-        vec2 b = in_Resolution.xy * 0.5;
-        
-        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float clampedDist = max(distFromEdge, 0.0);
-        
-        vec2 uv = fragCoord / in_Resolution.xy;
-        vec2 centered = uv - 0.5;
-        
-        // 1. Core Geometry
-        // Tightened the baseGlow drop-off so it doesn't bleed too far inward
-        float baseGlow = exp(-clampedDist * 0.06); 
-        float edgeCore = exp(-clampedDist * 0.6);   
-        
-        // 2. THE LAVA FLOW
-        float angle = atan(centered.y, centered.x);
-        float noiseScale = 3.5;
-        float flowSpeed = in_Time * 0.15; 
-        
-        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
-        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
-        float complexNoise = (flow1 + flow2) * 0.5;
-        
-        // THE FIX: Modulate the noise BY the decaying glow.
-        // As baseGlow reaches 0 in the center of the screen, the noise also becomes 0.
-        // (0.4 + 0.6 * complexNoise) ensures the light always has a minimum baseline presence.
-        float noiseModulation = baseGlow * (0.4 + 0.6 * complexNoise);
-        float finalLavaPresence = max(noiseModulation, edgeCore);
-        
-        // 3. THE TEMPERATURE GRADIENT
-        vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
-        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
-        
-        // Tightened the color mix to keep it strictly on the bezels
-        float colorMix1 = 1.0 - smoothstep(0.0, 20.0, clampedDist + flow2 * 10.0);
-        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
-        
-        float coreShift = smoothstep(0.0, 2.0, clampedDist); 
-        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
-        
-        // 4. Alpha Finalization
-        float topBias = mix(0.15, 1.0, uv.y); 
-        float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
-        
-        float intensity = pow(finalLavaPresence, 0.7);
-        float pixelAlpha = intensity * breathAlpha * topBias;
-        pixelAlpha *= 0.95; 
-        
-        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float finalAlpha = pixelAlpha * screenMask;
-        
-        return half4(pureColor * finalAlpha, finalAlpha);
-    }
-"""
-
-
-const val AMBIENT_EDGE_SHADER = """
-    uniform float2 in_Resolution;
-    uniform float in_Time;
-    uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; 
-
-    // Hash function to generate noise bedrock
-    float hash(vec2 p) {
-        return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    // 2D Noise based on interpolation of hash values
-    float noise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float a = hash(i);
-        float b = hash(i + vec2(1.0, 0.0));
-        float c = hash(i + vec2(0.0, 1.0));
-        float d = hash(i + vec2(1.0, 1.0));
-        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    // Fractal Brownian Motion: Layer multiple noise octaves
-    float fBm(vec2 p) {
-        float f = 0.0;
-        f += 0.5000 * noise(p); p = p * 2.02;
-        f += 0.2500 * noise(p); p = p * 2.03;
-        f += 0.1250 * noise(p); p = p * 2.01;
-        return f / 0.875; // Normalize to 0.0 - 1.0
-    }
-
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r);
-        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
-
-    half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5);
-        vec2 b = in_Resolution.xy * 0.5;
-        
-        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float clampedDist = max(distFromEdge, 0.0);
-        
-        vec2 uv = fragCoord / in_Resolution.xy;
-        vec2 centered = uv - 0.5;
-        
-        // 1. Core Geometry and Volumetric Falloff (SDF)
-        float baseGlow = exp(-clampedDist * 0.035); // Very soft base
-        float edgeCore = exp(-clampedDist * 0.6);   // Sharp hardware core
-        
-        // 2. THE LAVA FLOW: Map complex noise to the inner boundary
-        // We use atan2() to wrap the noise around the rectangular boundary perfectly.
-        float angle = atan(centered.y, centered.x);
-        
-        // Layer two fBm noise patterns moving against each other
-        float noiseScale = 3.5;
-        float flowSpeed = in_Time * 0.15; // Set slow for lava feel
-        
-        float flow1 = fBm(vec2(angle * noiseScale + flowSpeed, clampedDist * 0.01));
-        float flow2 = fBm(vec2(angle * (noiseScale * 0.5) - (flowSpeed * 1.3), clampedDist * 0.03));
-        
-        // Combine them for interference patterns
-        float complexNoise = (flow1 + flow2) * 0.5;
-        
-        // Skew the noise so it primarily adds complexity to the inner glow
-        // but preserves the hot, bright core near the hardware edge.
-        float noiseModulation = (clampedDist * 0.02) * complexNoise;
-        float finalLavaPresence = max(baseGlow + noiseModulation, edgeCore);
-        
-        // 3. THE TEMPERATURE GRADIENT: Hot White -> App Color -> Deep Root
-        // Programmatically generate a "cooler" deep root from the dynamic app color
-        vec3 deepRootColor = vec3(in_AppColor) * 0.25; // Darken it 
-        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); // Add deep blue bias
-        
-        // Blend Stage 1: Cooler Flow into Rich App Color band
-        // We use the raw fBm values for complexity in the color blend
-        float colorMix1 = 1.0 - smoothstep(0.0, 30.0, clampedDist + flow2 * 10.0);
-        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
-        
-        // Blend Stage 2: Rich App Color into Hot White Core
-        float coreShift = smoothstep(0.0, 2.0, clampedDist); // Tight blend
-        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
-        
-        // 4. Alpha Finalization
-        float topBias = mix(0.15, 1.0, uv.y); 
-        float breathAlpha = (sin(in_Time * 3.0) + 1.0) * 0.5;
-        
-        // Use exponential curves for smooth exponential decay toward the center
-        // but inject the lava noise complexity into the final alpha presence
-        float intensity = pow(finalLavaPresence, 0.7);
-        float pixelAlpha = intensity * breathAlpha * topBias;
-        pixelAlpha *= 0.95; // Keep peak brightness high
-        
-        // AA Screen Mask for perfect hardware corner rendering
-        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
-        float finalAlpha = pixelAlpha * screenMask;
-        
-        return half4(pureColor * finalAlpha, finalAlpha);
-    }
-"""
-
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
@@ -519,10 +138,6 @@ class MainActivity : ComponentActivity() {
                 ) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         NotificationSyncPrototype()
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("AGSL requires Android 13+")
-                        }
                     }
                 }
             }
@@ -534,23 +149,31 @@ class MainActivity : ComponentActivity() {
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun NotificationSyncPrototype() {
+    // Spatial Hardware & Animation States
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
     var isNotificationActive by remember { mutableStateOf(false) }
     
+    // Tuning Rig States
+    var flowSpeed by remember { mutableFloatStateOf(1.5f) }
+    var thickness by remember { mutableFloatStateOf(40f) }
+    var amplitude by remember { mutableFloatStateOf(80f) }
+    var noiseScale by remember { mutableFloatStateOf(3.0f) }
+    
     val appColors = listOf(
-        Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), 
-        Color(0xFFFFFC00), Color(0xFFE1306C)
+        Color(0xFF1999FF), // Cyan
+        Color(0xFF25D366), // Green
+        Color(0xFFEA4335), // Red
+        Color(0xFFFFFC00), // Yellow
+        Color(0xFFFFFFFF)  // Pure White added
     )
     var selectedAppColor by remember { mutableStateOf(appColors[0]) }
 
-    // Spring physics for the pill drop-down
     val pillOffsetY by animateDpAsState(
         targetValue = if (isNotificationActive) 32.dp else (-100).dp,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f),
         label = "pill_drop"
     )
     
-    // Smooth fade for the edge lighting and pill opacity
     val masterAlpha by animateFloatAsState(
         targetValue = if (isNotificationActive) 1f else 0f,
         animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing),
@@ -567,26 +190,28 @@ fun NotificationSyncPrototype() {
                 )
             }
     ) {
-        // --- LAYER 1: The Background Image ---
-        // Replace 'sym_def_app_icon' with a real photo from your drawable folder 
-        // to see the true physical refraction of the Screen blend mode.
+        // --- LAYER 1: Background ---
         Image(
-            painter = painterResource(id = android.R.drawable.sym_def_app_icon),
-            contentDescription = "Background Photo",
+            painter = painterResource(id = android.R.drawable.sym_def_app_icon), // Replace with photo
+            contentDescription = "Background",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
 
-        // --- LAYER 2: The Edge Lighting ---
+        // --- LAYER 2: Tunable Edge Lighting ---
         AmbientEdgeLighting(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer { alpha = masterAlpha },
             cornerRadius = hardwareCornerRadius,
-            appColor = selectedAppColor
+            appColor = selectedAppColor,
+            speed = flowSpeed,
+            thickness = thickness,
+            amplitude = amplitude,
+            noiseScale = noiseScale
         )
 
-        // --- LAYER 3: The Notification Pill ---
+        // --- LAYER 3: Notification Pill ---
         Card(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -595,26 +220,14 @@ fun NotificationSyncPrototype() {
                 .fillMaxWidth(0.9f)
                 .height(64.dp),
             shape = RoundedCornerShape(32.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-            ),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(selectedAppColor, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(20.dp)
-                            .background(Color.White, RoundedCornerShape(4.dp))
-                    )
+            Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(40.dp).background(selectedAppColor, CircleShape), contentAlignment = Alignment.Center) {
+                    // Check if color is white to tint the inner icon dark for visibility
+                    val innerTint = if (selectedAppColor == Color(0xFFFFFFFF)) Color.Black else Color.White
+                    Box(modifier = Modifier.size(20.dp).background(innerTint, RoundedCornerShape(4.dp)))
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(verticalArrangement = Arrangement.Center) {
@@ -625,15 +238,19 @@ fun NotificationSyncPrototype() {
             }
         }
 
-        // --- LAYER 4: Prototype Controls ---
+        // --- LAYER 4: Tuning Rig Controls ---
+        // Wrapped in a scrolling column so it doesn't block the whole screen
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp)
-                .fillMaxWidth(0.9f),
+                .fillMaxHeight(0.6f) // Take up bottom 60% of screen
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 24.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Color Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     appColors.forEach { color ->
@@ -643,8 +260,8 @@ fun NotificationSyncPrototype() {
                                 .size(40.dp)
                                 .background(color, CircleShape)
                                 .border(
-                                    width = if (selectedAppColor == color) 3.dp else 0.dp,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    width = if (selectedAppColor == color) 3.dp else 1.dp, // Slight border so white is visible
+                                    color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray,
                                     shape = CircleShape
                                 )
                                 .clickable(interactionSource = interactionSource, indication = null) { 
@@ -656,16 +273,22 @@ fun NotificationSyncPrototype() {
                 }
             }
 
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Corner Radius Match: ${hardwareCornerRadius.toInt()}px", style = MaterialTheme.typography.labelLarge)
-                    Slider(
-                        value = hardwareCornerRadius,
-                        onValueChange = { hardwareCornerRadius = it },
-                        valueRange = 0f..300f
-                    )
-                }
-            }
+            // Tuning Sliders
+            TuningSlider("Speed", flowSpeed, 0.1f..5.0f) { flowSpeed = it }
+            TuningSlider("Thickness", thickness, 10f..150f) { thickness = it }
+            TuningSlider("Amplitude (Inward Push)", amplitude, 0f..200f) { amplitude = it }
+            TuningSlider("Noise Scale (Wave Size)", noiseScale, 1.0f..10.0f) { noiseScale = it }
+            TuningSlider("Corner Radius", hardwareCornerRadius, 0f..300f) { hardwareCornerRadius = it }
+        }
+    }
+}
+
+@Composable
+fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onValueChange: (Float) -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("$label: ${String.format("%.1f", value)}", style = MaterialTheme.typography.labelMedium)
+            Slider(value = value, onValueChange = onValueChange, valueRange = range)
         }
     }
 }
@@ -676,7 +299,11 @@ fun NotificationSyncPrototype() {
 fun AmbientEdgeLighting(
     modifier: Modifier = Modifier,
     cornerRadius: Float = 120f,
-    appColor: Color 
+    appColor: Color,
+    speed: Float,
+    thickness: Float,
+    amplitude: Float,
+    noiseScale: Float
 ) {
     var time by remember { mutableFloatStateOf(0f) }
     
@@ -700,10 +327,16 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_CornerRadius", cornerRadius)
                 shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
                 
+                // Pass the tuning variables into the shader
+                shader.setFloatUniform("in_Speed", speed)
+                shader.setFloatUniform("in_Spread", thickness)
+                shader.setFloatUniform("in_Amplitude", amplitude)
+                shader.setFloatUniform("in_NoiseScale", noiseScale)
+                
                 onDrawBehind {
                     drawRect(
                         brush = shaderBrush,
-                        blendMode = BlendMode.Screen // Act as physical, additive light
+                        blendMode = BlendMode.Plus 
                     )
                 }
             }
