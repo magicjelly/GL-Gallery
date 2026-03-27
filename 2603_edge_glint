@@ -33,7 +33,64 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
-// SHADER 1: THE SPECULAR GLINT (Sweeping)
+// SHADER 0: AMBIENT LAVA (Viscous Flow)
+// ==========================================
+const val LAVA_SHADER = """
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i); float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0)); float d = hash(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = p * 2.02;
+        f += 0.2500 * noise(p); p = p * 2.03;
+        f += 0.1250 * noise(p); p = p * 2.01;
+        return f / 0.875;
+    }
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(distFromEdge, 0.0);
+        vec2 uv = fragCoord / in_Resolution.xy;
+        
+        vec2 noiseUV = uv * vec2(max(in_NoiseScale, 1.0), max(in_NoiseScale, 1.0) * 2.0); 
+        float time = in_Time * in_Speed; 
+        float flow1 = fBm(noiseUV + vec2(time * 0.5, -time * 0.8));
+        float flow2 = fBm(noiseUV * 1.5 - vec2(-time * 0.3, time * 1.1));
+        float complexNoise = pow((flow1 + flow2) * 0.5, 2.0); 
+        
+        float distortedDist = max(clampedDist - (complexNoise * in_Amplitude), 0.0);
+        float decayFactor = 1.0 / max(in_Spread, 1.0);
+        float baseGlow = exp(-distortedDist * decayFactor); 
+        float edgeCore = exp(-clampedDist * 0.5);   
+        float finalLavaPresence = max(baseGlow, edgeCore);
+        
+        vec3 deepRootColor = vec3(in_AppColor) * 0.25; 
+        deepRootColor = mix(deepRootColor, vec3(0.0, 0.0, 0.1), 0.3); 
+        float colorMix1 = 1.0 - smoothstep(0.0, in_Spread * 2.0, distortedDist);
+        vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), colorMix1);
+        float coreShift = smoothstep(0.0, 2.0, clampedDist); 
+        vec3 pureColor = mix(vec3(1.0), midRangeColor, coreShift);
+        
+        float topBias = mix(0.15, 1.0, uv.y); 
+        float pixelAlpha = finalLavaPresence * topBias * 0.95; 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
+        float finalAlpha = pixelAlpha * screenMask * in_MasterAlpha;
+        return half4(pureColor * finalAlpha, finalAlpha);
+    }
+"""
+
+// ==========================================
+// SHADER 1: SPECULAR GLINT (Organic Droplet)
 // ==========================================
 const val GLINT_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -53,41 +110,31 @@ const val GLINT_SHADER = """
         float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
         float sweep = fract(in_Time * in_Speed * 0.3);
         
-        // 1. ORGANIC DROPLET SHAPE (Fixes the sharp edge)
-        float angularDist = fract(sweep - angle); // The long tail trailing behind
-        float distForward = fract(angle - sweep); // The short slope pushing forward
+        float angularDist = fract(sweep - angle); 
+        float distForward = fract(angle - sweep); 
         
-        // Create a seamless volume that slopes down in front and trails off in back
         float tailLength = max(in_Amplitude * 0.005, 0.05); 
         float tail = exp(-angularDist * (1.0 / tailLength)); 
-        float front = exp(-distForward * 100.0); // Steep, but completely smooth forward slope
+        float front = exp(-distForward * 100.0); 
+        float dropShape = max(tail, front); 
         
-        float dropShape = max(tail, front); // The seamless app-color footprint
-        
-        // 2. TRUE SPHERICAL HOTSPOT
         float approxPerimeter = (in_Resolution.x + in_Resolution.y) * 1.5; 
         float spatialDist = min(angularDist, distForward) * approxPerimeter; 
         
         float headRadius = max(in_NoiseScale * 2.0, 2.0); 
         float headGlow = exp(-length(vec2(spatialDist, clampedDist)) / headRadius);
         
-        // 3. COMBINE
         float thicknessDecay = 1.0 / max(in_Spread, 1.0);
         float baseGlow = exp(-clampedDist * thicknessDecay); 
-        
         float finalPresence = baseGlow * dropShape;
         
-        // Color mix transitions perfectly from AppColor to Pure White at the spherical core
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), min(headGlow * 1.5, 1.0));
-        
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
         float finalAlpha = clamp(finalPresence + headGlow, 0.0, 1.0) * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
-
-
 
 // ==========================================
 // SHADER 2: PRISMATIC REFRACTION (Aberration)
@@ -103,7 +150,6 @@ const val PRISMATIC_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float d = -sdRoundRect(p, b, in_CornerRadius); 
         
-        // Offset mapping: Creates the spatial split for the RGB channels
         float offset = (sin(in_Time * in_Speed) + 1.0) * 0.5 * in_Amplitude * 0.2 + (in_Spread * 0.05);
         float dR = max(d - offset, 0.0);
         float dG = max(d, 0.0);
@@ -114,7 +160,6 @@ const val PRISMATIC_SHADER = """
         float g = exp(-dG * decay);
         float bl = exp(-dB * decay);
         
-        // Mix the raw RGB split with the app color for a tinted glass look
         vec3 prismColor = vec3(r, g, bl);
         vec3 finalColor = mix(prismColor, vec3(in_AppColor) * prismColor, 0.6);
         
@@ -126,16 +171,14 @@ const val PRISMATIC_SHADER = """
 """
 
 // ==========================================
-// SHADER 3: MAGNETIC SPARKS (Frosted Bokeh)
+// SHADER 3: MAGNETIC SPARKS (Cellular)
 // ==========================================
 const val SPARK_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     
-    // Hash to generate random behaviors for each individual spark
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
@@ -144,55 +187,37 @@ const val SPARK_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
         
-        // 1. CELLULAR GRID SYSTEM (Perfectly square cells independent of screen ratio)
-        // Noise scale slider now controls the physical size of the grid boxes
         float cellSize = max(60.0 - (in_NoiseScale * 5.0), 15.0);
         vec2 particleUV = fragCoord / cellSize;
         
-        // Push the entire grid upward to make sparks rise
         particleUV.y += in_Time * in_Speed * 1.5;
-        // Add a gentle horizontal drift
         particleUV.x += sin(particleUV.y * 0.5) * 0.3;
         
-        vec2 cellID = floor(particleUV); // The unique ID of this invisible box
-        vec2 localPos = fract(particleUV); // Where we are inside the box (0.0 to 1.0)
+        vec2 cellID = floor(particleUV); 
+        vec2 localPos = fract(particleUV); 
         
-        // 2. SPARK GENERATION
-        float randomSeed = hash(cellID); // A random number just for this cell
-        
-        // Place the spark randomly inside the cell, but keep it away from the absolute edges
+        float randomSeed = hash(cellID); 
         vec2 sparkCenter = vec2(0.5) + 0.3 * vec2(sin(randomSeed * 100.0), cos(randomSeed * 100.0));
         float distToSpark = length(localPos - sparkCenter);
         
-        // Make the spark twinkle dynamically based on its random seed and time
         float twinkle = (sin(in_Time * 5.0 + randomSeed * 50.0) + 1.0) * 0.5;
-        
-        // Gate the sparks: Amplitude slider controls how many boxes actually get a spark
         float threshold = clamp(1.0 - (in_Amplitude / 200.0), 0.05, 0.98);
         float isSparkAlive = step(threshold, randomSeed);
         
-        // Draw a perfectly round, razor-sharp dot
         float sparkShape = exp(-distToSpark * 25.0) * isSparkAlive * twinkle;
         
-        // 3. HARDWARE ROUTING
         float decay = 1.0 / max(in_Spread, 1.0);
-        float baseGlow = exp(-clampedDist * decay) * 0.1; // Very dim base line
-        
-        // Sparks are only allowed to exist physically near the edge of the screen
+        float baseGlow = exp(-clampedDist * decay) * 0.1; 
         float edgeMask = exp(-clampedDist * 0.1); 
         float finalPresence = baseGlow + (sparkShape * edgeMask * 3.0);
         
-        // Overexpose the color to white where the spark is brightest
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparkShape * 1.5, 0.0, 1.0));
-        
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
         float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
-
-
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
@@ -222,12 +247,13 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    // Shader Selection State
-    val effects = listOf("Glint", "Prism", "Sparks")
+    // Shader Selection State (Now with 4 effects)
+    val effects = listOf("Lava", "Glint", "Prism", "Sparks")
     var selectedEffectIndex by remember { mutableIntStateOf(0) }
     val activeShaderString = when(selectedEffectIndex) {
-        0 -> GLINT_SHADER
-        1 -> PRISMATIC_SHADER
+        0 -> LAVA_SHADER
+        1 -> GLINT_SHADER
+        2 -> PRISMATIC_SHADER
         else -> SPARK_SHADER
     }
     
@@ -283,7 +309,7 @@ fun NotificationSyncPrototype() {
                 .padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // New Effect Selector
+            // Effect Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     effects.forEachIndexed { index, name ->
@@ -291,7 +317,7 @@ fun NotificationSyncPrototype() {
                         TextButton(
                             onClick = { 
                                 selectedEffectIndex = index
-                                isNotificationActive = true // Auto-trigger to show new effect
+                                isNotificationActive = true 
                             },
                             colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         ) {
@@ -301,6 +327,7 @@ fun NotificationSyncPrototype() {
                 }
             }
 
+            // Color Selector
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     appColors.forEach { color ->
@@ -316,14 +343,16 @@ fun NotificationSyncPrototype() {
                 }
             }
 
+            // Universal Tuning Sliders
             TuningSlider("Speed / Time Scale", flowSpeed, 0.1f..5.0f) { flowSpeed = it }
             TuningSlider("Spread / Thickness", thickness, 10f..150f) { thickness = it }
-            TuningSlider("Amplitude / Tail / Offset", amplitude, 0f..200f) { amplitude = it }
-            TuningSlider("Noise / Sharpness", noiseScale, 1.0f..10.0f) { noiseScale = it }
+            TuningSlider("Amplitude / Tail / Density", amplitude, 0f..200f) { amplitude = it }
+            TuningSlider("Noise / Sharpness / Size", noiseScale, 1.0f..10.0f) { noiseScale = it }
         }
     }
 }
 
+// Ensure there is only ONE TuningSlider composable in your file to avoid conflicts!
 @Composable
 fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onValueChange: (Float) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
@@ -339,7 +368,7 @@ fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Fl
 @Composable
 fun AmbientEdgeLighting(
     modifier: Modifier = Modifier,
-    shaderString: String, // Dynamic shader injection
+    shaderString: String, 
     cornerRadius: Float = 120f,
     appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float 
 ) {
@@ -353,7 +382,6 @@ fun AmbientEdgeLighting(
         }
     }
 
-    // Recompile the shader instantly when the user taps a different effect button
     val shader = remember(shaderString) { RuntimeShader(shaderString) }
     val shaderBrush = remember(shader) { ShaderBrush(shader) }
 
