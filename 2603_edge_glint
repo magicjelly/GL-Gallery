@@ -119,6 +119,9 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 // SHADER 6: BIOLUMINESCENT FLUID (Refractive / Specular / Droplet Physics)
 // ==========================================
+// ==========================================
+// SHADER 6: BIOLUMINESCENT FLUID (Transparent Volumetric Glass/Metal)
+// ==========================================
 const val FLUID_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -135,7 +138,6 @@ const val FLUID_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float clampedDist = max(distFromEdge, 0.0);
-        vec2 uv = fragCoord / in_Resolution.xy;
         
         float time = in_Time * in_Speed * 0.15; 
         vec2 physicalGravity = in_Gravity * 0.8; 
@@ -167,34 +169,33 @@ const val FLUID_SHADER = """
         
         // 1. 3D NORMAL CALCULATION
         vec3 normal = normalize(vec3(-fluidGradient.x, -fluidGradient.y, 0.05));
-        
-        // 2. PROCEDURAL BACKGROUND (Refraction)
-        vec2 refractedUV = uv + (normal.xy * 0.1 * smoothstep(threshold - 0.1, threshold + 0.1, fluidDensity));
-        float gridX = step(0.95, fract(refractedUV.x * 20.0));
-        float gridY = step(0.95, fract(refractedUV.y * 40.0));
-        vec3 background = mix(vec3(0.05), vec3(0.2), max(gridX, gridY)); 
 
-        // 3. AMBIENT OCCLUSION
-        float shadow = smoothstep(threshold - 0.08, threshold, fluidDensity);
-        background *= mix(1.0, 0.2, shadow);
-
-        // 4. THE FLUID SURFACE & SPECULAR GLOSS
+        // 2. MASKS (Fluid vs Shadow)
         float isFluid = smoothstep(threshold, threshold + 0.02, fluidDensity);
-        
+        // Isolate the shadow to just the ring around the fluid
+        float shadowMask = max(smoothstep(threshold - 0.08, threshold, fluidDensity) - isFluid, 0.0);
+
+        // 3. THE FLUID SURFACE (Gloss & Edge Lighting)
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0));
         float gloss = pow(max(dot(normal, lightDir), 0.0), 32.0) * 1.5;
         float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 3.0);
         
         vec3 deepColor = mix(vec3(0.0, 0.05, 0.15), vec3(in_AppColor), 0.8);
-        vec3 fluidColor = mix(background, deepColor, 0.6); 
-        fluidColor += (vec3(1.0) * gloss) + (vec3(in_AppColor) * fresnel * 0.5); 
+        vec3 fluidColor = deepColor + (vec3(1.0) * gloss) + (vec3(in_AppColor) * fresnel * 0.5); 
         
-        vec3 finalColor = mix(background, fluidColor, isFluid);
+        // 4. ALPHA COMPOSITION
+        // The fluid is 85% opaque to show volume. The shadow is 50% opaque black.
+        float pixelAlpha = max(isFluid * 0.85, shadowMask * 0.5);
+        vec3 finalColor = mix(vec3(0.0), fluidColor, isFluid);
+        
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
+        float finalAlphaMask = pixelAlpha * screenMask * in_MasterAlpha;
         
-        return half4(finalColor * screenMask * in_MasterAlpha, screenMask * in_MasterAlpha);
+        // Output pre-multiplied alpha so BlendMode.SrcOver handles the background image flawlessly
+        return half4(finalColor * finalAlphaMask, finalAlphaMask);
     }
 """
+
 
 // ==========================================
 // SHADER 7: WAVE (Integer Phase Locking Fix)
