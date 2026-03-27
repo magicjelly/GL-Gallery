@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +48,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
-// SHADER ENGINES (Updated with in_TransferProgress)
+// SHADER ENGINES
 // ==========================================
 
 const val LAVA_SHADER = """
@@ -56,7 +57,7 @@ const val LAVA_SHADER = """
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
     uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    uniform float in_TransferProgress; // Added for JNI Safety
+    uniform float in_TransferProgress; 
     
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -137,17 +138,12 @@ const val SUNLIGHT_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 6: BIOLUMINESCENT FLUID (The Transfer Engine)
-// ==========================================
 const val FLUID_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
     uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
-    
-    // NEW: Driven by the UI state machine to drain the fluid mass
     uniform float in_TransferProgress; 
 
     float sdRoundRect(vec2 p, vec2 b, float r) {
@@ -172,8 +168,6 @@ const val FLUID_SHADER = """
                 cos(time * 0.8 * i) * (0.05 * i) + 0.5 + physicalGravity.y
             ) * in_Resolution.xy;
             
-            // As transfer progress increases, the droplets are forcefully pulled 
-            // deeper into the exact exit coordinate (in_TouchPos).
             vec2 staticOffset = vec2(sin(i * 2.0), cos(i * 2.0)) * (8.0 * i) * (1.0 - in_TransferProgress);
             vec2 magneticTouchPos = in_TouchPos + staticOffset;
             
@@ -183,9 +177,6 @@ const val FLUID_SHADER = """
             fluidDensity += (in_NoiseScale * mass) / (distToDrop * distToDrop);
         }
         
-        // TRANSFER PHYSICS: 
-        // Increasing the threshold mathematically shrinks the metaballs, mimicking fluid volume leaving the screen.
-        // It peaks at progress = 0.95 so it completely vanishes before hitting 1.0.
         float baseThreshold = 1.0 - (in_Amplitude / 200.0); 
         float transferDrain = in_TransferProgress * 0.8; 
         float threshold = baseThreshold + transferDrain;
@@ -270,13 +261,11 @@ fun NotificationSyncPrototype() {
     val fluidMomentumX by animateFloatAsState(targetValue = -rawGravityX, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_x")
     val fluidMomentumY by animateFloatAsState(targetValue = rawGravityY, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_y")
 
-    // State Machine Tracking
     var transferState by remember { mutableStateOf(TransferState.IDLE) }
     var touchX by remember { mutableFloatStateOf(0f) }
     var touchY by remember { mutableFloatStateOf(0f) }
     var isScreenTouched by remember { mutableStateOf(false) }
     
-    // Magnetic pull is driven either by the user's finger OR the scripted File Transfer state
     val isMagneticPullActive = isScreenTouched || transferState != TransferState.IDLE
     val magneticTouchStrength by animateFloatAsState(
         targetValue = if (isMagneticPullActive) 1f else 0f,
@@ -284,7 +273,6 @@ fun NotificationSyncPrototype() {
         label = "magnetic_pull"
     )
     
-    // The physics variable that drains the fluid mass during transfer
     val transferProgress by animateFloatAsState(
         targetValue = if (transferState == TransferState.TRANSFERRING) 1f else 0f,
         animationSpec = if (transferState == TransferState.TRANSFERRING) tween(2000, easing = LinearOutSlowInEasing) else snap(),
@@ -298,11 +286,20 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    val effects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays", "Fluid", "Wave")
-    var selectedEffectIndex by remember { mutableIntStateOf(6) } 
-    val activeShaderString = when(selectedEffectIndex) {
-        0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
-        4 -> AURA_SHADER; 5 -> SUNLIGHT_SHADER; 6 -> FLUID_SHADER; else -> WAVE_SHADER
+    // NEW: Tab Selection Logic
+    var selectedCategory by remember { mutableIntStateOf(0) } // 0 = Notifications, 1 = Physics
+    var selectedNotificationIndex by remember { mutableIntStateOf(4) } // Default Aura
+    var selectedPhysicsIndex by remember { mutableIntStateOf(0) } // Default Fluid
+    
+    val activeShaderString = if (selectedCategory == 0) {
+        when (selectedNotificationIndex) {
+            0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
+            4 -> AURA_SHADER; else -> SUNLIGHT_SHADER
+        }
+    } else {
+        when (selectedPhysicsIndex) {
+            0 -> FLUID_SHADER; else -> WAVE_SHADER
+        }
     }
     
     val appColors = listOf(Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), Color(0xFFFFFC00), Color(0xFFFFFFFF))
@@ -325,7 +322,6 @@ fun NotificationSyncPrototype() {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull()
                         if (change != null) {
-                            // Don't update touch pos if the state machine took control of it
                             if (transferState == TransferState.IDLE) {
                                 touchX = change.position.x
                                 touchY = change.position.y
@@ -373,48 +369,72 @@ fun NotificationSyncPrototype() {
         }
 
         Column(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxHeight(0.6f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxHeight(0.65f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             
-            // NEW: The File Share State Machine Trigger
-            Button(
-                onClick = {
-                    coroutineScope.launch {
-                        // 1. Handshake Phase
-                        selectedEffectIndex = 6 // Ensure Fluid is selected
-                        isNotificationActive = true
-                        
-                        // Override touch coordinates to the "NFC Top Bump" point
-                        touchX = screenWidthPx / 2f
-                        touchY = 0f 
-                        transferState = TransferState.CONNECTING
-                        
-                        delay(1200) // Let the fluid rush up and pool at the top, building tension
-                        
-                        // 2. Transfer Phase
-                        transferState = TransferState.TRANSFERRING
-                        
-                        delay(2000) // Wait for the fluid to fully drain into the other phone
-                        
-                        // 3. Completion Phase (The Snap)
-                        transferState = TransferState.IDLE // Cuts the magnetic pull instantly
+            // NEW: Category Tab Row
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+                TabRow(
+                    selectedTabIndex = selectedCategory,
+                    containerColor = Color.Transparent,
+                    indicator = { tabPositions ->
+                        TabRowDefaults.SecondaryIndicator(
+                            Modifier.tabIndicatorOffset(tabPositions[selectedCategory]),
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
-                },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Icon(Icons.Default.Send, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Simulate File Share", fontWeight = FontWeight.Bold)
+                ) {
+                    Tab(
+                        selected = selectedCategory == 0,
+                        onClick = { selectedCategory = 0; isNotificationActive = true },
+                        text = { Text("Notifications", fontWeight = FontWeight.Bold) }
+                    )
+                    Tab(
+                        selected = selectedCategory == 1,
+                        onClick = { selectedCategory = 1; isNotificationActive = true },
+                        text = { Text("System Physics", fontWeight = FontWeight.Bold) }
+                    )
+                }
+            }
+            
+            // NEW: Dynamic Controls Based on Category
+            if (selectedCategory == 1 && selectedPhysicsIndex == 0) {
+                Button(
+                    onClick = {
+                        coroutineScope.launch {
+                            isNotificationActive = true
+                            touchX = screenWidthPx / 2f
+                            touchY = 0f 
+                            transferState = TransferState.CONNECTING
+                            delay(1200) 
+                            transferState = TransferState.TRANSFERRING
+                            delay(2000) 
+                            transferState = TransferState.IDLE 
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Simulate Sender Drop", fontWeight = FontWeight.Bold)
+                }
             }
 
+            // NEW: Dynamic Effect Selection Buttons
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    effects.forEachIndexed { index, name ->
-                        val isSelected = selectedEffectIndex == index
+                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("Fluid Transfer", "Haptic Wave")
+                    val currentIndex = if (selectedCategory == 0) selectedNotificationIndex else selectedPhysicsIndex
+
+                    currentEffects.forEachIndexed { index, name ->
+                        val isSelected = currentIndex == index
                         TextButton(
-                            onClick = { selectedEffectIndex = index; isNotificationActive = true },
+                            onClick = { 
+                                if (selectedCategory == 0) selectedNotificationIndex = index else selectedPhysicsIndex = index
+                                isNotificationActive = true 
+                            },
                             colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface),
                             contentPadding = PaddingValues(horizontal = 8.dp) 
                         ) {
@@ -499,7 +519,6 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_TouchPos", touchX, touchY)
                 shader.setFloatUniform("in_TouchActive", touchActive)
                 
-                // Track the state machine draining sequence
                 shader.setFloatUniform("in_TransferProgress", transferProgress)
                 
                 onDrawBehind { drawRect(brush = shaderBrush, blendMode = BlendMode.Plus) }
