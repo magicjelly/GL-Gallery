@@ -1,4 +1,9 @@
+import android.content.Context
 import android.graphics.RuntimeShader
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -26,9 +31,11 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -36,13 +43,16 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
-// SHADER 0: AMBIENT LAVA
+// ALL SHADERS UPDATED WITH TOUCH UNIFORMS FOR JNI SAFETY
 // ==========================================
+
 const val LAVA_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -76,14 +86,13 @@ const val LAVA_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 1: SPECULAR GLINT
-// ==========================================
 const val GLINT_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     const float PI = 3.14159265359;
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -106,14 +115,13 @@ const val GLINT_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 2: PRISMATIC REFRACTION
-// ==========================================
 const val PRISMATIC_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
@@ -130,14 +138,13 @@ const val PRISMATIC_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 3: MAGNETIC SPARKS
-// ==========================================
 const val SPARK_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -157,14 +164,13 @@ const val SPARK_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 4: THE AURA
-// ==========================================
 const val AURA_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -193,14 +199,13 @@ const val AURA_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 5: SUNLIGHT RAYS
-// ==========================================
 const val SUNLIGHT_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -228,13 +233,18 @@ const val SUNLIGHT_SHADER = """
 """
 
 // ==========================================
-// SHADER 6: BIOLUMINESCENT FLUID (Gravity/Gyro)
+// SHADER 6: BIOLUMINESCENT FLUID (The Magnetic Snapping NameDrop Killer)
 // ==========================================
 const val FLUID_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity;
+    
+    // NEW: The Magnetic Touch Attractor
+    uniform float2 in_TouchPos; 
+    uniform float in_TouchActive; 
 
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -244,39 +254,42 @@ const val FLUID_SHADER = """
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float clampedDist = max(distFromEdge, 0.0);
-        vec2 uv = fragCoord / in_Resolution.xy;
         
         float time = in_Time * in_Speed * 0.5;
+        vec2 physicalGravity = vec2(in_Gravity.x, -in_Gravity.y) * 0.6; 
         
-        // Simulating Hardware Gyroscope / Gravity vector sloshing
-        vec2 simulatedGravity = vec2(sin(time * 0.8) * 0.3, cos(time * 0.5) * 0.3);
-        
-        // Generate metaball "droplets" that drift along the edge
         float fluidDensity = 0.0;
         for(float i = 1.0; i <= 5.0; i++) {
-            // Calculate drifting positions for droplets, influenced by "gravity"
-            vec2 dropPos = vec2(
-                sin(time * 1.1 * i) * 0.4 + 0.5 + simulatedGravity.x,
-                cos(time * 0.9 * i) * 0.4 + 0.5 + simulatedGravity.y
+            // 1. Natural Hardware Gravity Drift
+            vec2 gravityDriftPos = vec2(
+                sin(time * 1.1 * i) * 0.3 + 0.5 + physicalGravity.x,
+                cos(time * 0.9 * i) * 0.3 + 0.5 + physicalGravity.y
             ) * in_Resolution.xy;
             
-            float distToDrop = length(fragCoord - dropPos);
-            // Inverse square falloff creates the "sticky" metaball merging effect
-            fluidDensity += (in_NoiseScale * 1000.0) / (distToDrop * distToDrop);
+            // 2. The NFC Magnetic Swarm
+            // This calculates an organic "swarming" circle around the exact touch coordinate
+            vec2 swarmOffset = vec2(sin(time * 3.0 + i * 1.5), cos(time * 2.5 + i * 1.5)) * (25.0 * i);
+            vec2 magneticTouchPos = in_TouchPos + swarmOffset;
+            
+            // 3. The Physical Bridge 
+            // Smoothly interpolate between falling due to gravity and flying towards the finger
+            vec2 finalDropPos = mix(gravityDriftPos, magneticTouchPos, in_TouchActive);
+            
+            float distToDrop = length(fragCoord - finalDropPos);
+            fluidDensity += (in_NoiseScale * 1500.0) / (distToDrop * distToDrop);
         }
         
-        // Gate the density to create hard, viscous fluid surfaces
         float threshold = 1.0 - (in_Amplitude / 200.0); 
         float viscousFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
         
-        // Constrain the fluid physically to the hardware bezel
+        // When touch is active, let the fluid break slightly away from the absolute edge
+        // so it can reach out toward the "connecting device"
+        float magneticPullOffEdge = mix(0.5, 0.2, in_TouchActive);
         float decayFactor = 1.0 / max(in_Spread, 1.0);
-        float edgeCore = exp(-clampedDist * decayFactor * 0.5);   
+        float edgeCore = exp(-clampedDist * decayFactor * magneticPullOffEdge);   
         
-        // Multiply the fluid by the edge glow so it only exists on the physical glass curve
         float finalPresence = viscousFluid * edgeCore * 1.5;
         
-        // Deep bioluminescent coloring
         vec3 deepColor = mix(vec3(0.0, 0.1, 0.2), vec3(in_AppColor), fluidDensity);
         vec3 pureColor = mix(deepColor, vec3(1.0), smoothstep(threshold + 0.2, threshold + 0.5, fluidDensity));
         
@@ -287,60 +300,42 @@ const val FLUID_SHADER = """
     }
 """
 
-// ==========================================
-// SHADER 7: RESONANT CYMATICS (Haptic Soundwave)
-// ==========================================
 const val WAVE_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
 
     const float PI = 3.14159265359;
-
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
-
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        
         vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
         float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
         float time = in_Time * in_Speed * 3.0;
 
-        // SYNTHETIC AUDIO FFT GENERATOR
-        // This simulates a complex music soundwave bouncing along the bezel
-        float freq1 = sin(angle * (in_NoiseScale * 10.0) + time) * 0.5; // High freq
-        float freq2 = cos(angle * (in_NoiseScale * 5.0) - time * 0.8) * 0.3; // Mid freq
-        float beat = sin(time * 2.0) * 0.2; // Low frequency bass thump
-        
-        // Combine frequencies into an audio waveform displacement value
+        float freq1 = sin(angle * (in_NoiseScale * 10.0) + time) * 0.5; 
+        float freq2 = cos(angle * (in_NoiseScale * 5.0) - time * 0.8) * 0.3; 
+        float beat = sin(time * 2.0) * 0.2; 
         float audioWaveform = (freq1 + freq2 + beat) * (in_Amplitude * 0.5);
         
-        // Calculate the physical distance, but subtract the audio waveform
-        // This violently warps the distance field to the beat of the "music"
         float rawDist = -sdRoundRect(p, b, in_CornerRadius); 
         float warpedDist = max(rawDist - audioWaveform, 0.0);
-        
         float decayFactor = 1.0 / max(in_Spread, 1.0);
         
-        // The core hardware edge remains steady, but the glow ripples outward
         float edgeCore = exp(-max(rawDist, 0.0) * decayFactor * 2.0); 
         float rippleGlow = exp(-warpedDist * decayFactor); 
-        
         float finalPresence = max(edgeCore, rippleGlow);
         
-        // High-contrast color mapping for a sharp, kinetic visualizer look
         vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(audioWaveform * 0.02, 0.0, 1.0));
-        
-        float screenMask = clamp(rawDist * 10.0, 0.0, 1.0);
-        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * clamp(rawDist * 10.0, 0.0, 1.0) * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
-
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
@@ -362,12 +357,43 @@ class MainActivity : ComponentActivity() {
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun NotificationSyncPrototype() {
+    val context = LocalContext.current
     val density = LocalDensity.current
     val config = LocalConfiguration.current
     
+    val sensorManager = remember { context.getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    var gravityX by remember { mutableFloatStateOf(0f) }
+    var gravityY by remember { mutableFloatStateOf(0f) }
+
+    DisposableEffect(Unit) {
+        val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    gravityX = it.values[0] / 9.81f
+                    gravityY = it.values[1] / 9.81f
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        sensorManager.registerListener(listener, gravitySensor, SensorManager.SENSOR_DELAY_GAME)
+        onDispose { sensorManager.unregisterListener(listener) }
+    }
+    
+    // NEW: Raw Touch Tracking State
+    var touchX by remember { mutableFloatStateOf(0f) }
+    var touchY by remember { mutableFloatStateOf(0f) }
+    var isScreenTouched by remember { mutableStateOf(false) }
+    
+    // Smoothly animate the magnetic gravity well so it doesn't instantly snap
+    val magneticTouchStrength by animateFloatAsState(
+        targetValue = if (isScreenTouched) 1f else 0f,
+        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+        label = "magnetic_pull"
+    )
+    
     var hardwareCornerRadius by remember { mutableFloatStateOf(120f) }
     var isNotificationActive by remember { mutableStateOf(false) }
-    
     var flowSpeed by remember { mutableFloatStateOf(1.5f) }
     var thickness by remember { mutableFloatStateOf(40f) }
     var amplitude by remember { mutableFloatStateOf(80f) }
@@ -376,14 +402,8 @@ fun NotificationSyncPrototype() {
     val effects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays", "Fluid", "Wave")
     var selectedEffectIndex by remember { mutableIntStateOf(6) } 
     val activeShaderString = when(selectedEffectIndex) {
-        0 -> LAVA_SHADER
-        1 -> GLINT_SHADER
-        2 -> PRISMATIC_SHADER
-        3 -> SPARK_SHADER
-        4 -> AURA_SHADER
-        5 -> SUNLIGHT_SHADER
-        6 -> FLUID_SHADER
-        else -> WAVE_SHADER
+        0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
+        4 -> AURA_SHADER; 5 -> SUNLIGHT_SHADER; 6 -> FLUID_SHADER; else -> WAVE_SHADER
     }
     
     val appColors = listOf(Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), Color(0xFFFFFC00), Color(0xFFFFFFFF))
@@ -398,15 +418,28 @@ fun NotificationSyncPrototype() {
     val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
 
     Box(
-        modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-            detectTapGestures(onTap = { isNotificationActive = true }, onDoubleTap = { isNotificationActive = false })
-        }
+        modifier = Modifier
+            .fillMaxSize()
+            // 1. Passive pointer input that tracks X/Y without breaking the taps
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull()
+                        if (change != null) {
+                            touchX = change.position.x
+                            touchY = change.position.y
+                            isScreenTouched = change.pressed
+                        }
+                    }
+                }
+            }
+            // 2. The standard tap logic
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { isNotificationActive = true }, onDoubleTap = { isNotificationActive = false })
+            }
     ) {
-        // --- LAYER 1: Background ---
-        Image(
-            painter = painterResource(id = android.R.drawable.sym_def_app_icon),
-            contentDescription = "Background", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()
-        )
+        Image(painter = painterResource(id = android.R.drawable.sym_def_app_icon), contentDescription = "Background", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
 
         // --- LAYER 2: GPU Render Engine ---
         AmbientEdgeLighting(
@@ -415,10 +448,12 @@ fun NotificationSyncPrototype() {
             cornerRadius = hardwareCornerRadius, appColor = selectedAppColor,
             speed = flowSpeed, thickness = thickness, amplitude = amplitude, noiseScale = noiseScale,
             masterAlpha = masterAlpha,
-            pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx 
+            pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx,
+            gravityX = gravityX, gravityY = gravityY,
+            // Route the magnetic touch values to the GPU
+            touchX = touchX, touchY = touchY, touchActive = magneticTouchStrength
         )
 
-        // --- LAYER 3: Notification Pill ---
         Card(
             modifier = Modifier.align(Alignment.TopCenter).offset(y = pillOffsetY).alpha(masterAlpha).fillMaxWidth(0.9f).height(64.dp),
             shape = RoundedCornerShape(32.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
@@ -438,18 +473,12 @@ fun NotificationSyncPrototype() {
             }
         }
 
-        // --- LAYER 4: Tuning Rig Controls ---
         Column(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxHeight(0.6f).fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxHeight(0.6f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                // ADDED horizontalScroll so all 8 buttons fit gracefully
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), 
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     effects.forEachIndexed { index, name ->
                         val isSelected = selectedEffectIndex == index
                         TextButton(
@@ -467,8 +496,7 @@ fun NotificationSyncPrototype() {
                 Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     appColors.forEach { color ->
                         val interactionSource = remember(color) { MutableInteractionSource() }
-                        Box(
-                            modifier = Modifier.size(40.dp).background(color, CircleShape)
+                        Box(modifier = Modifier.size(40.dp).background(color, CircleShape)
                                 .border(width = if (selectedAppColor == color) 3.dp else 1.dp, color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
                                 .clickable(interactionSource = interactionSource, indication = null) { selectedAppColor = color; isNotificationActive = true }
                         )
@@ -499,7 +527,8 @@ fun TuningSlider(label: String, value: Float, range: ClosedFloatingPointRange<Fl
 fun AmbientEdgeLighting(
     modifier: Modifier = Modifier, shaderString: String, cornerRadius: Float = 120f,
     appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float,
-    pillCenterY: Float, pillWidth: Float, pillHeight: Float 
+    pillCenterY: Float, pillWidth: Float, pillHeight: Float, gravityX: Float, gravityY: Float,
+    touchX: Float, touchY: Float, touchActive: Float
 ) {
     var time by remember { mutableFloatStateOf(0f) }
     
@@ -533,6 +562,12 @@ fun AmbientEdgeLighting(
                 shader.setFloatUniform("in_PillCenterY", pillCenterY)
                 shader.setFloatUniform("in_PillWidth", pillWidth)
                 shader.setFloatUniform("in_PillHeight", pillHeight)
+                
+                shader.setFloatUniform("in_Gravity", gravityX, gravityY)
+                
+                // Track your finger location and the touch animation state
+                shader.setFloatUniform("in_TouchPos", touchX, touchY)
+                shader.setFloatUniform("in_TouchActive", touchActive)
                 
                 onDrawBehind { drawRect(brush = shaderBrush, blendMode = BlendMode.Plus) }
             }
