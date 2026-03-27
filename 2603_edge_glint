@@ -40,32 +40,51 @@ const val GLINT_SHADER = """
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     const float PI = 3.14159265359;
+    
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
+    
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
         vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
+        
         float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
         float sweep = fract(in_Time * in_Speed * 0.3);
-        float angularDist = fract(sweep - angle);
+        
+        // 1. Calculate spatial distance along the perimeter to create a perfect circle
+        float angularDistToHead = min(abs(angle - sweep), 1.0 - abs(angle - sweep));
+        float approxPerimeter = (in_Resolution.x + in_Resolution.y) * 1.5; 
+        float spatialDistAlongEdge = angularDistToHead * approxPerimeter; 
+        
+        float headRadius = max(in_NoiseScale * 6.0, 3.0); // Slider controls circle size
+        
+        // Draw a perfect organic circle using Euclidean distance (x = edge length, y = depth)
+        float headCircle = 1.0 - smoothstep(0.0, headRadius, length(vec2(spatialDistAlongEdge, clampedDist)));
+        
+        // 2. Trailing Tail
+        float angularDistForTail = fract(sweep - angle);
         float tailLength = max(in_Amplitude * 0.005, 0.05); 
-        float headSharpness = max(in_NoiseScale * 15.0, 1.0); 
+        float tail = max(1.0 - (angularDistForTail / tailLength), 0.0);
+        
         float thicknessDecay = 1.0 / max(in_Spread, 1.0);
-        float tail = max(1.0 - (angularDist / tailLength), 0.0);
-        float head = pow(tail, headSharpness);
         float baseGlow = exp(-clampedDist * thicknessDecay); 
-        float edgeCore = exp(-clampedDist * 0.6);
-        float glintPresence = baseGlow * tail; float glintCore = edgeCore * head;
-        float finalPresence = max(glintPresence, glintCore * 1.5); 
+        
+        // Combine the round head with the tail
+        float finalPresence = max(baseGlow * tail, headCircle * 1.5); 
+        
+        // Where the head circle is strong, blast it to pure white
         vec3 tailColor = mix(vec3(0.0), vec3(in_AppColor), tail);
-        vec3 pureColor = mix(tailColor, vec3(1.0), head);
+        vec3 pureColor = mix(tailColor, vec3(1.0), headCircle);
+        
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
-        float finalAlpha = finalPresence * screenMask * in_MasterAlpha;
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
+        
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 // ==========================================
 // SHADER 2: PRISMATIC REFRACTION (Aberration)
@@ -110,6 +129,7 @@ const val SPARK_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -118,34 +138,42 @@ const val SPARK_SHADER = """
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
+    
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
         vec2 uv = fragCoord / in_Resolution.xy;
         
-        // Drifting noise coordinates
-        vec2 driftUV = uv * (in_NoiseScale * 15.0) + vec2(in_Time * in_Speed * -0.2, in_Time * in_Speed * 0.5);
+        // Drifting high-frequency noise
+        vec2 driftUV = uv * (in_NoiseScale * 25.0) + vec2(in_Time * in_Speed * 0.1, in_Time * in_Speed * -0.3);
         float n = noise(driftUV);
-        float n2 = noise(driftUV * 1.5 - vec2(in_Time * 0.1));
         
-        // Isolate noise into sharp 'sparks' using the amplitude slider as a power curve
-        float sparkPow = max(in_Amplitude * 0.5, 5.0); 
-        float sparks = pow(n * n2, sparkPow) * 100.0; 
+        // 1. Gate the noise into literal sharp dots
+        // Higher amplitude slider = lower threshold = more sparks
+        float densityThreshold = clamp(0.95 - (in_Amplitude * 0.003), 0.6, 0.98); 
+        float sparks = smoothstep(densityThreshold, densityThreshold + 0.02, n);
         
+        // 2. Make them twinkle
+        float twinkle = noise(uv * 10.0 - vec2(0.0, in_Time * 0.5));
+        sparks *= smoothstep(0.2, 0.8, twinkle);
+        
+        // 3. Constrain to the bezel
         float decay = 1.0 / max(in_Spread, 1.0);
-        float baseGlow = exp(-clampedDist * decay) * 0.2; // Dim background ambient glow
+        float baseGlow = exp(-clampedDist * decay) * 0.15; // Very dim ambient bed
+        float edgeMask = exp(-clampedDist * 0.2); // Allows sparks to venture slightly inward
         
-        // Mask sparks so they only exist physically near the hardware bezel
-        float edgeMask = exp(-clampedDist * 0.1);
-        float finalPresence = baseGlow + (sparks * edgeMask);
+        // Multiply sparks massively to punch through additive blending
+        float finalPresence = baseGlow + (sparks * edgeMask * 4.0);
         
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparks * 0.3, 0.0, 1.0));
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparks, 0.0, 1.0));
+        
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
         float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 // 2. Main Activity
 class MainActivity : ComponentActivity() {
