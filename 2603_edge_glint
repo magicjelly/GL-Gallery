@@ -43,7 +43,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
-// ALL SHADERS UPDATED WITH TOUCH UNIFORMS FOR JNI SAFETY
+// SHADER 0-5 AND 7 REMAIN THE SAME (Omitted for brevity, just paste these back if you split them)
+// BUT TO ENSURE NO COMPILER ERRORS, HERE IS THE FULL SET:
 // ==========================================
 
 const val LAVA_SHADER = """
@@ -52,191 +53,88 @@ const val LAVA_SHADER = """
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
     uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-    }
-    float fBm(vec2 p) {
-        float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875;
-    }
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    float fBm(vec2 p) { float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875; }
+    float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
-        vec2 uv = fragCoord / in_Resolution.xy;
-        vec2 noiseUV = uv * vec2(max(in_NoiseScale, 1.0), max(in_NoiseScale, 1.0) * 2.0); 
-        float time = in_Time * in_Speed; 
-        float flow1 = fBm(noiseUV + vec2(time * 0.5, -time * 0.8));
-        float flow2 = fBm(noiseUV * 1.5 - vec2(-time * 0.3, time * 1.1));
-        float complexNoise = pow((flow1 + flow2) * 0.5, 2.0); 
-        float distortedDist = max(clampedDist - (complexNoise * in_Amplitude), 0.0);
-        float decayFactor = 1.0 / max(in_Spread, 1.0);
-        float baseGlow = exp(-distortedDist * decayFactor); float edgeCore = exp(-clampedDist * 0.5);   
-        float finalLavaPresence = max(baseGlow, edgeCore);
-        vec3 deepRootColor = mix(vec3(in_AppColor) * 0.25, vec3(0.0, 0.0, 0.1), 0.3); 
+        float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0); vec2 uv = fragCoord / in_Resolution.xy;
+        vec2 noiseUV = uv * vec2(max(in_NoiseScale, 1.0), max(in_NoiseScale, 1.0) * 2.0); float time = in_Time * in_Speed; 
+        float flow1 = fBm(noiseUV + vec2(time * 0.5, -time * 0.8)); float flow2 = fBm(noiseUV * 1.5 - vec2(-time * 0.3, time * 1.1));
+        float complexNoise = pow((flow1 + flow2) * 0.5, 2.0); float distortedDist = max(clampedDist - (complexNoise * in_Amplitude), 0.0);
+        float decayFactor = 1.0 / max(in_Spread, 1.0); float baseGlow = exp(-distortedDist * decayFactor); float edgeCore = exp(-clampedDist * 0.5);   
+        float finalLavaPresence = max(baseGlow, edgeCore); vec3 deepRootColor = mix(vec3(in_AppColor) * 0.25, vec3(0.0, 0.0, 0.1), 0.3); 
         vec3 midRangeColor = mix(deepRootColor, vec3(in_AppColor), 1.0 - smoothstep(0.0, in_Spread * 2.0, distortedDist));
         vec3 pureColor = mix(vec3(1.0), midRangeColor, smoothstep(0.0, 2.0, clampedDist));
-        float pixelAlpha = finalLavaPresence * mix(0.15, 1.0, uv.y) * 0.95; 
-        float finalAlpha = pixelAlpha * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        float pixelAlpha = finalLavaPresence * mix(0.15, 1.0, uv.y) * 0.95; float finalAlpha = pixelAlpha * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 const val GLINT_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
-    const float PI = 3.14159265359;
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    const float PI = 3.14159265359; float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
-        vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
-        float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
-        float sweep = fract(in_Time * in_Speed * 0.3);
-        float angularDist = fract(sweep - angle); float distForward = fract(angle - sweep); 
-        float tail = exp(-angularDist * (1.0 / max(in_Amplitude * 0.005, 0.05))); 
-        float front = exp(-distForward * 100.0); float dropShape = max(tail, front); 
-        float spatialDist = min(angularDist, distForward) * ((in_Resolution.x + in_Resolution.y) * 1.5); 
-        float headGlow = exp(-length(vec2(spatialDist, clampedDist)) / max(in_NoiseScale * 2.0, 2.0));
-        float baseGlow = exp(-clampedDist * (1.0 / max(in_Spread, 1.0))); 
-        vec3 pureColor = mix(mix(vec3(0.0), vec3(in_AppColor), tail), vec3(1.0), min(headGlow * 1.5, 1.0));
-        float finalAlpha = clamp(baseGlow * dropShape + headGlow, 0.0, 1.0) * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
-        return half4(pureColor * finalAlpha, finalAlpha);
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0); vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
+        float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI); float sweep = fract(in_Time * in_Speed * 0.3); float angularDist = fract(sweep - angle); float distForward = fract(angle - sweep); 
+        float tail = exp(-angularDist * (1.0 / max(in_Amplitude * 0.005, 0.05))); float front = exp(-distForward * 100.0); float dropShape = max(tail, front); 
+        float spatialDist = min(angularDist, distForward) * ((in_Resolution.x + in_Resolution.y) * 1.5); float headGlow = exp(-length(vec2(spatialDist, clampedDist)) / max(in_NoiseScale * 2.0, 2.0));
+        float baseGlow = exp(-clampedDist * (1.0 / max(in_Spread, 1.0))); vec3 pureColor = mix(mix(vec3(0.0), vec3(in_AppColor), tail), vec3(1.0), min(headGlow * 1.5, 1.0));
+        float finalAlpha = clamp(baseGlow * dropShape + headGlow, 0.0, 1.0) * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha; return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 const val PRISMATIC_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        float d = -sdRoundRect(p, b, in_CornerRadius); 
-        float offset = (sin(in_Time * in_Speed) + 1.0) * 0.5 * in_Amplitude * 0.2 + (in_Spread * 0.05);
-        float decay = 1.0 / max(in_Spread, 1.0);
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); 
+        float offset = (sin(in_Time * in_Speed) + 1.0) * 0.5 * in_Amplitude * 0.2 + (in_Spread * 0.05); float decay = 1.0 / max(in_Spread, 1.0);
         float r = exp(-max(d - offset, 0.0) * decay); float g = exp(-max(d, 0.0) * decay); float bl = exp(-max(d + offset, 0.0) * decay);
-        vec3 prismColor = vec3(r, g, bl);
-        float alpha = max(r, max(g, bl));
-        float finalAlpha = alpha * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        vec3 prismColor = vec3(r, g, bl); float alpha = max(r, max(g, bl)); float finalAlpha = alpha * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
         return half4(mix(prismColor, vec3(in_AppColor) * prismColor, 0.6) * finalAlpha, finalAlpha);
     }
 """
 
 const val SPARK_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
-        vec2 particleUV = fragCoord / max(60.0 - (in_NoiseScale * 5.0), 15.0);
-        particleUV.y += in_Time * in_Speed * 1.5; particleUV.x += sin(particleUV.y * 0.5) * 0.3;
-        float randomSeed = hash(floor(particleUV)); 
-        float distToSpark = length(fract(particleUV) - (vec2(0.5) + 0.3 * vec2(sin(randomSeed * 100.0), cos(randomSeed * 100.0))));
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
+        vec2 particleUV = fragCoord / max(60.0 - (in_NoiseScale * 5.0), 15.0); particleUV.y += in_Time * in_Speed * 1.5; particleUV.x += sin(particleUV.y * 0.5) * 0.3;
+        float randomSeed = hash(floor(particleUV)); float distToSpark = length(fract(particleUV) - (vec2(0.5) + 0.3 * vec2(sin(randomSeed * 100.0), cos(randomSeed * 100.0))));
         float sparkShape = exp(-distToSpark * 25.0) * step(clamp(1.0 - (in_Amplitude / 200.0), 0.05, 0.98), randomSeed) * ((sin(in_Time * 5.0 + randomSeed * 50.0) + 1.0) * 0.5);
-        float finalPresence = (exp(-clampedDist * (1.0 / max(in_Spread, 1.0))) * 0.1) + (sparkShape * exp(-clampedDist * 0.1) * 3.0);
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparkShape * 1.5, 0.0, 1.0));
-        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha;
-        return half4(pureColor * finalAlpha, finalAlpha);
+        float finalPresence = (exp(-clampedDist * (1.0 / max(in_Spread, 1.0))) * 0.1) + (sparkShape * exp(-clampedDist * 0.1) * 3.0); vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparkShape * 1.5, 0.0, 1.0));
+        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * clamp(d * 10.0, 0.0, 1.0) * in_MasterAlpha; return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 const val AURA_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-    }
-    float fBm(vec2 p) {
-        float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875;
-    }
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    float fBm(vec2 p) { float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875; } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY);
-        vec2 p = fragCoord - pillCenter;
-        float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5);
-        float distFromPill = max(d, 0.0);
-        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.3;
-        vec2 radialUV = vec2(cos(angle), sin(angle)) * max(in_NoiseScale, 1.0);
-        float n = fBm(radialUV + vec2(distFromPill * 0.01 - time, time * 0.5));
-        float decay = 1.0 / max(in_Spread, 1.0);
-        float baseGlow = exp(-distFromPill * decay * 1.5) * 0.4; 
-        float noiseGlow = exp(-distFromPill * decay * 2.5) * n * (in_Amplitude * 0.02);
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(noiseGlow * 1.5, 0.0, 1.0));
-        float finalAlpha = clamp(baseGlow + noiseGlow, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha;
-        return half4(pureColor * finalAlpha, finalAlpha);
+        vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY); vec2 p = fragCoord - pillCenter; float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5); float distFromPill = max(d, 0.0);
+        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.3; vec2 radialUV = vec2(cos(angle), sin(angle)) * max(in_NoiseScale, 1.0); float n = fBm(radialUV + vec2(distFromPill * 0.01 - time, time * 0.5));
+        float decay = 1.0 / max(in_Spread, 1.0); float baseGlow = exp(-distFromPill * decay * 1.5) * 0.4; float noiseGlow = exp(-distFromPill * decay * 2.5) * n * (in_Amplitude * 0.02);
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(noiseGlow * 1.5, 0.0, 1.0)); float finalAlpha = clamp(baseGlow + noiseGlow, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha; return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 const val SUNLIGHT_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-    
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-    }
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY);
-        vec2 p = fragCoord - pillCenter;
-        float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5);
-        float distFromPill = max(d, 0.0);
-        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.15;
-        vec2 uv1 = vec2(cos(angle + time), sin(angle + time)) * max(in_NoiseScale, 1.0) * 1.5;
-        vec2 uv2 = vec2(cos(angle - time * 0.8), sin(angle - time * 0.8)) * max(in_NoiseScale, 1.0) * 3.0;
-        float rays = pow(noise(uv1) * noise(uv2), 1.8) * (in_Amplitude * 0.05);
-        float decay = 1.0 / max(in_Spread, 1.0);
-        float rayBloom = rays * exp(-distFromPill * decay * 0.4); 
-        float coreBloom = exp(-distFromPill * decay * 1.5) * 0.4; 
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(rayBloom * 1.5, 0.0, 1.0));
-        float finalAlpha = clamp(coreBloom + rayBloom, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha;
-        return half4(pureColor * finalAlpha, finalAlpha);
+        vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY); vec2 p = fragCoord - pillCenter; float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5); float distFromPill = max(d, 0.0);
+        float angle = atan(-p.y, p.x); float time = in_Time * in_Speed * 0.15; vec2 uv1 = vec2(cos(angle + time), sin(angle + time)) * max(in_NoiseScale, 1.0) * 1.5; vec2 uv2 = vec2(cos(angle - time * 0.8), sin(angle - time * 0.8)) * max(in_NoiseScale, 1.0) * 3.0;
+        float rays = pow(noise(uv1) * noise(uv2), 1.8) * (in_Amplitude * 0.05); float decay = 1.0 / max(in_Spread, 1.0); float rayBloom = rays * exp(-distFromPill * decay * 0.4); float coreBloom = exp(-distFromPill * decay * 1.5) * 0.4; 
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(rayBloom * 1.5, 0.0, 1.0)); float finalAlpha = clamp(coreBloom + rayBloom, 0.0, 1.0) * smoothstep(0.0, 2.0, d) * in_MasterAlpha; return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
 // ==========================================
-// SHADER 6: BIOLUMINESCENT FLUID (The Magnetic Snapping NameDrop Killer)
-// ==========================================
-// ==========================================
-// SHADER 6: BIOLUMINESCENT FLUID (Physics Fixed)
+// SHADER 6: BIOLUMINESCENT FLUID (Heavy Liquid Metal Update)
 // ==========================================
 const val FLUID_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -254,46 +152,47 @@ const val FLUID_SHADER = """
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float clampedDist = max(distFromEdge, 0.0);
         
-        // Drastically slow down the base time so the fluid feels thick and heavy
+        // Slower base time to make the fluid feel thick and heavy
         float time = in_Time * in_Speed * 0.15; 
         
-        // Increase the gravity multiplier slightly so it pools harder at the bottom
-        vec2 physicalGravity = vec2(in_Gravity.x, -in_Gravity.y) * 0.8; 
+        // Multiply gravity for a wider throw distance
+        vec2 physicalGravity = in_Gravity * 0.8; 
         
         float fluidDensity = 0.0;
-        for(float i = 1.0; i <= 5.0; i++) {
-            // 1. Slow, heavy ambient sloshing.
-            // Radius reduced from 0.3 to 0.15 so it settles nicely when held still.
+        
+        // Generate 4 blobs. One massive core, 3 tiny trailing slosh drops.
+        for(float i = 1.0; i <= 4.0; i++) {
+            float mass = (i == 1.0) ? 3500.0 : 400.0; 
+            
+            // 1. Sloshy Ambient Physics 
             vec2 gravityDriftPos = vec2(
-                sin(time * i) * 0.15 + 0.5 + physicalGravity.x,
-                cos(time * 0.8 * i) * 0.15 + 0.5 + physicalGravity.y
+                sin(time * i) * (0.05 * i) + 0.5 + physicalGravity.x,
+                cos(time * 0.8 * i) * (0.05 * i) + 0.5 + physicalGravity.y
             ) * in_Resolution.xy;
             
-            // 2. The NFC Magnetic Snap (Stable & Locked)
-            // Removed the time-based swarming. They now use a static offset 
-            // to stack neatly and form one perfectly still, heavy blob.
-            vec2 staticOffset = vec2(sin(i * 2.0), cos(i * 2.0)) * 10.0;
+            // 2. The NFC Magnetic Snap (Stable, no buzzing)
+            vec2 staticOffset = vec2(sin(i * 2.0), cos(i * 2.0)) * (8.0 * i);
             vec2 magneticTouchPos = in_TouchPos + staticOffset;
             
-            // 3. The Physical Bridge 
+            // 3. The Interpolation
             vec2 finalDropPos = mix(gravityDriftPos, magneticTouchPos, in_TouchActive);
             
             float distToDrop = length(fragCoord - finalDropPos);
-            fluidDensity += (in_NoiseScale * 1500.0) / (distToDrop * distToDrop);
+            fluidDensity += (in_NoiseScale * mass) / (distToDrop * distToDrop);
         }
         
         float threshold = 1.0 - (in_Amplitude / 200.0); 
         float viscousFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
         
-        // Let the fluid pull further away from the absolute edge when touched
         float magneticPullOffEdge = mix(0.5, 0.1, in_TouchActive);
         float decayFactor = 1.0 / max(in_Spread, 1.0);
         float edgeCore = exp(-clampedDist * decayFactor * magneticPullOffEdge);   
         
         float finalPresence = viscousFluid * edgeCore * 1.5;
         
-        vec3 deepColor = mix(vec3(0.0, 0.1, 0.2), vec3(in_AppColor), fluidDensity);
-        vec3 pureColor = mix(deepColor, vec3(1.0), smoothstep(threshold + 0.2, threshold + 0.5, fluidDensity));
+        // High contrast mapping for the "metal" look
+        vec3 deepColor = mix(vec3(0.0, 0.05, 0.15), vec3(in_AppColor), fluidDensity * 0.5);
+        vec3 pureColor = mix(deepColor, vec3(1.0), smoothstep(threshold + 0.1, threshold + 0.4, fluidDensity));
         
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
         float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
@@ -302,41 +201,15 @@ const val FLUID_SHADER = """
     }
 """
 
-
 const val WAVE_SHADER = """
-    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
-
-    const float PI = 3.14159265359;
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive;
+    const float PI = 3.14159265359; float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
-        float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
-        float time = in_Time * in_Speed * 3.0;
-
-        float freq1 = sin(angle * (in_NoiseScale * 10.0) + time) * 0.5; 
-        float freq2 = cos(angle * (in_NoiseScale * 5.0) - time * 0.8) * 0.3; 
-        float beat = sin(time * 2.0) * 0.2; 
-        float audioWaveform = (freq1 + freq2 + beat) * (in_Amplitude * 0.5);
-        
-        float rawDist = -sdRoundRect(p, b, in_CornerRadius); 
-        float warpedDist = max(rawDist - audioWaveform, 0.0);
-        float decayFactor = 1.0 / max(in_Spread, 1.0);
-        
-        float edgeCore = exp(-max(rawDist, 0.0) * decayFactor * 2.0); 
-        float rippleGlow = exp(-warpedDist * decayFactor); 
-        float finalPresence = max(edgeCore, rippleGlow);
-        
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(audioWaveform * 0.02, 0.0, 1.0));
-        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * clamp(rawDist * 10.0, 0.0, 1.0) * in_MasterAlpha;
-        
-        return half4(pureColor * finalAlpha, finalAlpha);
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; vec2 centered = (fragCoord / in_Resolution.xy) - 0.5; float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI); float time = in_Time * in_Speed * 3.0;
+        float freq1 = sin(angle * (in_NoiseScale * 10.0) + time) * 0.5; float freq2 = cos(angle * (in_NoiseScale * 5.0) - time * 0.8) * 0.3; float beat = sin(time * 2.0) * 0.2; float audioWaveform = (freq1 + freq2 + beat) * (in_Amplitude * 0.5);
+        float rawDist = -sdRoundRect(p, b, in_CornerRadius); float warpedDist = max(rawDist - audioWaveform, 0.0); float decayFactor = 1.0 / max(in_Spread, 1.0);
+        float edgeCore = exp(-max(rawDist, 0.0) * decayFactor * 2.0); float rippleGlow = exp(-warpedDist * decayFactor); float finalPresence = max(edgeCore, rippleGlow);
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(audioWaveform * 0.02, 0.0, 1.0)); float finalAlpha = clamp(finalPresence, 0.0, 1.0) * clamp(rawDist * 10.0, 0.0, 1.0) * in_MasterAlpha; return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
 
@@ -365,16 +238,17 @@ fun NotificationSyncPrototype() {
     val config = LocalConfiguration.current
     
     val sensorManager = remember { context.getSystemService(Context.SENSOR_SERVICE) as SensorManager }
-    var gravityX by remember { mutableFloatStateOf(0f) }
-    var gravityY by remember { mutableFloatStateOf(0f) }
+    var rawGravityX by remember { mutableFloatStateOf(0f) }
+    var rawGravityY by remember { mutableFloatStateOf(0f) }
 
     DisposableEffect(Unit) {
         val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent?) {
                 event?.let {
-                    gravityX = it.values[0] / 9.81f
-                    gravityY = it.values[1] / 9.81f
+                    // Grab raw values
+                    rawGravityX = it.values[0] / 9.81f
+                    rawGravityY = it.values[1] / 9.81f
                 }
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -383,12 +257,24 @@ fun NotificationSyncPrototype() {
         onDispose { sensorManager.unregisterListener(listener) }
     }
     
-    // NEW: Raw Touch Tracking State
+    // NEW: MASS & MOMENTUM PHYSICS ENGINE
+    // We invert the X and Y axes here to match physical screen orientation perfectly.
+    // DampingRatio controls "slosh". Stiffness controls "weight" (lower = heavier).
+    val fluidMomentumX by animateFloatAsState(
+        targetValue = -rawGravityX, 
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f),
+        label = "fluid_x"
+    )
+    val fluidMomentumY by animateFloatAsState(
+        targetValue = rawGravityY, // Y needs to fall towards the bottom of the screen bounds
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f),
+        label = "fluid_y"
+    )
+
     var touchX by remember { mutableFloatStateOf(0f) }
     var touchY by remember { mutableFloatStateOf(0f) }
     var isScreenTouched by remember { mutableStateOf(false) }
     
-    // Smoothly animate the magnetic gravity well so it doesn't instantly snap
     val magneticTouchStrength by animateFloatAsState(
         targetValue = if (isScreenTouched) 1f else 0f,
         animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
@@ -423,7 +309,6 @@ fun NotificationSyncPrototype() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // 1. Passive pointer input that tracks X/Y without breaking the taps
             .pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
@@ -437,14 +322,12 @@ fun NotificationSyncPrototype() {
                     }
                 }
             }
-            // 2. The standard tap logic
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { isNotificationActive = true }, onDoubleTap = { isNotificationActive = false })
             }
     ) {
         Image(painter = painterResource(id = android.R.drawable.sym_def_app_icon), contentDescription = "Background", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
 
-        // --- LAYER 2: GPU Render Engine ---
         AmbientEdgeLighting(
             modifier = Modifier.fillMaxSize(),
             shaderString = activeShaderString,
@@ -452,8 +335,8 @@ fun NotificationSyncPrototype() {
             speed = flowSpeed, thickness = thickness, amplitude = amplitude, noiseScale = noiseScale,
             masterAlpha = masterAlpha,
             pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx,
-            gravityX = gravityX, gravityY = gravityY,
-            // Route the magnetic touch values to the GPU
+            // Pass the physically dampened momentums instead of raw sensor data
+            gravityX = fluidMomentumX, gravityY = fluidMomentumY,
             touchX = touchX, touchY = touchY, touchActive = magneticTouchStrength
         )
 
@@ -568,7 +451,6 @@ fun AmbientEdgeLighting(
                 
                 shader.setFloatUniform("in_Gravity", gravityX, gravityY)
                 
-                // Track your finger location and the touch animation state
                 shader.setFloatUniform("in_TouchPos", touchX, touchY)
                 shader.setFloatUniform("in_TouchActive", touchActive)
                 
