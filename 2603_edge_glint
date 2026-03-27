@@ -53,37 +53,40 @@ const val GLINT_SHADER = """
         float angle = (atan(-centered.y, centered.x) + PI) / (2.0 * PI);
         float sweep = fract(in_Time * in_Speed * 0.3);
         
-        // 1. Calculate spatial distance along the perimeter to create a perfect circle
-        float angularDistToHead = min(abs(angle - sweep), 1.0 - abs(angle - sweep));
-        float approxPerimeter = (in_Resolution.x + in_Resolution.y) * 1.5; 
-        float spatialDistAlongEdge = angularDistToHead * approxPerimeter; 
+        // 1. ORGANIC DROPLET SHAPE (Fixes the sharp edge)
+        float angularDist = fract(sweep - angle); // The long tail trailing behind
+        float distForward = fract(angle - sweep); // The short slope pushing forward
         
-        float headRadius = max(in_NoiseScale * 6.0, 3.0); // Slider controls circle size
-        
-        // Draw a perfect organic circle using Euclidean distance (x = edge length, y = depth)
-        float headCircle = 1.0 - smoothstep(0.0, headRadius, length(vec2(spatialDistAlongEdge, clampedDist)));
-        
-        // 2. Trailing Tail
-        float angularDistForTail = fract(sweep - angle);
+        // Create a seamless volume that slopes down in front and trails off in back
         float tailLength = max(in_Amplitude * 0.005, 0.05); 
-        float tail = max(1.0 - (angularDistForTail / tailLength), 0.0);
+        float tail = exp(-angularDist * (1.0 / tailLength)); 
+        float front = exp(-distForward * 100.0); // Steep, but completely smooth forward slope
         
+        float dropShape = max(tail, front); // The seamless app-color footprint
+        
+        // 2. TRUE SPHERICAL HOTSPOT
+        float approxPerimeter = (in_Resolution.x + in_Resolution.y) * 1.5; 
+        float spatialDist = min(angularDist, distForward) * approxPerimeter; 
+        
+        float headRadius = max(in_NoiseScale * 2.0, 2.0); 
+        float headGlow = exp(-length(vec2(spatialDist, clampedDist)) / headRadius);
+        
+        // 3. COMBINE
         float thicknessDecay = 1.0 / max(in_Spread, 1.0);
         float baseGlow = exp(-clampedDist * thicknessDecay); 
         
-        // Combine the round head with the tail
-        float finalPresence = max(baseGlow * tail, headCircle * 1.5); 
+        float finalPresence = baseGlow * dropShape;
         
-        // Where the head circle is strong, blast it to pure white
-        vec3 tailColor = mix(vec3(0.0), vec3(in_AppColor), tail);
-        vec3 pureColor = mix(tailColor, vec3(1.0), headCircle);
+        // Color mix transitions perfectly from AppColor to Pure White at the spherical core
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), min(headGlow * 1.5, 1.0));
         
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
-        float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
+        float finalAlpha = clamp(finalPresence + headGlow, 0.0, 1.0) * screenMask * in_MasterAlpha;
         
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 
 // ==========================================
@@ -130,11 +133,9 @@ const val SPARK_SHADER = """
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     
+    // Hash to generate random behaviors for each individual spark
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    float noise(vec2 p) {
-        vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
-    }
+    
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
@@ -142,30 +143,47 @@ const val SPARK_SHADER = """
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
-        vec2 uv = fragCoord / in_Resolution.xy;
         
-        // Drifting high-frequency noise
-        vec2 driftUV = uv * (in_NoiseScale * 25.0) + vec2(in_Time * in_Speed * 0.1, in_Time * in_Speed * -0.3);
-        float n = noise(driftUV);
+        // 1. CELLULAR GRID SYSTEM (Perfectly square cells independent of screen ratio)
+        // Noise scale slider now controls the physical size of the grid boxes
+        float cellSize = max(60.0 - (in_NoiseScale * 5.0), 15.0);
+        vec2 particleUV = fragCoord / cellSize;
         
-        // 1. Gate the noise into literal sharp dots
-        // Higher amplitude slider = lower threshold = more sparks
-        float densityThreshold = clamp(0.95 - (in_Amplitude * 0.003), 0.6, 0.98); 
-        float sparks = smoothstep(densityThreshold, densityThreshold + 0.02, n);
+        // Push the entire grid upward to make sparks rise
+        particleUV.y += in_Time * in_Speed * 1.5;
+        // Add a gentle horizontal drift
+        particleUV.x += sin(particleUV.y * 0.5) * 0.3;
         
-        // 2. Make them twinkle
-        float twinkle = noise(uv * 10.0 - vec2(0.0, in_Time * 0.5));
-        sparks *= smoothstep(0.2, 0.8, twinkle);
+        vec2 cellID = floor(particleUV); // The unique ID of this invisible box
+        vec2 localPos = fract(particleUV); // Where we are inside the box (0.0 to 1.0)
         
-        // 3. Constrain to the bezel
+        // 2. SPARK GENERATION
+        float randomSeed = hash(cellID); // A random number just for this cell
+        
+        // Place the spark randomly inside the cell, but keep it away from the absolute edges
+        vec2 sparkCenter = vec2(0.5) + 0.3 * vec2(sin(randomSeed * 100.0), cos(randomSeed * 100.0));
+        float distToSpark = length(localPos - sparkCenter);
+        
+        // Make the spark twinkle dynamically based on its random seed and time
+        float twinkle = (sin(in_Time * 5.0 + randomSeed * 50.0) + 1.0) * 0.5;
+        
+        // Gate the sparks: Amplitude slider controls how many boxes actually get a spark
+        float threshold = clamp(1.0 - (in_Amplitude / 200.0), 0.05, 0.98);
+        float isSparkAlive = step(threshold, randomSeed);
+        
+        // Draw a perfectly round, razor-sharp dot
+        float sparkShape = exp(-distToSpark * 25.0) * isSparkAlive * twinkle;
+        
+        // 3. HARDWARE ROUTING
         float decay = 1.0 / max(in_Spread, 1.0);
-        float baseGlow = exp(-clampedDist * decay) * 0.15; // Very dim ambient bed
-        float edgeMask = exp(-clampedDist * 0.2); // Allows sparks to venture slightly inward
+        float baseGlow = exp(-clampedDist * decay) * 0.1; // Very dim base line
         
-        // Multiply sparks massively to punch through additive blending
-        float finalPresence = baseGlow + (sparks * edgeMask * 4.0);
+        // Sparks are only allowed to exist physically near the edge of the screen
+        float edgeMask = exp(-clampedDist * 0.1); 
+        float finalPresence = baseGlow + (sparkShape * edgeMask * 3.0);
         
-        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparks, 0.0, 1.0));
+        // Overexpose the color to white where the spark is brightest
+        vec3 pureColor = mix(vec3(in_AppColor), vec3(1.0), clamp(sparkShape * 1.5, 0.0, 1.0));
         
         float screenMask = clamp(d * 10.0, 0.0, 1.0);
         float finalAlpha = clamp(finalPresence, 0.0, 1.0) * screenMask * in_MasterAlpha;
@@ -173,6 +191,7 @@ const val SPARK_SHADER = """
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 
 // 2. Main Activity
