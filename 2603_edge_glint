@@ -1,4 +1,4 @@
-import android.content.Context
+ import android.content.Context
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.hardware.Sensor
@@ -149,6 +149,9 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 // SHADER 6: BIOLUMINESCENT FLUID (Emissive Refraction)
 // ==========================================
+// ==========================================
+// SHADER 6: BIOLUMINESCENT FLUID (The "Liquid Silica" Premium Finish)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -194,34 +197,40 @@ const val FLUID_SHADER = """
         }
         
         float threshold = 1.0 - (in_Amplitude / 200.0); 
-        
-        // Ensure fluid is masked to the edge and the master alpha slider
         float isFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0);
         float activeMask = isFluid * screenMask * in_MasterAlpha;
         
-        // 1. 3D NORMAL CALCULATION
         vec3 normal = normalize(vec3(-fluidGradient.x, -fluidGradient.y, 0.05));
         
-        // 2. EMISSIVE REFRACTION
-        // We literally move the pixel coordinate we are sampling from the wallpaper based on the 3D angle of the fluid
+        // 1. REFRACTION
         vec2 refractedCoord = fragCoord + (normal.xy * 60.0 * activeMask);
         half4 bgColor = in_Background.eval(refractedCoord);
         
-        // 3. THE LIGHT-HEAVY BIOLUMINESCENT GLOW
-        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 3.0);
+        // 2. VOLUME ABSORPTION (Fixes pure white backgrounds)
+        // Darkens the background beneath the fluid, tinting it heavily with the App Color
+        vec3 volumeTint = mix(bgColor.rgb, bgColor.rgb * in_AppColor * 0.35, activeMask);
+        
+        // 3. LUMINOUS CORE (Fixes pure black backgrounds)
+        // The thickest parts burn with a hot, frosted white/color mix
+        float coreIntensity = smoothstep(threshold, threshold + 0.25, fluidDensity);
+        vec3 hotCore = mix(in_AppColor, vec3(1.0), coreIntensity * 0.6) * 0.9;
+        
+        // 4. SPECULAR & FRESNEL (The 3D wet look)
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0));
-        float gloss = pow(max(dot(normal, lightDir), 0.0), 32.0) * 1.5;
+        float gloss = pow(max(dot(normal, lightDir), 0.0), 48.0) * 1.5; // Razor sharp white hits
+        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0); // Colorful glowing edges
         
-        vec3 fluidGlow = mix(vec3(0.0, 0.1, 0.2), vec3(in_AppColor), fluidDensity);
-        fluidGlow += (vec3(1.0) * gloss) + (vec3(in_AppColor) * fresnel * 0.5);
+        vec3 surfaceLight = (vec3(1.0) * gloss) + (in_AppColor * fresnel * 2.0);
         
-        // Add the glowing light on top of the newly refracted background pixels
-        vec3 finalColor = bgColor.rgb + (fluidGlow * activeMask * 1.5);
+        // COMPOSITE EVERYTHING
+        vec3 fluidColor = volumeTint + (hotCore * activeMask) + (surfaceLight * activeMask);
+        vec3 finalColor = mix(bgColor.rgb, fluidColor, activeMask);
         
         return half4(finalColor, 1.0);
     }
 """
+
 
 const val WAVE_SHADER = """
     uniform shader in_Background;
