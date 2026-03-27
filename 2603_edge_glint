@@ -235,16 +235,15 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 // SHADER 6: BIOLUMINESCENT FLUID (The Magnetic Snapping NameDrop Killer)
 // ==========================================
+// ==========================================
+// SHADER 6: BIOLUMINESCENT FLUID (Physics Fixed)
+// ==========================================
 const val FLUID_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity;
-    
-    // NEW: The Magnetic Touch Attractor
-    uniform float2 in_TouchPos; 
-    uniform float in_TouchActive; 
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
 
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -255,24 +254,28 @@ const val FLUID_SHADER = """
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float clampedDist = max(distFromEdge, 0.0);
         
-        float time = in_Time * in_Speed * 0.5;
-        vec2 physicalGravity = vec2(in_Gravity.x, -in_Gravity.y) * 0.6; 
+        // Drastically slow down the base time so the fluid feels thick and heavy
+        float time = in_Time * in_Speed * 0.15; 
+        
+        // Increase the gravity multiplier slightly so it pools harder at the bottom
+        vec2 physicalGravity = vec2(in_Gravity.x, -in_Gravity.y) * 0.8; 
         
         float fluidDensity = 0.0;
         for(float i = 1.0; i <= 5.0; i++) {
-            // 1. Natural Hardware Gravity Drift
+            // 1. Slow, heavy ambient sloshing.
+            // Radius reduced from 0.3 to 0.15 so it settles nicely when held still.
             vec2 gravityDriftPos = vec2(
-                sin(time * 1.1 * i) * 0.3 + 0.5 + physicalGravity.x,
-                cos(time * 0.9 * i) * 0.3 + 0.5 + physicalGravity.y
+                sin(time * i) * 0.15 + 0.5 + physicalGravity.x,
+                cos(time * 0.8 * i) * 0.15 + 0.5 + physicalGravity.y
             ) * in_Resolution.xy;
             
-            // 2. The NFC Magnetic Swarm
-            // This calculates an organic "swarming" circle around the exact touch coordinate
-            vec2 swarmOffset = vec2(sin(time * 3.0 + i * 1.5), cos(time * 2.5 + i * 1.5)) * (25.0 * i);
-            vec2 magneticTouchPos = in_TouchPos + swarmOffset;
+            // 2. The NFC Magnetic Snap (Stable & Locked)
+            // Removed the time-based swarming. They now use a static offset 
+            // to stack neatly and form one perfectly still, heavy blob.
+            vec2 staticOffset = vec2(sin(i * 2.0), cos(i * 2.0)) * 10.0;
+            vec2 magneticTouchPos = in_TouchPos + staticOffset;
             
             // 3. The Physical Bridge 
-            // Smoothly interpolate between falling due to gravity and flying towards the finger
             vec2 finalDropPos = mix(gravityDriftPos, magneticTouchPos, in_TouchActive);
             
             float distToDrop = length(fragCoord - finalDropPos);
@@ -282,9 +285,8 @@ const val FLUID_SHADER = """
         float threshold = 1.0 - (in_Amplitude / 200.0); 
         float viscousFluid = smoothstep(threshold, threshold + 0.05, fluidDensity);
         
-        // When touch is active, let the fluid break slightly away from the absolute edge
-        // so it can reach out toward the "connecting device"
-        float magneticPullOffEdge = mix(0.5, 0.2, in_TouchActive);
+        // Let the fluid pull further away from the absolute edge when touched
+        float magneticPullOffEdge = mix(0.5, 0.1, in_TouchActive);
         float decayFactor = 1.0 / max(in_Spread, 1.0);
         float edgeCore = exp(-clampedDist * decayFactor * magneticPullOffEdge);   
         
@@ -299,6 +301,7 @@ const val FLUID_SHADER = """
         return half4(pureColor * finalAlpha, finalAlpha);
     }
 """
+
 
 const val WAVE_SHADER = """
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
