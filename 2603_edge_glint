@@ -53,6 +53,9 @@ import kotlinx.coroutines.android.awaitFrame
 // ==========================================
 // SHADER A: FERRO-GLASS (Thin-Film Iridescence & Physical Geometry)
 // ==========================================
+// ==========================================
+// SHADER A: FERRO-GLASS (Thin-Film Iridescence & Physical Geometry)
+// ==========================================
 const val FERRO_GLASS_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -155,6 +158,7 @@ const val FERRO_GLASS_SHADER = """
         return half4(finalColor * screenMask, screenMask);
     }
 """
+
 
 
 // ==========================================
