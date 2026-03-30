@@ -49,6 +49,114 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
+
+// ==========================================
+// SHADER A: FERRO-GLASS (Thin-Film Iridescence & Physical Geometry)
+// ==========================================
+const val FERRO_GLASS_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    // THE SECRET SAUCE: Procedural Structural Color (Thin-Film Interference)
+    // Generates a perfect, physics-based iridescent spectrum based on light angle
+    vec3 iridescence(float t) {
+        vec3 a = vec3(0.5, 0.5, 0.5);
+        vec3 b = vec3(0.5, 0.5, 0.5);
+        vec3 c = vec3(1.0, 1.0, 1.0);
+        vec3 d = vec3(0.00, 0.33, 0.67);
+        return a + b * cos(6.28318 * (c * t + d));
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float tensionWidth = in_Resolution.x * 0.35; 
+        float distToTouch = length(touchVec);
+        
+        // 1. BASE MATERIAL TENSION
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        // 2. THE KINETIC WAVE (Calculated as Physical Geometry, not just color)
+        float phase = in_WavePhase * in_TransferDirection;
+        float waveProgress = fract(phase * 0.2); 
+        float waveRadius = (in_TransferDirection > 0.0) ? (waveProgress * tensionWidth * 3.0) : ((1.0 - waveProgress) * tensionWidth * 3.0);
+        float waveDist = distToTouch - waveRadius;
+        
+        // The physical height of the ripple
+        float waveHeight = exp(-(waveDist * waveDist) * 0.005) * sin(waveProgress * 3.14159) * elevation;
+
+        // 3. 3D SURFACE NORMALS (Glass + Wave)
+        float dentWidth = tensionWidth * in_VoidSize * 1.5;
+        float dent = exp(-(distToTouch * distToTouch) / (dentWidth * dentWidth));
+        
+        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
+        gradient += -10.0 * (touchVec / dentWidth) * dent * elevation; // Core pinch
+        gradient += -15.0 * (touchVec / tensionWidth) * waveHeight; // The wave physically bends the glass
+        
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.005));
+        float normalizedAngle = normal.z;
+
+        // 4. REFRACTION & ABERRATION
+        float baseRefraction = 600.0 * elevation; 
+        float chromaticSpread = length(normal.xy) * (180.0 + (elevation * 200.0)) * elevation;
+        
+        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
+        vec2 coordR = fragCoord + (normal.xy * baseRefraction) + (safeNormal * chromaticSpread);
+        vec2 coordG = fragCoord + (normal.xy * baseRefraction);
+        vec2 coordB = fragCoord + (normal.xy * baseRefraction) - (safeNormal * chromaticSpread);
+        
+        float bgR = in_Background.eval(coordR).r;
+        float bgG = in_Background.eval(coordG).g;
+        float bgB = in_Background.eval(coordB).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
+        
+        float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
+        float isDarkBackground = smoothstep(0.4, 0.0, luma); 
+
+        // 5. CINEMATIC SHADOWS (Agnostic Contrast)
+        // Dims dark screens to make the light pop, but creates a physical cast-shadow on white screens
+        float ambientOcclusion = smoothstep(tensionWidth * 3.0, tensionWidth * 0.3, distToTouch);
+        float shadowIntensity = mix(0.4, 0.95, isDarkBackground); // Heavier shadow on dark mode
+        refractedBG *= mix(1.0, ambientOcclusion, elevation * shadowIntensity);
+
+        // 6. STRUCTURAL COLOR (The Iridescent Pulse)
+        // We use the slope of the 3D normal combined with time to sweep through the spectrum
+        float spectralAngle = length(normal.xy) * 2.5 - (in_Time * 0.5);
+        vec3 spectrum = iridescence(spectralAngle);
+        
+        // The pulse is blinding white at its peak, fading softly into the iridescent rainbow
+        vec3 hotWhite = vec3(1.0, 0.98, 0.95);
+        vec3 iridescentPulse = mix(spectrum, hotWhite, waveHeight * 1.5) * max(waveHeight, 0.0);
+        
+        // Multiplier ensures it burns bright on OLED blacks, but remains a subtle pastel on white
+        float pulseBrightness = mix(1.5, 4.0, isDarkBackground);
+
+        // 7. CAUSTICS & SPECULAR HIGHLIGHTS
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        float spec = pow(max(dot(normal, lightDir), 0.0), 90.0) * (1.5 + isDarkBackground) * elevation;
+        vec3 specularLight = vec3(1.0) * spec;
+        
+        // The inner rim glow uses the spectrum instead of the App Color
+        float fresnel = pow(1.0 - normalizedAngle, 6.0);
+        vec3 rimLight = spectrum * fresnel * (2.0 + isDarkBackground) * elevation * dent;
+        
+        vec3 finalColor = refractedBG + (iridescentPulse * pulseBrightness) + specularLight + rimLight;
+        return half4(finalColor * screenMask, screenMask);
+    }
+"""
+
+
 // ==========================================
 // PASSIVE NOTIFICATION SHADERS
 // ==========================================
