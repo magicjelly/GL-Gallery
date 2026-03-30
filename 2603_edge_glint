@@ -53,6 +53,83 @@ import kotlinx.coroutines.android.awaitFrame
 // SHADER ENGINES (Updated with in_TransferDirection)
 // ==========================================
 
+// ==========================================
+// SHADER 6: TOPOLOGICAL TENSION BRIDGE (Massive Screen-Width Circular Topology)
+// ==========================================
+const val FLUID_SHADER = """
+    uniform shader in_Background;
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; 
+    uniform float in_TransferDirection; 
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        // 1. MASSIVE CIRCULAR TOPOLOGY
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        
+        // Dynamic scaling: Sets the visual diameter to be just less than the physical screen width.
+        float tensionWidth = in_Resolution.x * 0.28; 
+        
+        float baseElevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        // 2. DIRECTIONAL DATA WAVES
+        float time = in_Time * in_Speed * 12.0;
+        
+        // Lowered frequency multiplier (0.03) so the waves elegantly fit the massive circle
+        float wavePhase = (distToTouch * 0.03) + (time * in_TransferDirection); 
+        
+        float physicalWave = (sin(wavePhase) * 0.5 + 0.5) * baseElevation;
+        float totalElevation = baseElevation + (physicalWave * 0.3);
+
+        // 3. 3D SURFACE NORMALS
+        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * totalElevation;
+        
+        // Smoothly perturb the normals so light catches the massive ripples
+        vec2 waveGradient = normalize(touchVec + vec2(0.001)) * cos(wavePhase) * 0.03 * baseElevation;
+        gradient += waveGradient;
+        
+        // Lower Z-value (0.008) forces this wide curve to retain steep, highly refractive glass properties
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
+
+        // 4. REFRACTIVE DISPLACEMENT
+        // Amplified offset to account for the larger physical geometry
+        vec2 refractionOffset = normal.xy * 200.0 * totalElevation;
+        vec2 warpedCoord = fragCoord + refractionOffset;
+        
+        vec3 bg = in_Background.eval(warpedCoord).rgb;
+        
+        // 5. VOLUMETRIC SUBSURFACE LIGHTING
+        vec3 internalGlow = in_AppColor * totalElevation * 1.5;
+        
+        // 6. CAUSTIC LIGHTING
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * 1.5 * totalElevation;
+        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0);
+        vec3 rimLight = in_AppColor * fresnel * 2.0 * totalElevation;
+        
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * totalElevation;
+        bg = mix(bg, bg * 0.1, shadow);
+
+        // 7. COMPOSITION
+        vec3 finalColor = bg + internalGlow + vec3(spec) + rimLight;
+        
+        return half4(finalColor * screenMask, screenMask);
+    }
+"""
+
+
 const val LAVA_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection;
