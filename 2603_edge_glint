@@ -53,6 +53,87 @@ import kotlinx.coroutines.android.awaitFrame
 // ALL SHADERS UPGRADED TO USE TRUE RENDER_EFFECT COMPOSITING
 // ==========================================
 
+// ==========================================
+// SHADER 6: TOPOLOGICAL TENSION BRIDGE (The Glass Capillary)
+// ==========================================
+const val FLUID_SHADER = """
+    uniform shader in_Background;
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; 
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        // 1. TOPOLOGICAL ELEVATION MAP
+        // We calculate a 3D "tent" or "spout" pulling perfectly toward the contact point.
+        // in_Amplitude controls the width of the glass stretch.
+        float tensionWidth = max(250.0 - in_Amplitude, 40.0);
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        
+        // A Gaussian curve creates a perfectly organic, continuous physical slope.
+        // in_TouchActive animates the glass stretching up. in_FluidVolume animates it draining.
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        // 2. DATA TRANSFER PULSES
+        // High-frequency kinetic ripples that shoot through the stretched glass during the transfer.
+        float time = in_Time * in_Speed * 8.0;
+        float dataPulse = (sin(distToTouch * 0.08 - time) * 0.5 + 0.5) * elevation * in_FluidVolume;
+        
+        // Add the data pulse into the physical geometry of the glass
+        elevation += (dataPulse * 0.15);
+
+        // 3. 3D SURFACE NORMALS
+        // Calculate the exact gradient (slope) of the glass curve.
+        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
+        
+        // Convert the 2D slope into a 3D normal vector pointing towards the user.
+        // The Z-value (0.015) dictates the physical "thickness" of the glass.
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.015));
+
+        // 4. REFRACTIVE DISPLACEMENT (The Lens Effect)
+        // As the glass pulls up, it acts like a magnifying glass, warping the UI underneath.
+        vec2 refractionOffset = normal.xy * 120.0 * elevation;
+        vec2 warpedCoord = fragCoord + refractionOffset;
+        
+        // Read the background UI through the bent glass
+        vec3 bg = in_Background.eval(warpedCoord).rgb;
+        
+        // 5. CAUSTIC LIGHTING (The Premium Finish)
+        // Real glass isn't visible unless it catches light. We simulate a light source from the top-left.
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        
+        // Specular Highlight: A razor-sharp, blinding white flash on the steepest curve of the glass.
+        float spec = pow(max(dot(normal, lightDir), 0.0), 45.0) * 1.5 * elevation;
+        
+        // Fresnel Rim Light: The very edges of the stretched glass catch ambient light and inject the brand color.
+        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0);
+        vec3 rimLight = in_AppColor * fresnel * 3.0 * elevation;
+        
+        // Ambient Occlusion: The backside of the glass "spout" naturally casts a subtle internal shadow.
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.4 * elevation;
+        bg = mix(bg, bg * 0.1, shadow);
+
+        // 6. COMPOSITION
+        // The base UI + The internal Shadow + The White Gloss + The Colored Rim + The Data Pulse
+        vec3 finalColor = bg + vec3(spec) + rimLight + (in_AppColor * dataPulse * 0.4);
+        
+        return half4(finalColor * screenMask, screenMask);
+    }
+"""
+
+
 const val LAVA_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume;
