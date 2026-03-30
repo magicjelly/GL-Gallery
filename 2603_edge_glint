@@ -125,22 +125,23 @@ const val FLUID_SHADER = """
         // Creates a multiplier: 1.0 on pure black, 0.0 on bright backgrounds
         float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
 
-                // 5. SPACETIME OPTICAL RIPPLES (Total Spacetime Coupling)
-        // We amplify the warped coordinates so the light rings are aggressively pulled into the center
+        // 5. SPACETIME OPTICAL RIPPLES (Kinetic Recoil Coupling)
         vec2 warpedTouchVec = fragCoord + (normal.xy * baseRefraction * 1.5) - in_TouchPos;
         float warpedDistToTouch = length(warpedTouchVec);
         
-        // SPATIAL COMPRESSION: This is the magic. 
-        // When the screen is flat (elevation = 0), the rings are wide (0.04).
-        // When the screen stretches (elevation = 1), the rings compress and pack tightly together (0.025).
         float spatialCompression = 0.04 - (elevation * 0.015);
-        
         float time = in_Time * in_Speed * 10.0;
         
-        // The wave phase is now mathematically locked to both the stretched coordinates AND the compression
-        float wavePhase = (warpedDistToTouch * spatialCompression) + (time * in_TransferDirection); 
+        // KINETIC RECOIL: Binds the speed and direction of the light directly to the stretch of the glass.
+        // Tension Building: Accelerates the wave forward as energy is sucked into the bridge.
+        // Snap Back: Violently subtracts phase, forcing the light rings to reverse and splash backward.
+        float kineticRecoil = elevation * 30.0; 
+        
+        float wavePhase = (warpedDistToTouch * spatialCompression) + ((time + kineticRecoil) * in_TransferDirection); 
         float energyPulse = pow(sin(wavePhase) * 0.5 + 0.5, 3.0) * elevation;
 
+
+                
         // 6. DYNAMIC CAUSTIC LIGHTING
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
         
