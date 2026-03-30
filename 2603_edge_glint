@@ -50,7 +50,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
-// SHADER ENGINES (All updated with in_WavePhase to prevent uniform crashes)
+// PASSIVE NOTIFICATION SHADERS
 // ==========================================
 
 const val LAVA_SHADER = """
@@ -137,11 +137,8 @@ const val SUNLIGHT_SHADER = """
 // INTERACTIVE SYSTEM PHYSICS SHADERS
 // ==========================================
 
-// SHADER 6: THE FLAGSHIP ENGINE (CPU-Coupled Kinetics, Spacetime Bend, Adaptive Luma)
-// ==========================================
-// SHADER 6: THE FLAGSHIP ENGINE (Decoupled CPU Kinetics & Adaptive Luma)
-// ==========================================
-const val FLUID_SHADER = """
+// SHADER A: OPTICAL LENS (The clean, straight-line gravitational transfer)
+const val LENS_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -159,19 +156,16 @@ const val FLUID_SHADER = """
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
         
-        // 1. PERFECTLY STABLE GRAVITY WELL
         vec2 touchVec = fragCoord - in_TouchPos;
         float distToTouch = length(touchVec);
         float tensionWidth = in_Resolution.x * 0.28; 
         
         float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
 
-        // 2. ROCK-SOLID 3D NORMALS
         vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
         vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
         float normalizedAngle = normal.z;
 
-        // 3. CRANKED REFRACTION & CHROMATIC ABERRATION
         float baseRefraction = 350.0 * elevation; 
         float chromaticSpread = length(normal.xy) * (80.0 + (elevation * 100.0));
         
@@ -185,18 +179,13 @@ const val FLUID_SHADER = """
         float bgB = in_Background.eval(coordB).b;
         vec3 refractedBG = vec3(bgR, bgG, bgB);
         
-        // 4. ADAPTIVE LUMINANCE TRACKING
         float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
         float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
 
-        // 5. OPTICAL RIPPLES (Decoupled for Perfect Motion Legibility)
-        // By using the un-warped distToTouch, the rings' motion is no longer fought 
-        // by the glass collapsing. The speed you see is exactly the speed of the CPU phase.
         float spatialCompression = 0.04 - (elevation * 0.015);
         float localPhase = (distToTouch * spatialCompression) + (in_WavePhase * in_TransferDirection); 
         float energyPulse = pow(sin(localPhase) * 0.5 + 0.5, 3.0) * elevation;
 
-        // 6. DYNAMIC CAUSTIC LIGHTING
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
         
         float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * (1.5 + darknessAdaptation) * elevation;
@@ -212,13 +201,93 @@ const val FLUID_SHADER = """
         float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * elevation * (1.0 - darknessAdaptation);
         refractedBG = mix(refractedBG, vec3(0.0), shadow);
 
-        // 7. COMPOSITION
         vec3 finalColor = refractedBG + frostedWave + specularLight + rimLight;
+        return half4(finalColor * screenMask, screenMask);
+    }
+"""
+
+// SHADER B: SPACETIME WORMHOLE (The spiraling black-hole accretion disk)
+const val WORMHOLE_SHADER = """
+    uniform shader in_Background;
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; 
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        float tensionWidth = in_Resolution.x * 0.28; 
+        
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        float voidRadius = tensionWidth * 0.12;
+        float eventHorizon = 1.0 - smoothstep(voidRadius, voidRadius + 8.0, distToTouch);
+        
+        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
+        float normalizedAngle = normal.z;
+
+        float baseRefraction = 400.0 * elevation; 
+        float chromaticSpread = length(normal.xy) * (150.0 + (elevation * 200.0));
+        
+        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
+        vec2 coordR = fragCoord + (normal.xy * baseRefraction) + (safeNormal * chromaticSpread);
+        vec2 coordG = fragCoord + (normal.xy * baseRefraction);
+        vec2 coordB = fragCoord + (normal.xy * baseRefraction) - (safeNormal * chromaticSpread);
+        
+        float bgR = in_Background.eval(coordR).r;
+        float bgG = in_Background.eval(coordG).g;
+        float bgB = in_Background.eval(coordB).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
+        
+        float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
+        float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
+
+        vec2 warpedTouchVec = fragCoord + (normal.xy * baseRefraction * 1.5) - in_TouchPos;
+        float warpedDistToTouch = length(warpedTouchVec);
+        float pixelAngle = atan(warpedTouchVec.y, warpedTouchVec.x);
+        
+        float spatialCompression = 0.06 - (elevation * 0.02);
+        
+        // Spiraling kinetic engine
+        float spiralPhase = (pixelAngle * 4.0) - (warpedDistToTouch * spatialCompression) - (in_WavePhase * in_TransferDirection * 1.5); 
+        
+        float diskIntensity = smoothstep(voidRadius - 10.0, voidRadius + 40.0, distToTouch) * (1.0 - smoothstep(voidRadius + 20.0, tensionWidth, distToTouch));
+        float energyPulse = pow(sin(spiralPhase) * 0.5 + 0.5, 4.0) * elevation * diskIntensity;
+
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * (1.5 + darknessAdaptation) * elevation;
+        vec3 specularLight = vec3(1.0) * spec * (1.0 - eventHorizon); 
+        
+        float glowMultiplier = 1.0 + (darknessAdaptation * 2.0); 
+        vec3 frostedVortex = mix(vec3(1.0), in_AppColor, 0.3) * energyPulse * glowMultiplier;
+        
+        float fresnel = pow(1.0 - normalizedAngle, 5.0);
+        vec3 rimLight = in_AppColor * fresnel * (1.5 + darknessAdaptation) * elevation * (1.0 - eventHorizon);
+        
+        refractedBG = mix(refractedBG, refractedBG * 0.1, elevation * (0.8 - (darknessAdaptation * 0.5)));
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * elevation * (1.0 - darknessAdaptation);
+        refractedBG = mix(refractedBG, vec3(0.0), shadow);
+
+        vec3 finalColor = refractedBG + frostedVortex + specularLight + rimLight;
+        finalColor = mix(finalColor, vec3(0.0, 0.0, 0.0), eventHorizon * elevation);
         
         return half4(finalColor * screenMask, screenMask);
     }
 """
 
+// SHADER C: HAPTIC WAVE 
 const val WAVE_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection;
@@ -300,13 +369,12 @@ fun NotificationSyncPrototype() {
     val isMagneticPullActive = isScreenTouched || fluidState == FluidState.MAGNETIC_HOLD
     val magneticTouchStrength by animateFloatAsState(
         targetValue = if (isMagneticPullActive) 1f else 0f,
-        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.6f, stiffness = 40f),
+        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.75f, stiffness = 40f),
         label = "magnetic_pull"
     )
     
     val fluidVolume by animateFloatAsState(
         targetValue = fluidVolumeTarget,
-        // Eased for that heavy glass bend, drives the kinetic speed perfectly
         animationSpec = tween(1500, easing = LinearOutSlowInEasing),
         label = "fluid_volume"
     )
@@ -329,7 +397,7 @@ fun NotificationSyncPrototype() {
         }
     } else {
         when (selectedPhysicsIndex) {
-            0 -> FLUID_SHADER; else -> WAVE_SHADER
+            0 -> LENS_SHADER; 1 -> WORMHOLE_SHADER; else -> WAVE_SHADER
         }
     }
 
@@ -441,7 +509,7 @@ fun NotificationSyncPrototype() {
                 }
             }
             
-            if (selectedCategory == 1 && selectedPhysicsIndex == 0) {
+            if (selectedCategory == 1 && (selectedPhysicsIndex == 0 || selectedPhysicsIndex == 1)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
@@ -479,7 +547,6 @@ fun NotificationSyncPrototype() {
 
                     Button(
                         onClick = {
-                            // Instant cancel drops the target to 0, Compose tweens it, and the integrated phase naturally decelerates
                             fluidVolumeTarget = 0f
                             fluidState = FluidState.IDLE
                         },
@@ -495,7 +562,7 @@ fun NotificationSyncPrototype() {
 
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("File Transfer Bridge", "Haptic Wave")
+                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("Optical Lens", "Wormhole", "Haptic Wave")
                     val currentIndex = if (selectedCategory == 0) selectedNotificationIndex else selectedPhysicsIndex
 
                     currentEffects.forEachIndexed { index, name ->
@@ -553,7 +620,6 @@ fun AmbientEdgeLighting(
     touchX: Float, touchY: Float, touchActive: Float, fluidVolume: Float, transferDirection: Float,
     content: @Composable () -> Unit
 ) {
-    // Both standard time (for passive UI) and our new physics phase integrator
     var time by remember { mutableFloatStateOf(0f) }
     var wavePhase by remember { mutableFloatStateOf(0f) }
     
@@ -567,8 +633,6 @@ fun AmbientEdgeLighting(
             lastTime = currentTime
             
             time = (currentTime - startTime) / 1_000_000_000f
-            
-            // THE KINETIC COUPLING: Acceleration & Deceleration mathematically tied to the glass bend
             wavePhase += (dt * speed * 15f) * fluidVolume
         }
     }
@@ -581,8 +645,7 @@ fun AmbientEdgeLighting(
         modifier = modifier.graphicsLayer {
             shader.setFloatUniform("in_Resolution", size.width, size.height)
             shader.setFloatUniform("in_Time", time)
-            shader.setFloatUniform("in_WavePhase", wavePhase) // Bound straight to the shader
-            
+            shader.setFloatUniform("in_WavePhase", wavePhase) 
             shader.setFloatUniform("in_CornerRadius", cornerRadius)
             shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
             shader.setFloatUniform("in_Speed", speed)
