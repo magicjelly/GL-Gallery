@@ -225,6 +225,93 @@ const val WAVE_SHADER = """
 """
 
 // ==========================================
+// SHADER 6: TOPOLOGICAL TENSION BRIDGE (Holistic Subsurface Volume)
+// ==========================================
+const val FLUID_SHADER = """
+    uniform shader in_Background;
+    uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; 
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        // 1. WIDE EDGE TOPOLOGY (Anisotropic Distance)
+        // By multiplying the X axis by 0.25, we stretch the math horizontally.
+        // This turns the radial pinch into a wide bar that spans the top edge of the device.
+        vec2 touchVec = fragCoord - in_TouchPos;
+        vec2 stretchedVec = vec2(touchVec.x * 0.25, touchVec.y); 
+        float distToTouch = length(stretchedVec);
+        
+        float tensionWidth = max(300.0 - in_Amplitude, 80.0);
+        
+        // The base structural stretch of the glass
+        float baseElevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        // 2. HOLISTIC KINETICS (Physical Data Waves)
+        // Instead of coloring pixels, the data pulse is a physical ripple in the glass itself.
+        float time = in_Time * in_Speed * 10.0;
+        
+        // We use the un-stretched Y distance so the waves travel perfectly linearly down the screen
+        float wavePhase = touchVec.y * 0.05 - time; 
+        float physicalWave = (sin(wavePhase) * 0.5 + 0.5) * baseElevation * in_FluidVolume;
+        
+        // We add the wave to the glass geometry BEFORE calculating any optics!
+        float totalElevation = baseElevation + (physicalWave * 0.4);
+
+        // 3. 3D SURFACE NORMALS
+        // Recalculate gradients using the new, fully-integrated, waving surface.
+        vec2 gradient = -2.0 * stretchedVec / (tensionWidth * tensionWidth) * totalElevation;
+        
+        // The physical waves also distort the normal map Y-axis locally so light catches the ridges
+        gradient.y += cos(wavePhase) * 0.08 * baseElevation * in_FluidVolume;
+        
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.015));
+
+        // 4. REFRACTIVE DISPLACEMENT
+        // Because the wave is in the geometry, the refraction naturally pulses and bends the UI.
+        vec2 refractionOffset = normal.xy * 150.0 * totalElevation;
+        vec2 warpedCoord = fragCoord + refractionOffset;
+        
+        vec3 bg = in_Background.eval(warpedCoord).rgb;
+        
+        // 5. VOLUMETRIC SUBSURFACE LIGHTING
+        // The light is trapped inside the glass. Thicker glass = more glowing app color.
+        vec3 internalGlow = in_AppColor * totalElevation * 1.8;
+        
+        // 6. CAUSTIC LIGHTING
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        
+        // Specular highlights physically ride the ripples because the normals are waving
+        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * 1.5 * totalElevation;
+        
+        // Fresnel edge wrapping
+        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0);
+        vec3 rimLight = in_AppColor * fresnel * 2.0 * totalElevation;
+        
+        // Ambient Occlusion internal shadowing
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * totalElevation;
+        bg = mix(bg, bg * 0.1, shadow);
+
+        // 7. COMPOSITION
+        // Background + Subsurface Glow + Glossy Peaks + Colored Rim
+        vec3 finalColor = bg + internalGlow + vec3(spec) + rimLight;
+        
+        return half4(finalColor * screenMask, screenMask);
+    }
+"""
+
+
+// ==========================================
 // MAIN ACTIVITY & UI
 // ==========================================
 
