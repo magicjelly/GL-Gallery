@@ -65,6 +65,9 @@ import kotlinx.coroutines.android.awaitFrame
 // ==========================================
 // SHADER 6: THE FLAGSHIP ENGINE (Linear Top-Edge Topology)
 // ==========================================
+// ==========================================
+// SHADER 6: THE FLAGSHIP ENGINE (Perfectly Stable Center Plateau)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -84,79 +87,71 @@ const val FLUID_SHADER = """
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
         
-        // 1. LINEAR TOP-EDGE TOPOLOGY
-        // Distance is measured purely from the top of the screen (Y = 0)
-        float distToTop = fragCoord.y;
+        // 1. PERFECTLY STABLE TOPOLOGY
+        // The glass bends smoothly and holds its shape without vibrating.
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        float tensionWidth = in_Resolution.x * 0.28; 
         
-        // Tension width controls how far down the screen the glass bends (approx 25% of the screen height)
-        float tensionWidth = in_Resolution.y * 0.25; 
-        
-        float baseElevation = exp(-(distToTop * distToTop) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
 
-        // 2. LINEAR PHYSICAL WAVES
-        // The wave phase ignores the X-axis completely, creating perfect horizontal bars
-        float time = in_Time * in_Speed * 10.0;
-        float wavePhase = (distToTop * 0.04) + (time * in_TransferDirection); 
-        float rawWave = pow(sin(wavePhase) * 0.5 + 0.5, 2.0);
-        
-        // Smooth out the waves right before they hit the absolute top edge to create a stable contact line
-        float edgeSmooth = smoothstep(0.0, tensionWidth * 0.15, distToTop);
-        float physicalWave = rawWave * baseElevation * edgeSmooth * 0.4;
-        
-        float totalElevation = baseElevation + physicalWave;
-
-        // 3. 1D SURFACE NORMALS
-        // Because the glass rolls like a cylinder, there is no X-axis gradient
-        float gradientY = -2.0 * distToTop / (tensionWidth * tensionWidth) * totalElevation;
-        
-        float waveGradientY = cos(wavePhase) * 0.06 * baseElevation * edgeSmooth;
-        gradientY += waveGradientY;
-        
-        vec3 normal = normalize(vec3(0.0, -gradientY, 0.008));
+        // 2. ROCK-SOLID 3D NORMALS
+        // Because elevation is a pure Gaussian curve, the normals never flip or glitch.
+        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
+        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
         float normalizedAngle = normal.z;
 
-        // 4. CHROMATIC ABERRATION (Vertical Split)
-        // Refraction is restricted purely to the Y-axis so the image doesn't smear horizontally
-        float chromaticSpread = abs(normal.y) * totalElevation * 120.0 * edgeSmooth;
+        // 3. OPTICAL ENERGY RIPPLES (Light, not geometry)
+        float time = in_Time * in_Speed * 10.0;
+        float wavePhase = (distToTouch * 0.04) + (time * in_TransferDirection); 
         
-        vec2 safeNormal = vec2(0.0, sign(normal.y) * max(abs(normal.y), 0.0001)); 
+        // Pow(3.0) creates sharp, elegant rings of light instead of muddy sine waves
+        float energyPulse = pow(sin(wavePhase) * 0.5 + 0.5, 3.0) * elevation;
+
+        // 4. DYNAMIC CHROMATIC ABERRATION
+        // The base refraction is stable. The rainbow split heavily pulses with the energy wave.
+        float baseRefraction = 180.0 * elevation;
+        float chromaticSpread = length(normal.xy) * (40.0 + energyPulse * 150.0);
         
-        vec2 coordR = fragCoord + (normal.xy * 180.0 * totalElevation) + (safeNormal * chromaticSpread);
-        vec2 coordG = fragCoord + (normal.xy * 180.0 * totalElevation);
-        vec2 coordB = fragCoord + (normal.xy * 180.0 * totalElevation) - (safeNormal * chromaticSpread);
+        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); // Prevents dead-center glitch
+        vec2 coordR = fragCoord + (normal.xy * baseRefraction) + (safeNormal * chromaticSpread);
+        vec2 coordG = fragCoord + (normal.xy * baseRefraction);
+        vec2 coordB = fragCoord + (normal.xy * baseRefraction) - (safeNormal * chromaticSpread);
         
         float bgR = in_Background.eval(coordR).r;
         float bgG = in_Background.eval(coordG).g;
         float bgB = in_Background.eval(coordB).b;
         vec3 refractedBG = vec3(bgR, bgG, bgB);
         
-        // 5. CAUSTIC LIGHTING & FROSTED VOLUME
-        // The light source is moved to point straight down so it catches the horizontal wave crests perfectly
-        vec3 lightDir = normalize(vec3(0.0, -1.0, 1.0)); 
+        // 5. THIN-FILM IRIDESCENCE
+        vec3 prismSheen = 0.5 + 0.5 * cos(6.28318 * (vec3(1.0) * normalizedAngle + vec3(0.0, 0.33, 0.67)));
         
-        float spec = pow(max(dot(normal, lightDir), 0.0), 80.0) * 1.5 * totalElevation;
-        vec3 specularLight = vec3(1.0) * spec;
+        // 6. CAUSTIC LIGHTING & FROSTED VOLUME
+        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
         
-        vec3 frostedVolume = mix(vec3(1.0), in_AppColor, 0.25) * rawWave * baseElevation * edgeSmooth * 0.6;
+        // Perfectly stable white specular highlight on the glass curve
+        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * 1.5 * elevation;
+        vec3 specularLight = mix(vec3(1.0), prismSheen, 0.5) * spec;
         
-        // 6. THE CONTACT LIP GLOW
-        // A brilliant, razor-thin line across the absolute top edge of the screen
-        float edgeLine = smoothstep(0.0, 3.0, distToTop) * (1.0 - smoothstep(3.0, 10.0, distToTop));
-        vec3 topLipGlow = in_AppColor * edgeLine * baseElevation * 2.0; 
+        // The data pulse is a soft, frosted emission inside the glass volume
+        vec3 frostedWave = mix(vec3(1.0), in_AppColor, 0.4) * energyPulse * 0.8;
         
+        // Stable rim lighting
         float fresnel = pow(1.0 - normalizedAngle, 5.0);
-        vec3 rimLight = in_AppColor * fresnel * 2.0 * totalElevation;
+        vec3 rimLight = mix(in_AppColor, prismSheen, 0.4) * fresnel * 1.5 * elevation;
         
-        refractedBG = mix(refractedBG, refractedBG * 0.2, totalElevation * 0.6);
-        float shadow = max(dot(normal, -lightDir), 0.0) * 0.4 * totalElevation;
+        // Subtractive volume (darkens the background to make the glow pop)
+        refractedBG = mix(refractedBG, refractedBG * 0.2, elevation * 0.6);
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.4 * elevation;
         refractedBG = mix(refractedBG, vec3(0.0), shadow);
 
         // 7. COMPOSITION
-        vec3 finalColor = refractedBG + frostedVolume + specularLight + rimLight + topLipGlow;
+        vec3 finalColor = refractedBG + frostedWave + specularLight + rimLight;
         
         return half4(finalColor * screenMask, screenMask);
     }
 """
+
 
 
 
