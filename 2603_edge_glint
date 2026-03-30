@@ -62,6 +62,9 @@ import kotlinx.coroutines.android.awaitFrame
 // ==========================================
 // SHADER 6: THE FLAGSHIP ENGINE (Camera Hole Hardware Integration)
 // ==========================================
+// ==========================================
+// SHADER 6: THE FLAGSHIP ENGINE (Linear Top-Edge Topology)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -81,48 +84,43 @@ const val FLUID_SHADER = """
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
         
-        // 1. HARDWARE ANCHOR (The Camera Cutout)
-        // We lock the center of the physics engine to the physical camera hole.
-        // Adjust the Y-value (80.0) to perfectly align with your specific prototype device.
-        vec2 cameraCenter = vec2(in_Resolution.x * 0.5, 80.0);
-        vec2 distVec = fragCoord - cameraCenter;
-        float distToCamera = length(distVec);
+        // 1. LINEAR TOP-EDGE TOPOLOGY
+        // Distance is measured purely from the top of the screen (Y = 0)
+        float distToTop = fragCoord.y;
         
-        // The structural pull of the massive glass lens still spans the top of the device
-        float tensionWidth = in_Resolution.x * 0.28; 
+        // Tension width controls how far down the screen the glass bends (approx 25% of the screen height)
+        float tensionWidth = in_Resolution.y * 0.25; 
         
-        // We use in_FluidVolume to drive the elevation so it swells automatically during the transfer state
-        float baseElevation = exp(-(distToCamera * distToCamera) / (tensionWidth * tensionWidth)) * in_FluidVolume;
+        float baseElevation = exp(-(distToTop * distToTop) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
 
-        // 2. THE HARDWARE HOLE BOUNDARY
-        // Set this to exactly match the pixel radius of the physical camera cutout.
-        float cameraRadius = 35.0; 
-        
-        // Inside this radius, the mathematical mask is 0.0. The effect cannot cross into the physical camera.
-        float holeMask = smoothstep(cameraRadius, cameraRadius + 10.0, distToCamera);
-
-        // 3. PHYSICAL WAVES (Crashing into the camera)
+        // 2. LINEAR PHYSICAL WAVES
+        // The wave phase ignores the X-axis completely, creating perfect horizontal bars
         float time = in_Time * in_Speed * 10.0;
-        float wavePhase = (distToCamera * 0.04) + (time * in_TransferDirection); 
+        float wavePhase = (distToTop * 0.04) + (time * in_TransferDirection); 
         float rawWave = pow(sin(wavePhase) * 0.5 + 0.5, 2.0);
         
-        // The wave physically stops exactly at the camera lip
-        float physicalWave = rawWave * baseElevation * holeMask * 0.4;
+        // Smooth out the waves right before they hit the absolute top edge to create a stable contact line
+        float edgeSmooth = smoothstep(0.0, tensionWidth * 0.15, distToTop);
+        float physicalWave = rawWave * baseElevation * edgeSmooth * 0.4;
+        
         float totalElevation = baseElevation + physicalWave;
 
-        // 4. 3D SURFACE NORMALS
-        vec2 gradient = -2.0 * distVec / (tensionWidth * tensionWidth) * totalElevation;
+        // 3. 1D SURFACE NORMALS
+        // Because the glass rolls like a cylinder, there is no X-axis gradient
+        float gradientY = -2.0 * distToTop / (tensionWidth * tensionWidth) * totalElevation;
         
-        vec2 waveGradient = normalize(distVec + vec2(0.0001)) * cos(wavePhase) * 0.06 * baseElevation * holeMask;
-        gradient += waveGradient;
+        float waveGradientY = cos(wavePhase) * 0.06 * baseElevation * edgeSmooth;
+        gradientY += waveGradientY;
         
-        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
+        vec3 normal = normalize(vec3(0.0, -gradientY, 0.008));
         float normalizedAngle = normal.z;
 
-        // 5. CHROMATIC ABERRATION (Restricted to outer edges)
-        float chromaticSpread = length(normal.xy) * totalElevation * 120.0 * holeMask;
+        // 4. CHROMATIC ABERRATION (Vertical Split)
+        // Refraction is restricted purely to the Y-axis so the image doesn't smear horizontally
+        float chromaticSpread = abs(normal.y) * totalElevation * 120.0 * edgeSmooth;
         
-        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
+        vec2 safeNormal = vec2(0.0, sign(normal.y) * max(abs(normal.y), 0.0001)); 
+        
         vec2 coordR = fragCoord + (normal.xy * 180.0 * totalElevation) + (safeNormal * chromaticSpread);
         vec2 coordG = fragCoord + (normal.xy * 180.0 * totalElevation);
         vec2 coordB = fragCoord + (normal.xy * 180.0 * totalElevation) - (safeNormal * chromaticSpread);
@@ -132,34 +130,34 @@ const val FLUID_SHADER = """
         float bgB = in_Background.eval(coordB).b;
         vec3 refractedBG = vec3(bgR, bgG, bgB);
         
-        // 6. CAUSTIC LIGHTING & FROSTED VOLUME
-        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
+        // 5. CAUSTIC LIGHTING & FROSTED VOLUME
+        // The light source is moved to point straight down so it catches the horizontal wave crests perfectly
+        vec3 lightDir = normalize(vec3(0.0, -1.0, 1.0)); 
         
-        float spec = pow(max(dot(normal, lightDir), 0.0), 70.0) * 1.5 * totalElevation;
+        float spec = pow(max(dot(normal, lightDir), 0.0), 80.0) * 1.5 * totalElevation;
         vec3 specularLight = vec3(1.0) * spec;
         
-        vec3 frostedVolume = mix(vec3(1.0), in_AppColor, 0.25) * rawWave * baseElevation * holeMask * 0.6;
+        vec3 frostedVolume = mix(vec3(1.0), in_AppColor, 0.25) * rawWave * baseElevation * edgeSmooth * 0.6;
         
-        // 7. THE CAMERA LIP GLOW (The Hardware Ring)
-        // A razor-thin, highly luminous ring that perfectly outlines the physical camera.
-        float edgeRing = smoothstep(cameraRadius - 2.0, cameraRadius + 2.0, distToCamera) * (1.0 - smoothstep(cameraRadius + 2.0, cameraRadius + 8.0, distToCamera));
-        vec3 holeLipGlow = in_AppColor * edgeRing * baseElevation * 2.5; 
+        // 6. THE CONTACT LIP GLOW
+        // A brilliant, razor-thin line across the absolute top edge of the screen
+        float edgeLine = smoothstep(0.0, 3.0, distToTop) * (1.0 - smoothstep(3.0, 10.0, distToTop));
+        vec3 topLipGlow = in_AppColor * edgeLine * baseElevation * 2.0; 
         
-        // Edge lighting
         float fresnel = pow(1.0 - normalizedAngle, 5.0);
         vec3 rimLight = in_AppColor * fresnel * 2.0 * totalElevation;
         
-        // Subtractive Volume
         refractedBG = mix(refractedBG, refractedBG * 0.2, totalElevation * 0.6);
         float shadow = max(dot(normal, -lightDir), 0.0) * 0.4 * totalElevation;
         refractedBG = mix(refractedBG, vec3(0.0), shadow);
 
-        // 8. COMPOSITION
-        vec3 finalColor = refractedBG + frostedVolume + specularLight + rimLight + holeLipGlow;
+        // 7. COMPOSITION
+        vec3 finalColor = refractedBG + frostedVolume + specularLight + rimLight + topLipGlow;
         
         return half4(finalColor * screenMask, screenMask);
     }
 """
+
 
 
 
