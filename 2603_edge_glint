@@ -59,6 +59,9 @@ import kotlinx.coroutines.android.awaitFrame
 // ==========================================
 // SHADER 6: THE FLAGSHIP ENGINE (Massive Topology + Rainbow Dispersion)
 // ==========================================
+// ==========================================
+// SHADER 6: THE FLAGSHIP ENGINE (Camera Hole Hardware Integration)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_CornerRadius; 
@@ -74,80 +77,90 @@ const val FLUID_SHADER = """
     }
 
     half4 main(in float2 fragCoord) {
-        // Handle physical hardware screen corners
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
         float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
         float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
         
-        // 1. MASSIVE CIRCULAR TOPOLOGY
-        vec2 touchVec = fragCoord - in_TouchPos;
-        float distToTouch = length(touchVec);
+        // 1. HARDWARE ANCHOR (The Camera Cutout)
+        // We lock the center of the physics engine to the physical camera hole.
+        // Adjust the Y-value (80.0) to perfectly align with your specific prototype device.
+        vec2 cameraCenter = vec2(in_Resolution.x * 0.5, 80.0);
+        vec2 distVec = fragCoord - cameraCenter;
+        float distToCamera = length(distVec);
         
-        // Size locked to perfectly span ~85% of whatever device screen it runs on
+        // The structural pull of the massive glass lens still spans the top of the device
         float tensionWidth = in_Resolution.x * 0.28; 
-        float baseElevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
-
-        // 2. DIRECTIONAL DATA WAVES
-        float time = in_Time * in_Speed * 12.0;
-        float wavePhase = (distToTouch * 0.03) + (time * in_TransferDirection); 
-        float physicalWave = (sin(wavePhase) * 0.5 + 0.5) * baseElevation;
         
-        // Inject the wave into the physical geometry of the glass
-        float totalElevation = baseElevation + (physicalWave * 0.3);
+        // We use in_FluidVolume to drive the elevation so it swells automatically during the transfer state
+        float baseElevation = exp(-(distToCamera * distToCamera) / (tensionWidth * tensionWidth)) * in_FluidVolume;
 
-        // 3. 3D SURFACE NORMALS
-        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * totalElevation;
-        vec2 waveGradient = normalize(touchVec + vec2(0.001)) * cos(wavePhase) * 0.03 * baseElevation;
+        // 2. THE HARDWARE HOLE BOUNDARY
+        // Set this to exactly match the pixel radius of the physical camera cutout.
+        float cameraRadius = 35.0; 
+        
+        // Inside this radius, the mathematical mask is 0.0. The effect cannot cross into the physical camera.
+        float holeMask = smoothstep(cameraRadius, cameraRadius + 10.0, distToCamera);
+
+        // 3. PHYSICAL WAVES (Crashing into the camera)
+        float time = in_Time * in_Speed * 10.0;
+        float wavePhase = (distToCamera * 0.04) + (time * in_TransferDirection); 
+        float rawWave = pow(sin(wavePhase) * 0.5 + 0.5, 2.0);
+        
+        // The wave physically stops exactly at the camera lip
+        float physicalWave = rawWave * baseElevation * holeMask * 0.4;
+        float totalElevation = baseElevation + physicalWave;
+
+        // 4. 3D SURFACE NORMALS
+        vec2 gradient = -2.0 * distVec / (tensionWidth * tensionWidth) * totalElevation;
+        
+        vec2 waveGradient = normalize(distVec + vec2(0.0001)) * cos(wavePhase) * 0.06 * baseElevation * holeMask;
         gradient += waveGradient;
         
         vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
         float normalizedAngle = normal.z;
 
-        // 4. CHROMATIC ABERRATION (Rainbow Refraction Split)
-        // We split the background image into R, G, and B channels based on the steepness of the glass
-        float chromaticSpread = length(normal.xy) * totalElevation * 80.0;
+        // 5. CHROMATIC ABERRATION (Restricted to outer edges)
+        float chromaticSpread = length(normal.xy) * totalElevation * 120.0 * holeMask;
         
-        vec2 coordR = fragCoord + (normal.xy * 200.0 * totalElevation) + (normalize(normal.xy + vec2(0.001)) * chromaticSpread);
-        vec2 coordG = fragCoord + (normal.xy * 200.0 * totalElevation); // Green stays anchored in the middle
-        vec2 coordB = fragCoord + (normal.xy * 200.0 * totalElevation) - (normalize(normal.xy + vec2(0.001)) * chromaticSpread);
+        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
+        vec2 coordR = fragCoord + (normal.xy * 180.0 * totalElevation) + (safeNormal * chromaticSpread);
+        vec2 coordG = fragCoord + (normal.xy * 180.0 * totalElevation);
+        vec2 coordB = fragCoord + (normal.xy * 180.0 * totalElevation) - (safeNormal * chromaticSpread);
         
         float bgR = in_Background.eval(coordR).r;
         float bgG = in_Background.eval(coordG).g;
         float bgB = in_Background.eval(coordB).b;
         vec3 refractedBG = vec3(bgR, bgG, bgB);
         
-        // 5. VOLUMETRIC RAINBOW GLOW
-        // The data pulse shifts through a natural color spectrum based on time and the 3D curve
-        float spectralPhase = (1.0 - normalizedAngle) * 0.5 + fract(in_Time * 0.1);
-        vec3 spectrum = fract(in_AppColor + spectralPhase + vec3(0.0, 0.1, 0.2)); 
-        
-        // Subtractive Volume: Darken the background inside the thickest parts of the glass 
-        // This ensures the rainbow and the white specular gloss POP on both white and black wallpapers
-        refractedBG = mix(refractedBG, refractedBG * in_AppColor * 0.25, totalElevation * 0.6);
-        
-        // The rainbow light riding the physical data waves
-        vec3 spectralPulse = spectrum * physicalWave * 1.5;
-        
-        // 6. CAUSTIC LIGHTING (Premium Gloss)
+        // 6. CAUSTIC LIGHTING & FROSTED VOLUME
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
         
-        // Razor sharp white hits
-        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * 1.5 * totalElevation;
-        // Bright edge light wrapping the perimeter
-        float fresnel = pow(1.0 - max(dot(normal, vec3(0.0, 0.0, 1.0)), 0.0), 4.0);
-        vec3 rimLight = fract(in_AppColor + normalizedAngle * 0.1) * fresnel * 2.0 * totalElevation;
+        float spec = pow(max(dot(normal, lightDir), 0.0), 70.0) * 1.5 * totalElevation;
+        vec3 specularLight = vec3(1.0) * spec;
         
-        // Inner shadow to establish volume
-        float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * totalElevation;
-        refractedBG = mix(refractedBG, refractedBG * 0.1, shadow);
+        vec3 frostedVolume = mix(vec3(1.0), in_AppColor, 0.25) * rawWave * baseElevation * holeMask * 0.6;
+        
+        // 7. THE CAMERA LIP GLOW (The Hardware Ring)
+        // A razor-thin, highly luminous ring that perfectly outlines the physical camera.
+        float edgeRing = smoothstep(cameraRadius - 2.0, cameraRadius + 2.0, distToCamera) * (1.0 - smoothstep(cameraRadius + 2.0, cameraRadius + 8.0, distToCamera));
+        vec3 holeLipGlow = in_AppColor * edgeRing * baseElevation * 2.5; 
+        
+        // Edge lighting
+        float fresnel = pow(1.0 - normalizedAngle, 5.0);
+        vec3 rimLight = in_AppColor * fresnel * 2.0 * totalElevation;
+        
+        // Subtractive Volume
+        refractedBG = mix(refractedBG, refractedBG * 0.2, totalElevation * 0.6);
+        float shadow = max(dot(normal, -lightDir), 0.0) * 0.4 * totalElevation;
+        refractedBG = mix(refractedBG, vec3(0.0), shadow);
 
-        // 7. COMPOSITION
-        // Refracted RGB Wallpaper + Rainbow Data Pulses + White Specular Hits + Edge Rim
-        vec3 finalColor = refractedBG + spectralPulse + vec3(spec) + rimLight;
+        // 8. COMPOSITION
+        vec3 finalColor = refractedBG + frostedVolume + specularLight + rimLight + holeLipGlow;
         
         return half4(finalColor * screenMask, screenMask);
     }
 """
+
 
 
 
