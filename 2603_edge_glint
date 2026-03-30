@@ -138,6 +138,9 @@ const val SUNLIGHT_SHADER = """
 // ==========================================
 
 // SHADER 6: THE FLAGSHIP ENGINE (CPU-Coupled Kinetics, Spacetime Bend, Adaptive Luma)
+// ==========================================
+// SHADER 6: THE FLAGSHIP ENGINE (Decoupled CPU Kinetics & Adaptive Luma)
+// ==========================================
 const val FLUID_SHADER = """
     uniform shader in_Background;
     uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
@@ -186,14 +189,11 @@ const val FLUID_SHADER = """
         float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
         float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
 
-        // 5. SPACETIME OPTICAL RIPPLES (CPU-Coupled Kinetics)
-        vec2 warpedTouchVec = fragCoord + (normal.xy * baseRefraction * 1.5) - in_TouchPos;
-        float warpedDistToTouch = length(warpedTouchVec);
-        
+        // 5. OPTICAL RIPPLES (Decoupled for Perfect Motion Legibility)
+        // By using the un-warped distToTouch, the rings' motion is no longer fought 
+        // by the glass collapsing. The speed you see is exactly the speed of the CPU phase.
         float spatialCompression = 0.04 - (elevation * 0.015);
-        
-        // We use the pure, accumulated phase from Jetpack Compose for flawless acceleration/deceleration
-        float localPhase = (warpedDistToTouch * spatialCompression) + (in_WavePhase * in_TransferDirection); 
+        float localPhase = (distToTouch * spatialCompression) + (in_WavePhase * in_TransferDirection); 
         float energyPulse = pow(sin(localPhase) * 0.5 + 0.5, 3.0) * elevation;
 
         // 6. DYNAMIC CAUSTIC LIGHTING
@@ -300,7 +300,7 @@ fun NotificationSyncPrototype() {
     val isMagneticPullActive = isScreenTouched || fluidState == FluidState.MAGNETIC_HOLD
     val magneticTouchStrength by animateFloatAsState(
         targetValue = if (isMagneticPullActive) 1f else 0f,
-        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.6f, stiffness = 150f),
+        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.6f, stiffness = 40f),
         label = "magnetic_pull"
     )
     
