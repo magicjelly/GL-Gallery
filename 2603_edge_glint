@@ -48,6 +48,137 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
+
+// ==========================================
+// SHADER A: CONCEPT 1 - THE MAGNETIC MENISCUS (Refined Send/Receive Physics)
+// ==========================================
+const val MENISCUS_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    vec3 drawDirectionalOrbs(vec2 uv, float time, float phase, float direction, float elevation, half3 appColor) {
+        float starlight = 0.0;
+        
+        for (float i = 0.0; i < 20.0; i++) {
+            float h1 = fract(sin(i * 7.13) * 268.53);
+            float h2 = fract(sin(i * 13.7) * 412.11);
+            
+            float rawProgress = fract(h1 + (phase * 0.008) + (time * 0.01));
+            
+            float currentR;
+            float currentAngle;
+            float stretch;
+            float scaleBase;
+            float orbMask;
+            
+            if (direction > 0.0) {
+                // SEND STATE: Straight lines, violent suction, strictly upper third
+                float gravityFall = pow(rawProgress, 4.0); 
+                currentR = mix(1.0, 0.0, gravityFall); // Max radius locked to 1.0 (keeps them on screen)
+                
+                currentAngle = mix(0.2, 2.94, h2); // Fanning downwards from the top bezel
+                
+                // Subtle teardrop stretch (max 3.5 instead of the extreme 12.0)
+                stretch = mix(3.5, 1.0, smoothstep(0.0, 0.8, currentR));
+                scaleBase = mix(1.0, 0.4, smoothstep(1.0, 0.0, currentR));
+                
+                // Fade in quickly, vanish right at the void
+                orbMask = smoothstep(0.05, 0.15, currentR) * smoothstep(1.0, 0.8, currentR);
+            } else {
+                // RECEIVE STATE: Wormhole drift, perfectly round, floating out
+                float gravityFall = 1.0 - pow(1.0 - rawProgress, 4.0);
+                currentR = mix(0.0, 1.5, gravityFall); // Float out further to dissipate
+                
+                // Exact Keplerian spiral math from the Cinematic Wormhole
+                currentAngle = (h2 * 6.28318) + (time * 0.05) - (1.5 / (currentR + 0.2));
+                
+                stretch = 1.0; // NO stretch. Always perfectly round.
+                scaleBase = mix(0.4, 1.0, smoothstep(0.0, 1.5, currentR));
+                
+                // Pop out of the void, fade away slowly
+                orbMask = smoothstep(0.05, 0.2, currentR) * smoothstep(1.5, 1.0, currentR);
+            }
+            
+            vec2 dirVec = vec2(cos(currentAngle), sin(currentAngle));
+            vec2 orbPos = dirVec * currentR;
+            
+            vec2 localUV = uv - orbPos;
+            
+            // Align the teardrop stretch with the trajectory
+            float c = cos(-currentAngle); float s = sin(-currentAngle);
+            vec2 stretchedUV = vec2(c * localUV.x - s * localUV.y, s * localUV.x + c * localUV.y);
+            stretchedUV.x /= stretch; 
+            
+            float dist = length(stretchedUV);
+            
+            float core = exp(-dist * mix(50.0, 80.0, h1) / scaleBase) * 3.0;
+            float halo = exp(-dist * mix(15.0, 30.0, h2) / scaleBase) * 1.0;
+            
+            starlight += (core + halo) * orbMask;
+        }
+        
+        vec3 hotWhite = vec3(1.0, 0.98, 0.95);
+        return mix(vec3(appColor), hotWhite, 0.7) * starlight * elevation;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.0; 
+        
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+        float corePinch = exp(-distToTouch / (tensionWidth * 0.15)) * in_FluidVolume; 
+
+        // RECEIVE FIX: Drastically softened the outward bulge to prevent aggressive screen distortion
+        float warpPower = (in_TransferDirection > 0.0) ? 1.5 : -0.25; 
+        float pinchPower = (in_TransferDirection > 0.0) ? 3.0 : -0.5; 
+
+        vec2 warpedCoord = fragCoord + (touchVec * elevation * warpPower) + (touchVec * corePinch * pinchPower);
+
+        float rgbSplit = elevation * 8.0;
+        vec2 splitDir = normalize(touchVec + vec2(0.001));
+        float bgR = in_Background.eval(warpedCoord - splitDir * rgbSplit).r;
+        float bgG = in_Background.eval(warpedCoord).g;
+        float bgB = in_Background.eval(warpedCoord + splitDir * rgbSplit).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
+
+        // LIGHTING FIX: Normal mapping stays structurally convex so it always looks like a premium glass bulge
+        vec2 gradient = 2.0 * touchVec / (tensionWidth * tensionWidth) * elevation; 
+        vec3 normal = normalize(vec3(gradient.x, gradient.y, 0.015)); 
+        
+        vec3 lightDir = normalize(vec3(0.0, 1.0, 1.0)); 
+        float spec = pow(max(dot(normal, lightDir), 0.0), 40.0) * elevation;
+        vec3 convexHighlight = vec3(1.0) * spec * 1.5;
+
+        float vignette = smoothstep(tensionWidth * 2.5, tensionWidth * 0.2, distToTouch);
+        refractedBG *= mix(1.0, vignette, in_FluidVolume * 0.85);
+
+        vec2 normalizedVec = touchVec / tensionWidth;
+        vec3 starlight = drawDirectionalOrbs(normalizedVec, in_Time, in_WavePhase, in_TransferDirection, elevation, in_AppColor);
+
+        float edgeLight = exp(-pow(distToTouch / (tensionWidth * 0.12), 4.0)) * in_FluidVolume;
+        vec3 coreIgnition = vec3(1.0, 0.98, 0.95) * edgeLight * 2.5;
+
+        vec3 finalColor = refractedBG + convexHighlight + starlight + coreIgnition;
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
+    }
+"""
+
+
 // ==========================================
 // SHADER A: THE MAGNETIC MENISCUS (With Linear Fanning Velocity Orbs)
 // ==========================================
