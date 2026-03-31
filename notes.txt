@@ -1,3 +1,180 @@
+
+
+// ==========================================
+// 4. TabSendReceive.kt (Indication Crash Patched)
+// ==========================================
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+
+@Composable
+fun TabSendReceive(
+    state: EngineState,
+    screenWidthPx: Float
+) {
+    val coroutineScope = rememberCoroutineScope()
+    
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { coroutineScope.launch { state.transferDirection = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f; state.fluidState = FluidState.MAGNETIC_HOLD; state.fluidVolumeTarget = 1f } }, 
+                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Send", fontWeight = FontWeight.Bold)
+            }
+            Button(
+                onClick = { coroutineScope.launch { state.transferDirection = -1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f; state.fluidState = FluidState.MAGNETIC_HOLD; state.fluidVolumeTarget = 1f } }, 
+                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            ) {
+                Icon(Icons.Default.CallReceived, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Receive", fontWeight = FontWeight.Bold)
+            }
+            Button(
+                onClick = { state.fluidVolumeTarget = 0f; state.fluidState = FluidState.IDLE }, 
+                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Fail", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                val currentEffects = listOf("Magnetic Meniscus", "OLED State-Change", "Cinematic Wormhole")
+                currentEffects.forEachIndexed { index, name ->
+                    val isSelected = state.selectedPhysicsIndex == index
+                    TextButton(
+                        onClick = { 
+                            state.selectedPhysicsIndex = index
+                            state.isNotificationActive = false 
+                        }, 
+                        colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), 
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                state.appColors.forEach { color ->
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(color, CircleShape)
+                            .border(width = if (state.selectedAppColor == color) 3.dp else 1.dp, color = if (state.selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
+                            .clip(CircleShape) // Secures the ripple inside the circle
+                            .clickable { 
+                                state.selectedAppColor = color
+                                state.isNotificationActive = false 
+                            }
+                    )
+                }
+            }
+        }
+
+        TuningSlider("Speed", state.flowSpeed, 0.1f..5.0f) { state.flowSpeed = it }
+        TuningSlider("Effect X Position", state.effectPosX, 0.0f..1.0f) { state.effectPosX = it }
+        TuningSlider("Effect Y Position", state.effectPosY, 0.0f..1.0f) { state.effectPosY = it }
+        TuningSlider("Effect Size Base", state.effectSize, 0.05f..0.4f) { state.effectSize = it }
+    }
+}
+
+
+// ==========================================
+// 3. TabNotifications.kt (Indication Crash Patched)
+// ==========================================
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun TabNotifications(state: EngineState) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                val currentEffects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays")
+                currentEffects.forEachIndexed { index, name ->
+                    val isSelected = state.selectedNotificationIndex == index
+                    TextButton(
+                        onClick = { 
+                            state.selectedNotificationIndex = index
+                            state.isNotificationActive = true 
+                        }, 
+                        colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), 
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                state.appColors.forEach { color ->
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(color, CircleShape)
+                            .border(width = if (state.selectedAppColor == color) 3.dp else 1.dp, color = if (state.selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
+                            .clip(CircleShape) // Secures the ripple inside the circle
+                            .clickable { 
+                                state.selectedAppColor = color
+                                state.isNotificationActive = true 
+                            }
+                    )
+                }
+            }
+        }
+
+        TuningSlider("Speed", state.flowSpeed, 0.1f..5.0f) { state.flowSpeed = it }
+        TuningSlider("Thickness", state.thickness, 10f..100f) { state.thickness = it }
+        TuningSlider("Amplitude", state.amplitude, 10f..200f) { state.amplitude = it }
+        TuningSlider("Noise Scale", state.noiseScale, 0.5f..10.0f) { state.noiseScale = it }
+    }
+}
+
+
+
+
+
 // ==========================================
 // 5. TabMediaPlayer.kt (Safe Node Lifecycle)
 // ==========================================
