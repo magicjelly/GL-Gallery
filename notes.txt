@@ -1,127 +1,353 @@
+// ==========================================
+// 6. MainActivity.kt
+// ==========================================
+
+import android.content.Context
+import android.graphics.RenderEffect
+import android.graphics.RuntimeShader
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.media.MediaPlayer
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.android.awaitFrame
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        NotificationSyncPrototype()
+                    }
+                }
+            }
+        }
+    }
+}
+
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
-fun ShaderCanvasTemplate(
-    imageList: List<ImageBitmap>,
-    @RawRes shaderResId: Int,
-    modifier: Modifier = Modifier,
-    canvasWidthDp: Dp = 300.dp,
-    canvasHeightDp: Dp = 300.dp
-) {
-    require(imageList.size >= 2) { "At least two images are required." }
-
+fun NotificationSyncPrototype() {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val config = LocalConfiguration.current
+    
+    val state = remember { EngineState() }
+    
+    var rawGravityX by remember { mutableFloatStateOf(0f) }
+    var rawGravityY by remember { mutableFloatStateOf(0f) }
 
-    val shaderCode = remember {
-        context.resources.openRawResource(shaderResId).bufferedReader().use { it.readText() }
-    }
-    val runtimeShader = remember { RuntimeShader(shaderCode) }
-
-    val time = remember { Animatable(0f) }
-
-    val scope = rememberCoroutineScope()
-
-    var currentIndex by remember { mutableIntStateOf(0) }
-    var progress by remember { mutableFloatStateOf(0f) }
-    var isAnimating by remember { mutableStateOf(false) }
-
-    val canvasWidthPx = with(density) { canvasWidthDp.toPx() }
-    val canvasHeightPx = with(density) { canvasHeightDp.toPx() }
-
-    val imageCount = imageList.size
-    val imageA = imageList[currentIndex % imageCount]
-    val imageB = imageList[(currentIndex + 1) % imageCount]
-
-    val scaledImageA = remember(imageA, canvasWidthPx, canvasHeightPx) {
-        imageA.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
-    }
-    val scaledImageB = remember(imageB, canvasWidthPx, canvasHeightPx) {
-        imageB.asAndroidBitmap().scaleToFit(canvasWidthPx.toInt(), canvasHeightPx.toInt()).asImageBitmap()
-    }
-
-    val progressX = progress * canvasWidthPx
-
-    // Animate time
-    LaunchedEffect(Unit) {
-        while (true) {
-            time.snapTo(time.value + 0.016f)
-            delay(16)
-        }
-    }
-
-    // Programmatic transition to next or previous
-    fun transitionTo(offset: Int) {
-        if (isAnimating) return
-        isAnimating = true
-        scope.launch {
-            animate(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = tween(500, easing = FastOutSlowInEasing)
-            ) { value, _ ->
-                progress = value
+    val sensorManager = remember { context.getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    DisposableEffect(Unit) {
+        val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                event?.let {
+                    rawGravityX = it.values[0] / 9.81f
+                    rawGravityY = it.values[1] / 9.81f
+                }
             }
-            currentIndex = (currentIndex + offset + imageCount) % imageCount
-            progress = 0f
-            isAnimating = false
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
+        sensorManager.registerListener(listener, gravitySensor, SensorManager.SENSOR_DELAY_GAME)
+        onDispose { sensorManager.unregisterListener(listener) }
+    }
+    
+    val fluidMomentumX by animateFloatAsState(targetValue = -rawGravityX, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_x")
+    val fluidMomentumY by animateFloatAsState(targetValue = rawGravityY, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_y")
+
+    val isMagneticPullActive = state.isScreenTouched || state.fluidState == FluidState.MAGNETIC_HOLD
+    val magneticTouchStrength by animateFloatAsState(
+        targetValue = if (isMagneticPullActive) 1f else 0f,
+        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.75f, stiffness = 40f),
+        label = "magnetic_pull"
+    )
+    
+    val fluidVolume by animateFloatAsState(
+        targetValue = state.fluidVolumeTarget,
+        animationSpec = tween(1500, easing = LinearOutSlowInEasing),
+        label = "fluid_volume"
+    )
+    
+    val mediaPlayer = remember { MediaPlayer() }
+
+    DisposableEffect(Unit) {
+        onDispose { mediaPlayer.release() }
+    }
+
+    LaunchedEffect(state.isPlaying) {
+        while (state.isPlaying) {
+            try {
+                if (mediaPlayer.isPlaying) {
+                    state.currentPosition = mediaPlayer.currentPosition
+                } else {
+                    state.currentPosition = (state.currentPosition + 50).coerceAtMost(state.mediaDuration)
+                    if (state.currentPosition >= state.mediaDuration) {
+                        state.isPlaying = false
+                        state.fluidVolumeTarget = 0f
+                        state.currentPosition = 0
+                    }
+                }
+            } catch(e: Exception) {}
+            delay(50)
+        }
+    }
+
+    val activeShaderString = when (state.selectedCategory) {
+        0 -> when (state.selectedNotificationIndex) {
+            0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
+            4 -> AURA_SHADER; else -> SUNLIGHT_SHADER
+        }
+        1 -> when (state.selectedPhysicsIndex) {
+            0 -> MENISCUS_SHADER; 1 -> STATE_CHANGE_SHADER; else -> WORMHOLE_SHADER
+        }
+        else -> WAVE_SHADER
+    }
+
+    val pillOffsetY by animateDpAsState(targetValue = if (state.isNotificationActive) 32.dp else (-100).dp, animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f), label = "pill")
+    
+    val masterAlpha by animateFloatAsState(
+        targetValue = if (state.selectedCategory != 0 || state.isNotificationActive) 1f else 0f, 
+        animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing), 
+        label = "alpha"
+    )
+
+    val screenWidthPx = with(density) { config.screenWidthDp.dp.toPx() }
+    val screenHeightPx = with(density) { config.screenHeightDp.dp.toPx() }
+    val pillWidthPx = screenWidthPx * 0.9f
+    val pillHeightPx = with(density) { 64.dp.toPx() }
+    val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
+
+    val activeTouchX = if (state.selectedCategory == 1) state.effectPosX * screenWidthPx else state.touchX
+    val activeTouchY = if (state.selectedCategory == 1) state.effectPosY * screenHeightPx else state.touchY
+
+    val activeColorTarget = if (state.selectedCategory == 2) state.extractedMediaColor else state.selectedAppColor
+    val animatedAppColor by animateColorAsState(
+        targetValue = activeColorTarget,
+        animationSpec = tween(durationMillis = 1500, easing = LinearOutSlowInEasing),
+        label = "color_crossfade"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull()
+                        if (change != null) {
+                            if (state.fluidState == FluidState.IDLE) {
+                                state.touchX = change.position.x
+                                state.touchY = change.position.y
+                            }
+                            state.isScreenTouched = change.pressed
+                        }
+                    }
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { 
+                        if (state.selectedCategory == 0) {
+                            state.isNotificationActive = true 
+                        } else if (state.selectedCategory == 2) {
+                            state.isMediaUiVisible = !state.isMediaUiVisible
+                        }
+                    }, 
+                    onDoubleTap = { state.isNotificationActive = false }
+                )
+            }
+    ) {
+        AmbientEdgeLighting(
+            modifier = Modifier.fillMaxSize(),
+            shaderString = activeShaderString,
+            cornerRadius = 120f, appColor = animatedAppColor,
+            speed = state.flowSpeed, thickness = state.thickness, amplitude = state.amplitude, noiseScale = state.noiseScale,
+            masterAlpha = masterAlpha,
+            pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx,
+            gravityX = fluidMomentumX, gravityY = fluidMomentumY,
+            touchX = activeTouchX, touchY = activeTouchY, touchActive = magneticTouchStrength,
+            fluidVolume = fluidVolume,
+            transferDirection = state.transferDirection,
+            effectSize = state.effectSize
+        ) {
+            // UPDATED BACKGROUND RENDERER: Pure black void with centered album art
+            if (state.selectedCategory == 2 && state.mediaAlbumArt != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = state.mediaAlbumArt!!,
+                        contentDescription = "Album Art",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth(0.85f)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(16.dp))
+                    )
+                }
+            } else {
+                Image(
+                    painter = painterResource(id = android.R.drawable.sym_def_app_icon), 
+                    contentDescription = "Background", 
+                    contentScale = ContentScale.Crop, 
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        if (state.selectedCategory == 0) {
+            Card(
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = pillOffsetY).alpha(masterAlpha).fillMaxWidth(0.9f).height(64.dp),
+                shape = RoundedCornerShape(32.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp) 
+            ) {}
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight(0.55f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                when (state.selectedCategory) {
+                    0 -> TabNotifications(state)
+                    1 -> TabSendReceive(state, screenWidthPx)
+                    2 -> TabMediaPlayer(state, mediaPlayer)
+                }
+            }
+            
+            AnimatedVisibility(
+                visible = if (state.selectedCategory == 2) state.isMediaUiVisible else true,
+                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
+                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    TabRow(selectedTabIndex = state.selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[state.selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
+                        Tab(selected = state.selectedCategory == 0, onClick = { 
+                            state.selectedCategory = 0; state.isNotificationActive = true; state.fluidVolumeTarget = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f 
+                        }, text = { Text("Notifications", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                        Tab(selected = state.selectedCategory == 1, onClick = { 
+                            state.selectedCategory = 1; state.isNotificationActive = false; state.fluidVolumeTarget = 0f 
+                        }, text = { Text("Send/Receive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                        Tab(selected = state.selectedCategory == 2, onClick = { 
+                            state.selectedCategory = 2; state.isNotificationActive = false; state.fluidVolumeTarget = if(state.isPlaying) 1f else 0f 
+                        }, text = { Text("Media", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+fun AmbientEdgeLighting(
+    modifier: Modifier = Modifier, shaderString: String, cornerRadius: Float = 120f,
+    appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float,
+    pillCenterY: Float, pillWidth: Float, pillHeight: Float, gravityX: Float, gravityY: Float,
+    touchX: Float, touchY: Float, touchActive: Float, fluidVolume: Float, transferDirection: Float,
+    effectSize: Float,
+    content: @Composable () -> Unit
+) {
+    var time by remember { mutableFloatStateOf(0f) }
+    var wavePhase by remember { mutableFloatStateOf(0f) }
+    
+    LaunchedEffect(Unit) {
+        val startTime = System.nanoTime()
+        var lastTime = startTime
+        while (true) {
+            awaitFrame()
+            val currentTime = System.nanoTime()
+            val dt = (currentTime - lastTime) / 1_000_000_000f
+            lastTime = currentTime
+            
+            time = (currentTime - startTime) / 1_000_000_000f
+            wavePhase += (dt * speed * 15f) * fluidVolume
+        }
+    }
+
+    val shader = remember(shaderString) { 
+        RuntimeShader(shaderString.filter { it.code in 0..127 }) 
     }
 
     Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+        modifier = modifier.graphicsLayer {
+            shader.setFloatUniform("in_Resolution", size.width, size.height)
+            shader.setFloatUniform("in_Time", time)
+            shader.setFloatUniform("in_WavePhase", wavePhase) 
+            shader.setFloatUniform("in_CornerRadius", cornerRadius)
+            shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
+            shader.setFloatUniform("in_Speed", speed)
+            shader.setFloatUniform("in_Spread", thickness)
+            shader.setFloatUniform("in_Amplitude", amplitude)
+            shader.setFloatUniform("in_NoiseScale", noiseScale)
+            shader.setFloatUniform("in_MasterAlpha", masterAlpha) 
+            shader.setFloatUniform("in_PillCenterY", pillCenterY)
+            shader.setFloatUniform("in_PillWidth", pillWidth)
+            shader.setFloatUniform("in_PillHeight", pillHeight)
+            shader.setFloatUniform("in_Gravity", gravityX, gravityY)
+            shader.setFloatUniform("in_TouchPos", touchX, touchY)
+            shader.setFloatUniform("in_TouchActive", touchActive)
+            shader.setFloatUniform("in_FluidVolume", fluidVolume)
+            shader.setFloatUniform("in_TransferDirection", transferDirection)
+            shader.setFloatUniform("in_EffectSize", effectSize)
+            
+            renderEffect = RenderEffect.createRuntimeShaderEffect(shader, "in_Background").asComposeRenderEffect()
+            clip = true
+        }
     ) {
-        // Shader canvas
-        Canvas(
-            modifier = Modifier
-                .size(canvasWidthDp, canvasHeightDp)
-                .pointerInput(currentIndex, isAnimating) {
-                    if (!isAnimating) {
-                        detectHorizontalDragGestures(
-                            onHorizontalDrag = { _, dragAmount ->
-                                progress = (progress + dragAmount / canvasWidthPx).coerceIn(0f, 1f)
-                            },
-                            onDragEnd = {
-                                if (progress >= 0.5f) {
-                                    currentIndex = (currentIndex + 1) % imageCount
-                                } else if (progress <= 0.5f && progress > 0f) {
-                                    currentIndex = (currentIndex - 1 + imageCount) % imageCount
-                                }
-                                progress = 0f
-                            },
-                            onDragCancel = {
-                                progress = 0f
-                            }
-                        )
-                    }
-                }
-        ) {
-            val shaderA = ImageShader(scaledImageA, TileMode.Clamp, TileMode.Clamp)
-            val shaderB = ImageShader(scaledImageB, TileMode.Clamp, TileMode.Clamp)
-
-            runtimeShader.setInputShader("iChannel0", shaderA)
-            runtimeShader.setInputShader("iChannel1", shaderB)
-            runtimeShader.setFloatUniform("iResolution", size.width, size.height)
-            runtimeShader.setFloatUniform("iTime", time.value)
-            runtimeShader.setFloatUniform("iMouseX", progressX.coerceIn(0f, size.width))
-            runtimeShader.setFloatUniform("iMouseZ", 1f)
-
-            drawRect(brush = ShaderBrush(runtimeShader))
-        }
-
-        // Control buttons
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Button(onClick = { transitionTo(-1) }, enabled = !isAnimating) {
-                Text("Previous")
-            }
-            Button(onClick = { transitionTo(+1) }, enabled = !isAnimating) {
-                Text("Next")
-            }
-        }
+        content()
     }
 }
