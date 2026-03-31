@@ -1,5 +1,263 @@
 // ==========================================
-// 6. MainActivity.kt
+// 5. TabMediaPlayer.kt (Crash Patched & Thread Safe)
+// ==========================================
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
+import android.media.audiofx.Visualizer
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.palette.graphics.Palette
+import kotlin.math.sqrt
+
+@Composable
+fun TabMediaPlayer(
+    state: EngineState,
+    mediaPlayer: MediaPlayer
+) {
+    val context = LocalContext.current
+    var rawAudioEnergy by remember { mutableFloatStateOf(0f) }
+    
+    var hasAudioPermission by remember { 
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) 
+    }
+    
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasAudioPermission = isGranted
+    }
+    
+    val smoothedEnergy by animateFloatAsState(
+        targetValue = rawAudioEnergy,
+        animationSpec = tween(durationMillis = 120), 
+        label = "audio_smoothing"
+    )
+
+    LaunchedEffect(smoothedEnergy, state.isPlaying) {
+        if (state.isPlaying && hasAudioPermission) {
+            state.amplitude = 20f + (smoothedEnergy * 280f) 
+            state.flowSpeed = 1.0f + (smoothedEnergy * 1.5f)
+        } else {
+            state.amplitude = 8f
+            state.flowSpeed = 0.15f 
+        }
+    }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { selectedUri ->
+            try {
+                if (mediaPlayer.isPlaying) mediaPlayer.stop()
+                mediaPlayer.reset()
+                
+                mediaPlayer.setDataSource(context, selectedUri)
+                mediaPlayer.prepare()
+                
+                state.mediaDuration = mediaPlayer.duration
+                state.currentPosition = 0
+                state.isPlaying = false
+                rawAudioEnergy = 0f
+                
+                var trackName = "Unknown Track"
+                context.contentResolver.query(selectedUri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameIndex != -1) trackName = cursor.getString(nameIndex)
+                }
+                
+                val mmr = MediaMetadataRetriever()
+                mmr.setDataSource(context, selectedUri)
+                
+                val title = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                val artist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                if (!title.isNullOrEmpty()) {
+                    trackName = if (!artist.isNullOrEmpty()) "$artist - $title" else title
+                }
+                state.currentTrackName = trackName
+
+                val artBytes = mmr.embeddedPicture
+                if (artBytes != null) {
+                    val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                    state.mediaAlbumArt = bitmap.asImageBitmap()
+                    
+                    Palette.from(bitmap).maximumColorCount(128).clearFilters().generate { palette ->
+                        val swatches = palette?.swatches ?: emptyList()
+                        val bestSwatch = swatches.maxByOrNull { swatch ->
+                            val hsl = swatch.hsl
+                            if (hsl[1] < 0.15f || hsl[2] < 0.1f || hsl[2] > 0.9f) -1f else (hsl[1] * 1000f) + (hsl[2] * 500f)
+                        }
+                        val targetColorInt = bestSwatch?.rgb ?: palette?.vibrantSwatch?.rgb ?: android.graphics.Color.WHITE
+                        state.extractedMediaColor = Color(targetColorInt)
+                    }
+                } else {
+                    state.mediaAlbumArt = null
+                    state.extractedMediaColor = Color(0xFFFFFFFF)
+                }
+                mmr.release()
+            } catch (e: Exception) { e.printStackTrace() }
+        }
+    }
+
+    DisposableEffect(state.isPlaying, hasAudioPermission) {
+        var visualizer: Visualizer? = null
+        if (state.isPlaying && hasAudioPermission) {
+            try {
+                visualizer = Visualizer(mediaPlayer.audioSessionId)
+                visualizer.captureSize = Visualizer.getCaptureSizeRange()[1] 
+                visualizer.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
+                        waveform?.let {
+                            var sum = 0.0
+                            for (byte in it) {
+                                val amplitude = (byte.toInt() and 0xFF) - 128
+                                sum += (amplitude * amplitude).toDouble()
+                            }
+                            val rms = sqrt(sum / it.size)
+                            val normalizedEnergy = (rms / 128.0).coerceIn(0.0, 1.0).toFloat()
+                            val finalEnergy = (normalizedEnergy * 1.5f).coerceAtMost(1.0f)
+                            
+                            // THREAD SAFETY FIX: Pushes the background data cleanly to the Main UI Thread
+                            Handler(Looper.getMainLooper()).post {
+                                rawAudioEnergy = finalEnergy
+                            }
+                        }
+                    }
+                    override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {}
+                }, Visualizer.getMaxCaptureRate() / 2, true, false)
+                visualizer.enabled = true
+            } catch (e: Exception) { e.printStackTrace() }
+        } else {
+            rawAudioEnergy = 0f
+        }
+        onDispose { visualizer?.enabled = false; visualizer?.release() }
+    }
+
+    // LAYOUT NODE FIX: Using safe graphicsLayer animations instead of dropping the view from the tree
+    val uiAlpha by animateFloatAsState(
+        targetValue = if (state.isMediaUiVisible) 1f else 0f, 
+        animationSpec = tween(300), 
+        label = "uiAlpha"
+    )
+    val uiOffsetY by animateDpAsState(
+        targetValue = if (state.isMediaUiVisible) 0.dp else 50.dp, 
+        animationSpec = tween(300), 
+        label = "uiOffset"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .offset(y = uiOffsetY)
+            .graphicsLayer { alpha = uiAlpha },
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (!hasAudioPermission) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Visualizer Disabled", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Android requires microphone access to read the internal audio track.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Grant Permission")
+                    }
+                }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Extracted: ", style = MaterialTheme.typography.labelMedium)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(modifier = Modifier.size(24.dp).background(state.extractedMediaColor, CircleShape).border(1.dp, Color.White, CircleShape))
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Test Palettes:", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    val testColors = listOf(Color(0xFF00FF00), Color(0xFFFF0055), Color(0xFF00DDFF), Color(0xFFFF5500), Color(0xFFAA00FF))
+                    testColors.forEach { color ->
+                        Box(modifier = Modifier.size(32.dp).background(color, CircleShape).border(if (state.extractedMediaColor == color) 2.dp else 0.dp, Color.White, CircleShape).clickable { state.extractedMediaColor = color })
+                    }
+                }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                
+                Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary), modifier = Modifier.fillMaxWidth(0.8f)) {
+                    Text("Load MP3", fontWeight = FontWeight.Bold)
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = state.currentTrackName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                
+                Slider(
+                    value = if (state.mediaDuration > 0) state.currentPosition.toFloat() / state.mediaDuration.toFloat() else 0f,
+                    onValueChange = { 
+                        val newPos = (it * state.mediaDuration).toInt()
+                        state.currentPosition = newPos
+                        try { mediaPlayer.seekTo(newPos) } catch(e: Exception) {}
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Button(
+                        onClick = { try { mediaPlayer.start(); state.isPlaying = true; state.fluidVolumeTarget = 1f } catch(e: Exception) {} },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) { Text("Start") }
+                    Button(
+                        onClick = { try { mediaPlayer.pause(); state.isPlaying = false } catch(e: Exception) {} },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) { Text("Pause") }
+                    Button(
+                        onClick = { try { mediaPlayer.pause(); mediaPlayer.seekTo(0); state.currentPosition = 0; state.isPlaying = false; state.fluidVolumeTarget = 0f } catch(e: Exception) {} },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Stop") }
+                }
+            }
+        }
+        TuningSlider("Noise Scale", state.noiseScale, 0.5f..10.0f) { state.noiseScale = it }
+    }
+}
+
+
+// ==========================================
+// 6. MainActivity.kt (Crash Patched)
 // ==========================================
 
 import android.content.Context
@@ -15,7 +273,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
-import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -208,7 +465,6 @@ fun NotificationSyncPrototype() {
             transferDirection = state.transferDirection,
             effectSize = state.effectSize
         ) {
-            // UPDATED BACKGROUND RENDERER: Pure black void with centered album art
             if (state.selectedCategory == 2 && state.mediaAlbumArt != null) {
                 Box(
                     modifier = Modifier
@@ -265,26 +521,28 @@ fun NotificationSyncPrototype() {
                 }
             }
             
-            AnimatedVisibility(
-                visible = if (state.selectedCategory == 2) state.isMediaUiVisible else true,
-                enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
-                exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 })
+            // LAYOUT NODE FIX: Slide the TabBar away instead of destroying it
+            val isTabBarVisible = state.selectedCategory != 2 || state.isMediaUiVisible
+            val tabBarAlpha by animateFloatAsState(targetValue = if (isTabBarVisible) 1f else 0f, animationSpec = tween(300), label = "tabAlpha")
+            val tabBarOffsetY by animateDpAsState(targetValue = if (isTabBarVisible) 0.dp else 100.dp, animationSpec = tween(300), label = "tabOffset")
+
+            Card(
+                modifier = Modifier
+                    .offset(y = tabBarOffsetY)
+                    .graphicsLayer { alpha = tabBarAlpha },
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                ) {
-                    TabRow(selectedTabIndex = state.selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[state.selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
-                        Tab(selected = state.selectedCategory == 0, onClick = { 
-                            state.selectedCategory = 0; state.isNotificationActive = true; state.fluidVolumeTarget = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f 
-                        }, text = { Text("Notifications", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                        Tab(selected = state.selectedCategory == 1, onClick = { 
-                            state.selectedCategory = 1; state.isNotificationActive = false; state.fluidVolumeTarget = 0f 
-                        }, text = { Text("Send/Receive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                        Tab(selected = state.selectedCategory == 2, onClick = { 
-                            state.selectedCategory = 2; state.isNotificationActive = false; state.fluidVolumeTarget = if(state.isPlaying) 1f else 0f 
-                        }, text = { Text("Media", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                    }
+                TabRow(selectedTabIndex = state.selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[state.selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
+                    Tab(selected = state.selectedCategory == 0, onClick = { 
+                        state.selectedCategory = 0; state.isNotificationActive = true; state.fluidVolumeTarget = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f 
+                    }, text = { Text("Notifications", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                    Tab(selected = state.selectedCategory == 1, onClick = { 
+                        state.selectedCategory = 1; state.isNotificationActive = false; state.fluidVolumeTarget = 0f 
+                    }, text = { Text("Send/Receive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                    Tab(selected = state.selectedCategory == 2, onClick = { 
+                        state.selectedCategory = 2; state.isNotificationActive = false; state.fluidVolumeTarget = 1f 
+                    }, text = { Text("Media", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
                 }
             }
         }
