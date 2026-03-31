@@ -358,6 +358,144 @@ const val WORMHOLE_SHADER = """
     }
 """
 
+// SHADER A: CONCEPT 1 - THE MAGNETIC MENISCUS (Convex Bulge & Upward Pull)
+const val MENISCUS_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.0; 
+        
+        // The mathematical "pull" of the heavy liquid glass
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+        float corePinch = exp(-distToTouch / (tensionWidth * 0.15)) * in_FluidVolume; 
+
+        // PULL FIX: We add the vector to drag surrounding pixels sharply INTO the touch point, stretching them upwards.
+        vec2 warpedCoord = fragCoord + (touchVec * elevation * 1.5) + (touchVec * corePinch * 3.0);
+
+        float rgbSplit = elevation * 8.0;
+        vec2 splitDir = normalize(touchVec + vec2(0.001));
+        float bgR = in_Background.eval(warpedCoord - splitDir * rgbSplit).r;
+        float bgG = in_Background.eval(warpedCoord).g;
+        float bgB = in_Background.eval(warpedCoord + splitDir * rgbSplit).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
+
+        // LIGHTING FIX: Inverted normal mapping forces the brain to see a convex bulge instead of a concave hole
+        vec2 gradient = 2.0 * touchVec / (tensionWidth * tensionWidth) * elevation; 
+        vec3 normal = normalize(vec3(gradient.x, gradient.y, 0.015)); // Z-axis flipped positive
+        
+        vec3 lightDir = normalize(vec3(0.0, 1.0, 1.0)); // Light coming from 'above' the phone
+        float spec = pow(max(dot(normal, lightDir), 0.0), 40.0) * elevation;
+        vec3 convexHighlight = vec3(1.0) * spec * 1.5;
+
+        float vignette = smoothstep(tensionWidth * 2.5, tensionWidth * 0.2, distToTouch);
+        refractedBG *= mix(1.0, vignette, in_FluidVolume * 0.85);
+
+        float waveProgress = fract(in_WavePhase * 0.15);
+        float waveRadius = (in_TransferDirection > 0.0) ? ((1.0 - waveProgress) * tensionWidth * 2.5) : (waveProgress * tensionWidth * 2.5);
+        
+        float waveDist = abs(distToTouch - waveRadius);
+        float waveLight = exp(-(waveDist * waveDist) * 0.002) * elevation * 0.15;
+        refractedBG += vec3(1.0) * waveLight;
+
+        float edgeLight = exp(-pow(distToTouch / (tensionWidth * 0.12), 4.0)) * in_FluidVolume;
+        vec3 coreIgnition = vec3(1.0, 0.98, 0.95) * edgeLight * 2.5;
+
+        vec3 finalColor = refractedBG + convexHighlight + coreIgnition;
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
+    }
+"""
+
+
+// SHADER B: CONCEPT 3 - THE OLED STATE-CHANGE (Crystalline Ice & Dimmer Internal Light)
+const val STATE_CHANGE_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+    
+    // Generates microscopic crystal shatter noise
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.5; 
+
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        // ICE FIX: Inject high-frequency shatter noise into the refraction loop
+        vec3 blurredBG = vec3(0.0);
+        float samples = 12.0;
+        float blurRadius = elevation * 40.0; 
+        
+        for(float i = 0.0; i < 12.0; i++) {
+            float angle = (i * 6.28318 / samples); 
+            // Randomize the offset slightly per pixel to create rough frost instead of smooth glass
+            float crystalShatter = hash(fragCoord + i) * 15.0 * elevation;
+            vec2 offset = vec2(cos(angle), sin(angle)) * (blurRadius + crystalShatter);
+
+            float r = in_Background.eval(fragCoord + offset * 1.05).r;
+            float g = in_Background.eval(fragCoord + offset).g;
+            float b = in_Background.eval(fragCoord + offset * 0.95).b;
+            blurredBG += vec3(r, g, b);
+        }
+        blurredBG /= samples;
+
+        // ICE FIX: Heavier desaturation to make it look frozen
+        float luma = dot(blurredBG, vec3(0.299, 0.587, 0.114));
+        vec3 frostedIce = mix(blurredBG, vec3(luma), elevation * 0.90);
+
+        float vignette = smoothstep(tensionWidth * 3.0, tensionWidth * 0.1, distToTouch);
+        frostedIce *= mix(1.0, vignette, in_FluidVolume * 0.7);
+
+        // LIGHT FIX: Drastically cut the bloom multiplier so it looks like trapped light, not an LED
+        float pulse = (sin(in_WavePhase * 0.8 * -in_TransferDirection - (distToTouch * 0.005)) + 1.0) * 0.5;
+        float coreGlow = exp(-pow(distToTouch / (tensionWidth * 0.6), 2.0)) * elevation;
+
+        vec3 glowColor = mix(vec3(in_AppColor), vec3(1.0), 0.4); 
+        
+        // Multiplier reduced from 1.5 to 0.4 to prevent blowing out the ice texture
+        vec3 finalGlow = glowColor * coreGlow * (0.1 + pulse * 0.4);
+        
+        // Add a physical spec hit to the surface of the ice block
+        float iceSpec = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth * 0.2)) * elevation;
+
+        vec3 finalColor = frostedIce + finalGlow + (vec3(1.0) * iceSpec * 0.15);
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
+    }
+"""
+
+
+
+
 // ==========================================
 // MEDIA PLAYER SHADERS
 // ==========================================
