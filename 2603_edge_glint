@@ -45,7 +45,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
@@ -128,10 +127,10 @@ const val SUNLIGHT_SHADER = """
 """
 
 // ==========================================
-// INTERACTIVE SYSTEM PHYSICS SHADERS (Ultra-Premium)
+// INTERACTIVE SEND/RECEIVE SHADERS (Flagship Physics)
 // ==========================================
 
-// SHADER A: CONCEPT 1 - THE MAGNETIC MENISCUS
+// SHADER A: CONCEPT 1 - THE MAGNETIC MENISCUS (Patched Syntax & Math Direction)
 const val MENISCUS_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -169,9 +168,10 @@ const val MENISCUS_SHADER = """
         float vignette = smoothstep(tensionWidth * 2.5, tensionWidth * 0.2, distToTouch);
         refractedBG *= mix(1.0, vignette, in_FluidVolume * 0.85);
 
-        float phase = in_WavePhase * in_TransferDirection;
-        float waveProgress = fract(phase * 0.15);
-        float waveRadius = (in_TransferDirection > 0.0) ? (waveProgress * tensionWidth * 2.5) : ((1.0 - waveProgress) * tensionWidth * 2.5);
+        // DIRECTION FIX: Uses absolute phase independent of direction, then manually branches 
+        float waveProgress = fract(in_WavePhase * 0.15);
+        // Send (>0.0): Pull inward to void (1.0 -> 0.0). Receive (<0.0): Push outward from void (0.0 -> 1.0).
+        float waveRadius = (in_TransferDirection > 0.0) ? ((1.0 - waveProgress) * tensionWidth * 2.5) : (waveProgress * tensionWidth * 2.5);
         
         float waveDist = abs(distToTouch - waveRadius);
         float waveLight = exp(-(waveDist * waveDist) * 0.002) * elevation * 0.15;
@@ -187,7 +187,7 @@ const val MENISCUS_SHADER = """
     }
 """
 
-// SHADER B: CONCEPT 3 - THE OLED STATE-CHANGE
+// SHADER B: CONCEPT 3 - THE OLED STATE-CHANGE (Patched Syntax & Math Direction)
 const val STATE_CHANGE_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -232,8 +232,8 @@ const val STATE_CHANGE_SHADER = """
         float vignette = smoothstep(tensionWidth * 3.0, tensionWidth * 0.1, distToTouch);
         frostedIce *= mix(1.0, vignette, in_FluidVolume * 0.8);
 
-        float phase = in_WavePhase * in_TransferDirection;
-        float pulse = (sin(phase * 0.8 - (distToTouch * 0.005)) + 1.0) * 0.5;
+        // DIRECTION FIX: Multiplied by -in_TransferDirection to swap outward/inward wave sine math
+        float pulse = (sin(in_WavePhase * 0.8 * -in_TransferDirection - (distToTouch * 0.005)) + 1.0) * 0.5;
         float coreGlow = exp(-pow(distToTouch / (tensionWidth * 0.8), 1.5)) * elevation;
 
         vec3 glowColor = mix(vec3(in_AppColor), vec3(1.0), 0.6); 
@@ -245,7 +245,7 @@ const val STATE_CHANGE_SHADER = """
     }
 """
 
-// SHADER C: CINEMATIC WORMHOLE
+// SHADER C: CINEMATIC WORMHOLE (Patched Syntax & Math Direction)
 const val WORMHOLE_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
@@ -265,9 +265,11 @@ const val WORMHOLE_SHADER = """
             float h1 = fract(sin(i * 7.13) * 268.53);
             float h2 = fract(sin(i * 13.7) * 412.11);
             
-            float rawProgress = fract(h1 + (phase * 0.008));
+            // DIRECTION FIX: Absolute time progression to decouple loop mechanics
+            float rawProgress = fract(h1 + (in_WavePhase * 0.008));
             float gravityFall = pow(rawProgress, 5.0); 
             
+            // Send (>0.0): Starts at 2.2, ends at 0.0. Receive (<0.0): Starts at 0.0, ends at 2.2.
             float startR = (direction > 0.0) ? 2.2 : 0.0;
             float endR = (direction > 0.0) ? 0.0 : 2.2;
             
@@ -355,6 +357,10 @@ const val WORMHOLE_SHADER = """
         return half4(half3(finalColor * screenMask), half(screenMask));
     }
 """
+
+// ==========================================
+// MEDIA PLAYER SHADERS
+// ==========================================
 
 // SHADER D: HAPTIC WAVE 
 const val WAVE_SHADER = """
@@ -454,24 +460,23 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    // FLAGSHIP EFFECT CONTROLS
     var effectPosX by remember { mutableFloatStateOf(0.5f) } 
     var effectPosY by remember { mutableFloatStateOf(0.0f) } 
     var effectSize by remember { mutableFloatStateOf(0.18f) } 
     
-    var selectedCategory by remember { mutableIntStateOf(1) } // Default to System Physics
+    var selectedCategory by remember { mutableIntStateOf(1) } // 0: Notifications, 1: Send/Receive, 2: Media Player
     var selectedNotificationIndex by remember { mutableIntStateOf(4) } 
-    var selectedPhysicsIndex by remember { mutableIntStateOf(0) } // Default to Meniscus
+    var selectedPhysicsIndex by remember { mutableIntStateOf(0) } 
     
-    val activeShaderString = if (selectedCategory == 0) {
-        when (selectedNotificationIndex) {
+    val activeShaderString = when (selectedCategory) {
+        0 -> when (selectedNotificationIndex) {
             0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
             4 -> AURA_SHADER; else -> SUNLIGHT_SHADER
         }
-    } else {
-        when (selectedPhysicsIndex) {
-            0 -> MENISCUS_SHADER; 1 -> STATE_CHANGE_SHADER; 2 -> WORMHOLE_SHADER; else -> WAVE_SHADER
+        1 -> when (selectedPhysicsIndex) {
+            0 -> MENISCUS_SHADER; 1 -> STATE_CHANGE_SHADER; else -> WORMHOLE_SHADER
         }
+        else -> WAVE_SHADER
     }
 
     val appColors = listOf(Color(0xFF1999FF), Color(0xFF25D366), Color(0xFFEA4335), Color(0xFFFFFC00), Color(0xFFFFFFFF))
@@ -480,7 +485,7 @@ fun NotificationSyncPrototype() {
     val pillOffsetY by animateDpAsState(targetValue = if (isNotificationActive) 32.dp else (-100).dp, animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f), label = "pill")
     
     val masterAlpha by animateFloatAsState(
-        targetValue = if (selectedCategory == 1 || isNotificationActive) 1f else 0f, 
+        targetValue = if (selectedCategory != 0 || isNotificationActive) 1f else 0f, 
         animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing), 
         label = "alpha"
     )
@@ -491,9 +496,8 @@ fun NotificationSyncPrototype() {
     val pillHeightPx = with(density) { 64.dp.toPx() }
     val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
 
-    // Docks the effect center explicitly for the 3 flagship shaders (0, 1, and 2)
-    val activeTouchX = if (selectedCategory == 1 && selectedPhysicsIndex <= 2) effectPosX * screenWidthPx else touchX
-    val activeTouchY = if (selectedCategory == 1 && selectedPhysicsIndex <= 2) effectPosY * screenHeightPx else touchY
+    val activeTouchX = if (selectedCategory == 1) effectPosX * screenWidthPx else touchX
+    val activeTouchY = if (selectedCategory == 1) effectPosY * screenHeightPx else touchY
 
     Box(
         modifier = Modifier
@@ -547,58 +551,89 @@ fun NotificationSyncPrototype() {
         }
 
         Column(
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxHeight(0.65f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp).verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                TabRow(selectedTabIndex = selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
-                    Tab(selected = selectedCategory == 0, onClick = { selectedCategory = 0; isNotificationActive = true }, text = { Text("Notifications", fontWeight = FontWeight.Bold) })
-                    Tab(selected = selectedCategory == 1, onClick = { selectedCategory = 1; isNotificationActive = false }, text = { Text("System Physics", fontWeight = FontWeight.Bold) })
-                }
-            }
-            
-            if (selectedCategory == 1 && selectedPhysicsIndex <= 2) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { coroutineScope.launch { transferDirection = 1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Send", fontWeight = FontWeight.Bold)
-                    }
-                    Button(onClick = { coroutineScope.launch { transferDirection = -1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
-                        Icon(Icons.Default.CallReceived, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Receive", fontWeight = FontWeight.Bold)
-                    }
-                    Button(onClick = { fluidVolumeTarget = 0f; fluidState = FluidState.IDLE }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Fail", fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("Magnetic Meniscus", "OLED State-Change", "Cinematic Wormhole", "Haptic Wave")
-                    val currentIndex = if (selectedCategory == 0) selectedNotificationIndex else selectedPhysicsIndex
-
-                    currentEffects.forEachIndexed { index, name ->
-                        val isSelected = currentIndex == index
-                        TextButton(onClick = { if (selectedCategory == 0) selectedNotificationIndex = index else selectedPhysicsIndex = index; isNotificationActive = selectedCategory == 0 }, colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 8.dp)) {
-                            Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+            // Scrollable Control Area (Sits comfortably above the fixed Tab Bar)
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight(0.55f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                
+                if (selectedCategory == 1) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { coroutineScope.launch { transferDirection = 1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Send", fontWeight = FontWeight.Bold)
+                        }
+                        Button(onClick = { coroutineScope.launch { transferDirection = -1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
+                            Icon(Icons.Default.CallReceived, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Receive", fontWeight = FontWeight.Bold)
+                        }
+                        Button(onClick = { fluidVolumeTarget = 0f; fluidState = FluidState.IDLE }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Fail", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
-            }
 
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    appColors.forEach { color ->
-                        val interactionSource = remember(color) { MutableInteractionSource() }
-                        Box(modifier = Modifier.size(40.dp).background(color, CircleShape).border(width = if (selectedAppColor == color) 3.dp else 1.dp, color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape).clickable(interactionSource = interactionSource, indication = null) { selectedAppColor = color; isNotificationActive = selectedCategory == 0 })
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+                    Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        val currentEffects = when (selectedCategory) {
+                            0 -> listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays")
+                            1 -> listOf("Magnetic Meniscus", "OLED State-Change", "Cinematic Wormhole")
+                            else -> listOf("Haptic Wave")
+                        }
+                        val currentIndex = when (selectedCategory) {
+                            0 -> selectedNotificationIndex
+                            1 -> selectedPhysicsIndex
+                            else -> 0
+                        }
+
+                        currentEffects.forEachIndexed { index, name ->
+                            val isSelected = currentIndex == index
+                            TextButton(onClick = { 
+                                when (selectedCategory) {
+                                    0 -> selectedNotificationIndex = index
+                                    1 -> selectedPhysicsIndex = index
+                                }
+                                isNotificationActive = selectedCategory == 0 
+                            }, colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                                Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
                 }
-            }
 
-            if (selectedCategory == 1 && selectedPhysicsIndex <= 2) {
-                TuningSlider("Effect X Position", effectPosX, 0.0f..1.0f) { effectPosX = it }
-                TuningSlider("Effect Y Position", effectPosY, 0.0f..1.0f) { effectPosY = it }
-                TuningSlider("Effect Size Base", effectSize, 0.05f..0.4f) { effectSize = it }
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        appColors.forEach { color ->
+                            val interactionSource = remember(color) { MutableInteractionSource() }
+                            Box(modifier = Modifier.size(40.dp).background(color, CircleShape).border(width = if (selectedAppColor == color) 3.dp else 1.dp, color = if (selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape).clickable(interactionSource = interactionSource, indication = null) { selectedAppColor = color; isNotificationActive = selectedCategory == 0 })
+                        }
+                    }
+                }
+
+                if (selectedCategory == 1) {
+                    TuningSlider("Effect X Position", effectPosX, 0.0f..1.0f) { effectPosX = it }
+                    TuningSlider("Effect Y Position", effectPosY, 0.0f..1.0f) { effectPosY = it }
+                    TuningSlider("Effect Size Base", effectSize, 0.05f..0.4f) { effectSize = it }
+                }
+            }
+            
+            // Fixed Bottom Tab Bar
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                TabRow(selectedTabIndex = selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
+                    Tab(selected = selectedCategory == 0, onClick = { selectedCategory = 0; isNotificationActive = true }, text = { Text("Notifications", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                    Tab(selected = selectedCategory == 1, onClick = { selectedCategory = 1; isNotificationActive = false }, text = { Text("Send/Receive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                    Tab(selected = selectedCategory == 2, onClick = { selectedCategory = 2; isNotificationActive = false }, text = { Text("Media Player", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
+                }
             }
         }
     }
