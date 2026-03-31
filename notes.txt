@@ -1,5 +1,5 @@
 // ==========================================
-// 5. TabMediaPlayer.kt (Crash Patched & Thread Safe)
+// 5. TabMediaPlayer.kt (Safe Node Lifecycle)
 // ==========================================
 
 import android.Manifest
@@ -144,7 +144,7 @@ fun TabMediaPlayer(
                             val normalizedEnergy = (rms / 128.0).coerceIn(0.0, 1.0).toFloat()
                             val finalEnergy = (normalizedEnergy * 1.5f).coerceAtMost(1.0f)
                             
-                            // THREAD SAFETY FIX: Pushes the background data cleanly to the Main UI Thread
+                            // Safely route the background audio data to the UI thread
                             Handler(Looper.getMainLooper()).post {
                                 rawAudioEnergy = finalEnergy
                             }
@@ -160,17 +160,8 @@ fun TabMediaPlayer(
         onDispose { visualizer?.enabled = false; visualizer?.release() }
     }
 
-    // LAYOUT NODE FIX: Using safe graphicsLayer animations instead of dropping the view from the tree
-    val uiAlpha by animateFloatAsState(
-        targetValue = if (state.isMediaUiVisible) 1f else 0f, 
-        animationSpec = tween(300), 
-        label = "uiAlpha"
-    )
-    val uiOffsetY by animateDpAsState(
-        targetValue = if (state.isMediaUiVisible) 0.dp else 50.dp, 
-        animationSpec = tween(300), 
-        label = "uiOffset"
-    )
+    val uiAlpha by animateFloatAsState(targetValue = if (state.isMediaUiVisible) 1f else 0f, animationSpec = tween(300), label = "uiAlpha")
+    val uiOffsetY by animateDpAsState(targetValue = if (state.isMediaUiVisible) 0.dp else 50.dp, animationSpec = tween(300), label = "uiOffset")
 
     Column(
         modifier = Modifier
@@ -179,6 +170,7 @@ fun TabMediaPlayer(
             .graphicsLayer { alpha = uiAlpha },
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        // FIX: Pure if statement removes the node cleanly without exit animations
         if (!hasAudioPermission) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -256,8 +248,10 @@ fun TabMediaPlayer(
 }
 
 
+
+
 // ==========================================
-// 6. MainActivity.kt (Crash Patched)
+// 6. MainActivity.kt (Lifecycle Crash Patched)
 // ==========================================
 
 import android.content.Context
@@ -273,6 +267,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -465,30 +460,32 @@ fun NotificationSyncPrototype() {
             transferDirection = state.transferDirection,
             effectSize = state.effectSize
         ) {
-            if (state.selectedCategory == 2 && state.mediaAlbumArt != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black),
-                    contentAlignment = Alignment.Center
-                ) {
+            // FIX 1: Safe Background Crossfade
+            Crossfade(
+                targetState = state.selectedCategory == 2 && state.mediaAlbumArt != null,
+                animationSpec = tween(800),
+                label = "bg_crossfade"
+            ) { isMediaBg ->
+                if (isMediaBg) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(Color.Black),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            bitmap = state.mediaAlbumArt!!,
+                            contentDescription = "Album Art",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth(0.85f).aspectRatio(1f).clip(RoundedCornerShape(16.dp))
+                        )
+                    }
+                } else {
                     Image(
-                        bitmap = state.mediaAlbumArt!!,
-                        contentDescription = "Album Art",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxWidth(0.85f)
-                            .aspectRatio(1f)
-                            .clip(RoundedCornerShape(16.dp))
+                        painter = painterResource(id = android.R.drawable.sym_def_app_icon), 
+                        contentDescription = "Background", 
+                        contentScale = ContentScale.Crop, 
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
-            } else {
-                Image(
-                    painter = painterResource(id = android.R.drawable.sym_def_app_icon), 
-                    contentDescription = "Background", 
-                    contentScale = ContentScale.Crop, 
-                    modifier = Modifier.fillMaxSize()
-                )
             }
         }
 
@@ -508,28 +505,33 @@ fun NotificationSyncPrototype() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight(0.55f)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                when (state.selectedCategory) {
-                    0 -> TabNotifications(state)
-                    1 -> TabSendReceive(state, screenWidthPx)
-                    2 -> TabMediaPlayer(state, mediaPlayer)
+            Box(modifier = Modifier.fillMaxHeight(0.55f)) {
+                // FIX 2: LayoutNode Tab Clamping fix
+                // Each tab now isolates its own layout tree during the fade transition
+                Crossfade(
+                    targetState = state.selectedCategory, 
+                    animationSpec = tween(400),
+                    label = "tab_crossfade"
+                ) { category ->
+                    Column(
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        when (category) {
+                            0 -> TabNotifications(state)
+                            1 -> TabSendReceive(state, screenWidthPx)
+                            2 -> TabMediaPlayer(state, mediaPlayer)
+                        }
+                    }
                 }
             }
             
-            // LAYOUT NODE FIX: Slide the TabBar away instead of destroying it
             val isTabBarVisible = state.selectedCategory != 2 || state.isMediaUiVisible
             val tabBarAlpha by animateFloatAsState(targetValue = if (isTabBarVisible) 1f else 0f, animationSpec = tween(300), label = "tabAlpha")
             val tabBarOffsetY by animateDpAsState(targetValue = if (isTabBarVisible) 0.dp else 100.dp, animationSpec = tween(300), label = "tabOffset")
 
             Card(
-                modifier = Modifier
-                    .offset(y = tabBarOffsetY)
-                    .graphicsLayer { alpha = tabBarAlpha },
+                modifier = Modifier.offset(y = tabBarOffsetY).graphicsLayer { alpha = tabBarAlpha },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
