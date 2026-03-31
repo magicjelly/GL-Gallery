@@ -49,124 +49,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
-
-// ==========================================
-// SHADER A: FERRO-GLASS (Thin-Film Iridescence & Physical Geometry)
-// ==========================================
-// ==========================================
-// SHADER A: FERRO-GLASS (Thin-Film Iridescence & Physical Geometry)
-// ==========================================
-const val FERRO_GLASS_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
-    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
-    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
-    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
-    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
-    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
-
-    float sdRoundRect(vec2 p, vec2 b, float r) {
-        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-    }
-
-    // THE SECRET SAUCE: Procedural Structural Color (Thin-Film Interference)
-    // Generates a perfect, physics-based iridescent spectrum based on light angle
-    vec3 iridescence(float t) {
-        vec3 a = vec3(0.5, 0.5, 0.5);
-        vec3 b = vec3(0.5, 0.5, 0.5);
-        vec3 c = vec3(1.0, 1.0, 1.0);
-        vec3 d = vec3(0.00, 0.33, 0.67);
-        return a + b * cos(6.28318 * (c * t + d));
-    }
-
-    half4 main(in float2 fragCoord) {
-        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
-        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
-        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
-        
-        vec2 touchVec = fragCoord - in_TouchPos;
-        float tensionWidth = in_Resolution.x * 0.35; 
-        float distToTouch = length(touchVec);
-        
-        // 1. BASE MATERIAL TENSION
-        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
-
-        // 2. THE KINETIC WAVE (Calculated as Physical Geometry, not just color)
-        float phase = in_WavePhase * in_TransferDirection;
-        float waveProgress = fract(phase * 0.2); 
-        float waveRadius = (in_TransferDirection > 0.0) ? (waveProgress * tensionWidth * 3.0) : ((1.0 - waveProgress) * tensionWidth * 3.0);
-        float waveDist = distToTouch - waveRadius;
-        
-        // The physical height of the ripple
-        float waveHeight = exp(-(waveDist * waveDist) * 0.005) * sin(waveProgress * 3.14159) * elevation;
-
-        // 3. 3D SURFACE NORMALS (Glass + Wave)
-        float dentWidth = tensionWidth * in_VoidSize * 1.5;
-        float dent = exp(-(distToTouch * distToTouch) / (dentWidth * dentWidth));
-        
-        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
-        gradient += -10.0 * (touchVec / dentWidth) * dent * elevation; // Core pinch
-        gradient += -15.0 * (touchVec / tensionWidth) * waveHeight; // The wave physically bends the glass
-        
-        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.005));
-        float normalizedAngle = normal.z;
-
-        // 4. REFRACTION & ABERRATION
-        float baseRefraction = 600.0 * elevation; 
-        float chromaticSpread = length(normal.xy) * (180.0 + (elevation * 200.0)) * elevation;
-        
-        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
-        vec2 coordR = fragCoord + (normal.xy * baseRefraction) + (safeNormal * chromaticSpread);
-        vec2 coordG = fragCoord + (normal.xy * baseRefraction);
-        vec2 coordB = fragCoord + (normal.xy * baseRefraction) - (safeNormal * chromaticSpread);
-        
-        float bgR = in_Background.eval(coordR).r;
-        float bgG = in_Background.eval(coordG).g;
-        float bgB = in_Background.eval(coordB).b;
-        vec3 refractedBG = vec3(bgR, bgG, bgB);
-        
-        float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
-        float isDarkBackground = smoothstep(0.4, 0.0, luma); 
-
-        // 5. CINEMATIC SHADOWS (Agnostic Contrast)
-        // Dims dark screens to make the light pop, but creates a physical cast-shadow on white screens
-        float ambientOcclusion = smoothstep(tensionWidth * 3.0, tensionWidth * 0.3, distToTouch);
-        float shadowIntensity = mix(0.4, 0.95, isDarkBackground); // Heavier shadow on dark mode
-        refractedBG *= mix(1.0, ambientOcclusion, elevation * shadowIntensity);
-
-        // 6. STRUCTURAL COLOR (The Iridescent Pulse)
-        // We use the slope of the 3D normal combined with time to sweep through the spectrum
-        float spectralAngle = length(normal.xy) * 2.5 - (in_Time * 0.5);
-        vec3 spectrum = iridescence(spectralAngle);
-        
-        // The pulse is blinding white at its peak, fading softly into the iridescent rainbow
-        vec3 hotWhite = vec3(1.0, 0.98, 0.95);
-        vec3 iridescentPulse = mix(spectrum, hotWhite, waveHeight * 1.5) * max(waveHeight, 0.0);
-        
-        // Multiplier ensures it burns bright on OLED blacks, but remains a subtle pastel on white
-        float pulseBrightness = mix(1.5, 4.0, isDarkBackground);
-
-        // 7. CAUSTICS & SPECULAR HIGHLIGHTS
-        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
-        float spec = pow(max(dot(normal, lightDir), 0.0), 90.0) * (1.5 + isDarkBackground) * elevation;
-        vec3 specularLight = vec3(1.0) * spec;
-        
-        // The inner rim glow uses the spectrum instead of the App Color
-        float fresnel = pow(1.0 - normalizedAngle, 6.0);
-        vec3 rimLight = spectrum * fresnel * (2.0 + isDarkBackground) * elevation * dent;
-        
-        vec3 finalColor = refractedBG + (iridescentPulse * pulseBrightness) + specularLight + rimLight;
-        return half4(finalColor * screenMask, screenMask);
-    }
-"""
-
-
-
 // ==========================================
 // PASSIVE NOTIFICATION SHADERS
 // ==========================================
 
 const val LAVA_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); } float fBm(vec2 p) { float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875; } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0); vec2 uv = fragCoord / in_Resolution.xy;
@@ -179,7 +67,7 @@ const val LAVA_SHADER = """
 """
 
 const val GLINT_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     const float PI = 3.14159265359; float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0); vec2 centered = (fragCoord / in_Resolution.xy) - 0.5;
@@ -192,7 +80,7 @@ const val GLINT_SHADER = """
 """
 
 const val PRISMATIC_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float offset = (sin(in_Time * in_Speed) + 1.0) * 0.5 * in_Amplitude * 0.2 + (in_Spread * 0.05); float decay = 1.0 / max(in_Spread, 1.0);
@@ -203,7 +91,7 @@ const val PRISMATIC_SHADER = """
 """
 
 const val SPARK_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5; float d = -sdRoundRect(p, b, in_CornerRadius); float clampedDist = max(d, 0.0);
@@ -215,7 +103,7 @@ const val SPARK_SHADER = """
 """
 
 const val AURA_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); } float fBm(vec2 p) { float f = 0.0; f += 0.5000 * noise(p); p = p * 2.02; f += 0.2500 * noise(p); p = p * 2.03; f += 0.1250 * noise(p); p = p * 2.01; return f / 0.875; } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY); vec2 p = fragCoord - pillCenter; float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5); float distFromPill = max(d, 0.0);
@@ -227,7 +115,7 @@ const val AURA_SHADER = """
 """
 
 const val SUNLIGHT_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); } float noise(vec2 p) { vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); } float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     half4 main(in float2 fragCoord) {
         vec2 pillCenter = vec2(in_Resolution.x * 0.5, in_PillCenterY); vec2 p = fragCoord - pillCenter; float d = sdRoundRect(p, vec2(in_PillWidth * 0.5, in_PillHeight * 0.5), in_PillHeight * 0.5); float distFromPill = max(d, 0.0);
@@ -240,17 +128,17 @@ const val SUNLIGHT_SHADER = """
 """
 
 // ==========================================
-// INTERACTIVE SYSTEM PHYSICS SHADERS
+// INTERACTIVE SYSTEM PHYSICS SHADERS (Ultra-Premium)
 // ==========================================
 
-// SHADER A: OPTICAL LENS
-const val LENS_SHADER = """
+// SHADER A: CONCEPT 1 - THE MAGNETIC MENISCUS
+const val MENISCUS_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
     uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
-    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
 
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -263,79 +151,128 @@ const val LENS_SHADER = """
         
         vec2 touchVec = fragCoord - in_TouchPos;
         float distToTouch = length(touchVec);
-        float tensionWidth = in_Resolution.x * 0.28; 
+        
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.0; 
         
         float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+        float corePinch = exp(-distToTouch / (tensionWidth * 0.15)) * in_FluidVolume; 
 
-        vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
-        vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
-        float normalizedAngle = normal.z;
+        vec2 pullDir = normalize(touchVec + vec2(0.001)); 
+        vec2 warpedCoord = fragCoord - (pullDir * elevation * 120.0) - (pullDir * corePinch * 60.0);
 
-        float baseRefraction = 350.0 * elevation; 
-        float chromaticSpread = length(normal.xy) * (80.0 + (elevation * 100.0));
-        
-        vec2 safeNormal = normalize(normal.xy + vec2(0.0001)); 
-        vec2 coordR = fragCoord + (normal.xy * baseRefraction) + (safeNormal * chromaticSpread);
-        vec2 coordG = fragCoord + (normal.xy * baseRefraction);
-        vec2 coordB = fragCoord + (normal.xy * baseRefraction) - (safeNormal * chromaticSpread);
-        
-        float bgR = in_Background.eval(coordR).r;
-        float bgG = in_Background.eval(coordG).g;
-        float bgB = in_Background.eval(coordB).b;
+        float rgbSplit = elevation * 15.0;
+        float bgR = in_Background.eval(warpedCoord - pullDir * rgbSplit).r;
+        float bgG = in_Background.eval(warpedCoord).g;
+        float bgB = in_Background.eval(warpedCoord + pullDir * rgbSplit).b;
         vec3 refractedBG = vec3(bgR, bgG, bgB);
-        
-        float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
-        float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
 
-        float spatialCompression = 0.04 - (elevation * 0.015);
-        float localPhase = (distToTouch * spatialCompression) + (in_WavePhase * in_TransferDirection); 
-        float energyPulse = pow(sin(localPhase) * 0.5 + 0.5, 3.0) * elevation;
+        float vignette = smoothstep(tensionWidth * 2.5, tensionWidth * 0.2, distToTouch);
+        refractedBG *= mix(1.0, vignette, in_FluidVolume * 0.85);
 
-        vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
-        float spec = pow(max(dot(normal, lightDir), 0.0), 60.0) * (1.5 + darknessAdaptation) * elevation;
-        vec3 specularLight = vec3(1.0) * spec;
+        float phase = in_WavePhase * in_TransferDirection;
+        float waveProgress = fract(phase * 0.15);
+        float waveRadius = (in_TransferDirection > 0.0) ? (waveProgress * tensionWidth * 2.5) : ((1.0 - waveProgress) * tensionWidth * 2.5);
         
-        float glowMultiplier = 0.6 + (darknessAdaptation * 2.5); 
-        vec3 frostedWave = mix(vec3(1.0), in_AppColor, 0.4) * energyPulse * glowMultiplier;
-        
-        float fresnel = pow(1.0 - normalizedAngle, 5.0);
-        vec3 rimLight = in_AppColor * fresnel * (1.5 + darknessAdaptation) * elevation;
-        
-        refractedBG = mix(refractedBG, refractedBG * 0.2, elevation * (0.8 - (darknessAdaptation * 0.5)));
-        float shadow = max(dot(normal, -lightDir), 0.0) * 0.5 * elevation * (1.0 - darknessAdaptation);
-        refractedBG = mix(refractedBG, vec3(0.0), shadow);
+        float waveDist = abs(distToTouch - waveRadius);
+        float waveLight = exp(-(waveDist * waveDist) * 0.002) * elevation * 0.15;
+        refractedBG += vec3(1.0) * waveLight;
 
-        vec3 finalColor = refractedBG + frostedWave + specularLight + rimLight;
-        return half4(finalColor * screenMask, screenMask);
+        float edgeLight = exp(-pow(distToTouch / (tensionWidth * 0.12), 4.0)) * in_FluidVolume;
+        vec3 hotWhite = vec3(1.0, 0.98, 0.95);
+        vec3 coreIgnition = hotWhite * edgeLight * 2.5;
+
+        vec3 finalColor = refractedBG + coreIgnition;
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
     }
 """
 
-// SHADER B: SPACETIME WORMHOLE (Cinematic OLED Lighting & Swapped Directions)
+// SHADER B: CONCEPT 3 - THE OLED STATE-CHANGE
+const val STATE_CHANGE_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.5; 
+
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+
+        vec3 blurredBG = vec3(0.0);
+        float samples = 12.0;
+        float blurRadius = elevation * 60.0; 
+        
+        for(float i = 0.0; i < 12.0; i++) {
+            float angle = (i * 6.28318 / samples) + (in_Time * 1.5); 
+            vec2 offset = vec2(cos(angle), sin(angle)) * blurRadius;
+
+            float r = in_Background.eval(fragCoord + offset * 1.05).r;
+            float g = in_Background.eval(fragCoord + offset).g;
+            float b = in_Background.eval(fragCoord + offset * 0.95).b;
+            blurredBG += vec3(r, g, b);
+        }
+        blurredBG /= samples;
+
+        float luma = dot(blurredBG, vec3(0.299, 0.587, 0.114));
+        vec3 frostedIce = mix(blurredBG, vec3(luma), elevation * 0.6);
+
+        float vignette = smoothstep(tensionWidth * 3.0, tensionWidth * 0.1, distToTouch);
+        frostedIce *= mix(1.0, vignette, in_FluidVolume * 0.8);
+
+        float phase = in_WavePhase * in_TransferDirection;
+        float pulse = (sin(phase * 0.8 - (distToTouch * 0.005)) + 1.0) * 0.5;
+        float coreGlow = exp(-pow(distToTouch / (tensionWidth * 0.8), 1.5)) * elevation;
+
+        vec3 glowColor = mix(vec3(in_AppColor), vec3(1.0), 0.6); 
+        
+        vec3 finalGlow = glowColor * coreGlow * (0.8 + pulse * 1.5);
+        vec3 finalColor = frostedIce + finalGlow;
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
+    }
+"""
+
+// SHADER C: CINEMATIC WORMHOLE
 const val WORMHOLE_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
     uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
     uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
     uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
     uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
-    uniform float in_FluidVolume; uniform float in_TransferDirection; 
-    uniform float in_VoidSize;
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
 
     float sdRoundRect(vec2 p, vec2 b, float r) {
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
 
-    vec3 drawCinematicOrbs(vec2 uv, float time, float phase, float direction, float elevation, half3 appColor, float lumaAdapt, float voidSize) {
+    vec3 drawCinematicOrbs(vec2 uv, float time, float phase, float direction, float elevation, half3 appColor, float lumaAdapt, float effectSize) {
         float starlight = 0.0;
         
         for (float i = 0.0; i < 24.0; i++) {
             float h1 = fract(sin(i * 7.13) * 268.53);
             float h2 = fract(sin(i * 13.7) * 412.11);
             
-            // MATH DIRECTION FIXED: Now correctly swaps Send (inward) and Receive (outward)
-            float rawProgress = fract(h1 - (time * 0.02) + (phase * direction * 0.008));
-            float gravityFall = pow(rawProgress, 5.0);
+            float rawProgress = fract(h1 + (phase * 0.008));
+            float gravityFall = pow(rawProgress, 5.0); 
             
-            float currentR = mix(2.2, 0.0, gravityFall);
+            float startR = (direction > 0.0) ? 2.2 : 0.0;
+            float endR = (direction > 0.0) ? 0.0 : 2.2;
+            
+            float currentR = mix(startR, endR, gravityFall);
+            
             float currentAngle = (h2 * 6.28318) + (time * 0.05) - (1.5 / (currentR + 0.2));
             
             vec2 orbPos = vec2(cos(currentAngle), sin(currentAngle)) * currentR;
@@ -343,11 +280,10 @@ const val WORMHOLE_SHADER = """
             
             float scaleBase = mix(1.0, 0.3, gravityFall);
             
-            // OLED HDR BLOOM: Insanely sharp core, massive colored light bleed
             float core = exp(-dist * mix(50.0, 80.0, h1) / scaleBase) * 3.5;
             float halo = exp(-dist * mix(12.0, 30.0, h2) / scaleBase) * 1.5;
             
-            float fadeOutInner = smoothstep(voidSize * 0.7, voidSize * 2.5, currentR);
+            float fadeOutInner = smoothstep(effectSize * 0.7, effectSize * 2.5, currentR);
             float fadeInOuter = smoothstep(2.2, 1.5, currentR);
             float orbMask = fadeOutInner * fadeInOuter;
             
@@ -372,18 +308,18 @@ const val WORMHOLE_SHADER = """
         float rawElevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
         float elevation = rawElevation * smoothstep(tensionWidth * 1.5, tensionWidth * 1.0, distToTouch);
 
-        float voidRadius = tensionWidth * in_VoidSize;
+        float voidRadius = tensionWidth * in_EffectSize;
         float eventHorizon = 1.0 - smoothstep(voidRadius, voidRadius + 8.0, distToTouch);
         
-        // THE LIQUID BEZEL: Adds a sharp, physical dent right at the black hole edge
-        float dent = exp(-(distToTouch * distToTouch) / (voidRadius * voidRadius * 2.0));
+        float dentWidth = voidRadius * 1.5;
+        float dent = exp(-(distToTouch * distToTouch) / (dentWidth * dentWidth));
+        
         vec2 gradient = -2.0 * touchVec / (tensionWidth * tensionWidth) * elevation;
-        gradient += -8.0 * (touchVec / voidRadius) * dent * elevation * (1.0 - eventHorizon);
+        gradient += -10.0 * (touchVec / dentWidth) * dent * elevation * (1.0 - eventHorizon);
         
         vec3 normal = normalize(vec3(-gradient.x, -gradient.y, 0.008));
         float normalizedAngle = normal.z;
 
-        // REFRACTION
         float baseRefraction = 400.0 * elevation; 
         float chromaticSpread = length(normal.xy) * (150.0 + (elevation * 200.0)) * elevation;
         
@@ -400,34 +336,29 @@ const val WORMHOLE_SHADER = """
         float luma = dot(refractedBG, vec3(0.299, 0.587, 0.114));
         float darknessAdaptation = smoothstep(0.4, 0.0, luma); 
 
-        // SUBTRACTIVE CINEMATIC LIGHTING (The NameDrop Secret)
-        // Deeply shadows the rest of the screen to isolate the connection point
         float vignette = smoothstep(tensionWidth * 3.5, tensionWidth * 0.5, distToTouch);
         refractedBG *= mix(1.0, vignette, elevation * 0.9);
 
-        // GENERATE ORBS
         vec2 normalizedVec = touchVec / tensionWidth;
-        vec3 starlight = drawCinematicOrbs(normalizedVec, in_Time, in_WavePhase, in_TransferDirection, elevation, in_AppColor, darknessAdaptation, in_VoidSize);
+        vec3 starlight = drawCinematicOrbs(normalizedVec, in_Time, in_WavePhase, in_TransferDirection, elevation, in_AppColor, darknessAdaptation, in_EffectSize);
 
-        // CAUSTICS
         vec3 lightDir = normalize(vec3(-1.0, -1.0, 1.0)); 
         float spec = pow(max(dot(normal, lightDir), 0.0), 80.0) * (2.0 + darknessAdaptation) * elevation;
         vec3 specularLight = vec3(1.0) * spec * (1.0 - eventHorizon); 
         
-        // Edge lighting enhanced by the new Liquid Bezel dent
-        float fresnel = pow(1.0 - normalizedAngle, 5.0);
-        vec3 rimLight = in_AppColor * fresnel * (2.0 + darknessAdaptation) * elevation * (1.0 - eventHorizon);
+        float fresnel = pow(1.0 - normalizedAngle, 8.0);
+        vec3 rimLight = vec3(in_AppColor) * fresnel * (4.0 + darknessAdaptation) * elevation * dent * (1.0 - eventHorizon);
         
         vec3 finalColor = refractedBG + starlight + specularLight + rimLight;
         finalColor = mix(finalColor, vec3(0.0, 0.0, 0.0), eventHorizon * elevation);
         
-        return half4(finalColor * screenMask, screenMask);
+        return half4(half3(finalColor * screenMask), half(screenMask));
     }
 """
 
-// SHADER C: HAPTIC WAVE 
+// SHADER D: HAPTIC WAVE 
 const val WAVE_SHADER = """
-    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_VoidSize;
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     float sdRoundRect(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r; }
     const float PI = 3.14159265359;
     half4 main(in float2 fragCoord) {
@@ -523,14 +454,14 @@ fun NotificationSyncPrototype() {
     var amplitude by remember { mutableFloatStateOf(80f) }
     var noiseScale by remember { mutableFloatStateOf(3.0f) }
     
-    // EXCLUSIVE WORMHOLE CONTROLS
-    var voidPosX by remember { mutableFloatStateOf(0.5f) } 
-    var voidPosY by remember { mutableFloatStateOf(0.15f) } 
-    var voidSize by remember { mutableFloatStateOf(0.12f) } 
+    // FLAGSHIP EFFECT CONTROLS
+    var effectPosX by remember { mutableFloatStateOf(0.5f) } 
+    var effectPosY by remember { mutableFloatStateOf(0.0f) } 
+    var effectSize by remember { mutableFloatStateOf(0.18f) } 
     
     var selectedCategory by remember { mutableIntStateOf(1) } // Default to System Physics
     var selectedNotificationIndex by remember { mutableIntStateOf(4) } 
-    var selectedPhysicsIndex by remember { mutableIntStateOf(1) } // Start on Wormhole
+    var selectedPhysicsIndex by remember { mutableIntStateOf(0) } // Default to Meniscus
     
     val activeShaderString = if (selectedCategory == 0) {
         when (selectedNotificationIndex) {
@@ -539,7 +470,7 @@ fun NotificationSyncPrototype() {
         }
     } else {
         when (selectedPhysicsIndex) {
-            0 -> LENS_SHADER; 1 -> WORMHOLE_SHADER; else -> WAVE_SHADER
+            0 -> MENISCUS_SHADER; 1 -> STATE_CHANGE_SHADER; 2 -> WORMHOLE_SHADER; else -> WAVE_SHADER
         }
     }
 
@@ -560,8 +491,9 @@ fun NotificationSyncPrototype() {
     val pillHeightPx = with(density) { 64.dp.toPx() }
     val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
 
-    val activeTouchX = if (selectedCategory == 1 && selectedPhysicsIndex == 1) voidPosX * screenWidthPx else touchX
-    val activeTouchY = if (selectedCategory == 1 && selectedPhysicsIndex == 1) voidPosY * screenHeightPx else touchY
+    // Docks the effect center explicitly for the 3 flagship shaders (0, 1, and 2)
+    val activeTouchX = if (selectedCategory == 1 && selectedPhysicsIndex <= 2) effectPosX * screenWidthPx else touchX
+    val activeTouchY = if (selectedCategory == 1 && selectedPhysicsIndex <= 2) effectPosY * screenHeightPx else touchY
 
     Box(
         modifier = Modifier
@@ -596,7 +528,7 @@ fun NotificationSyncPrototype() {
             touchX = activeTouchX, touchY = activeTouchY, touchActive = magneticTouchStrength,
             fluidVolume = fluidVolume,
             transferDirection = transferDirection,
-            voidSize = voidSize
+            effectSize = effectSize
         ) {
             Image(
                 painter = painterResource(id = android.R.drawable.sym_def_app_icon), 
@@ -611,8 +543,7 @@ fun NotificationSyncPrototype() {
                 modifier = Modifier.align(Alignment.TopCenter).offset(y = pillOffsetY).alpha(masterAlpha).fillMaxWidth(0.9f).height(64.dp),
                 shape = RoundedCornerShape(32.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp) 
-            ) {
-            }
+            ) {}
         }
 
         Column(
@@ -627,14 +558,12 @@ fun NotificationSyncPrototype() {
                 }
             }
             
-            if (selectedCategory == 1 && (selectedPhysicsIndex == 0 || selectedPhysicsIndex == 1)) {
+            if (selectedCategory == 1 && selectedPhysicsIndex <= 2) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // UI BUTTON LOGIC SWAPPED: Send now mathematically pulls inward (-1f)
-                    Button(onClick = { coroutineScope.launch { transferDirection = -1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
+                    Button(onClick = { coroutineScope.launch { transferDirection = 1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
                         Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Send", fontWeight = FontWeight.Bold)
                     }
-                    // UI BUTTON LOGIC SWAPPED: Receive now mathematically pushes outward (1f)
-                    Button(onClick = { coroutineScope.launch { transferDirection = 1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
+                    Button(onClick = { coroutineScope.launch { transferDirection = -1f; touchX = screenWidthPx / 2f; touchY = 0f; fluidState = FluidState.MAGNETIC_HOLD; fluidVolumeTarget = 1f } }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
                         Icon(Icons.Default.CallReceived, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Receive", fontWeight = FontWeight.Bold)
                     }
                     Button(onClick = { fluidVolumeTarget = 0f; fluidState = FluidState.IDLE }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
@@ -645,7 +574,7 @@ fun NotificationSyncPrototype() {
 
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
                 Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("Optical Lens", "Wormhole", "Haptic Wave")
+                    val currentEffects = if (selectedCategory == 0) listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays") else listOf("Magnetic Meniscus", "OLED State-Change", "Cinematic Wormhole", "Haptic Wave")
                     val currentIndex = if (selectedCategory == 0) selectedNotificationIndex else selectedPhysicsIndex
 
                     currentEffects.forEachIndexed { index, name ->
@@ -666,10 +595,10 @@ fun NotificationSyncPrototype() {
                 }
             }
 
-            if (selectedCategory == 1 && selectedPhysicsIndex == 1) {
-                TuningSlider("Void X Position", voidPosX, 0.0f..1.0f) { voidPosX = it }
-                TuningSlider("Void Y Position", voidPosY, 0.0f..1.0f) { voidPosY = it }
-                TuningSlider("Void Radius Size", voidSize, 0.0f..0.5f) { voidSize = it }
+            if (selectedCategory == 1 && selectedPhysicsIndex <= 2) {
+                TuningSlider("Effect X Position", effectPosX, 0.0f..1.0f) { effectPosX = it }
+                TuningSlider("Effect Y Position", effectPosY, 0.0f..1.0f) { effectPosY = it }
+                TuningSlider("Effect Size Base", effectSize, 0.05f..0.4f) { effectSize = it }
             }
         }
     }
@@ -692,7 +621,7 @@ fun AmbientEdgeLighting(
     appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float,
     pillCenterY: Float, pillWidth: Float, pillHeight: Float, gravityX: Float, gravityY: Float,
     touchX: Float, touchY: Float, touchActive: Float, fluidVolume: Float, transferDirection: Float,
-    voidSize: Float,
+    effectSize: Float,
     content: @Composable () -> Unit
 ) {
     var time by remember { mutableFloatStateOf(0f) }
@@ -736,7 +665,7 @@ fun AmbientEdgeLighting(
             shader.setFloatUniform("in_TouchActive", touchActive)
             shader.setFloatUniform("in_FluidVolume", fluidVolume)
             shader.setFloatUniform("in_TransferDirection", transferDirection)
-            shader.setFloatUniform("in_VoidSize", voidSize)
+            shader.setFloatUniform("in_EffectSize", effectSize)
             
             renderEffect = RenderEffect.createRuntimeShaderEffect(shader, "in_Background").asComposeRenderEffect()
             clip = true
