@@ -49,6 +49,122 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.android.awaitFrame
 
 // ==========================================
+// SHADER A: THE MAGNETIC MENISCUS (With Linear Fanning Velocity Orbs)
+// ==========================================
+const val MENISCUS_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; 
+    uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; 
+    uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; 
+    uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight;
+    uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; 
+    uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    // LINEAR FANNING ORBS WITH VELOCITY STRETCH
+    vec3 drawDirectionalOrbs(vec2 uv, float time, float phase, float direction, float elevation, half3 appColor) {
+        float starlight = 0.0;
+        
+        for (float i = 0.0; i < 20.0; i++) {
+            float h1 = fract(sin(i * 7.13) * 268.53);
+            float h2 = fract(sin(i * 13.7) * 412.11);
+            
+            // Slow, deliberate lifecycle
+            float rawProgress = fract(h1 + (phase * 0.006) + (time * 0.01));
+            
+            // Heavy gravity curve: Spends most of its time drifting, then violently accelerates
+            float gravityFall = pow(rawProgress, 4.0); 
+            
+            // Explicit Send/Receive mapping
+            float startR = (direction > 0.0) ? 2.5 : 0.0;
+            float endR = (direction > 0.0) ? 0.0 : 2.5;
+            float currentR = mix(startR, endR, gravityFall);
+            
+            // The Fan: Constrained between 20 and 160 degrees so it creates a downward/inward cone
+            float angle = mix(0.35, 2.79, h2); 
+            vec2 dirVec = vec2(cos(angle), sin(angle));
+            vec2 orbPos = dirVec * currentR;
+            
+            // VELOCITY MOTION BLUR: Stretches the orb into a needle as it accelerates
+            float stretch = mix(1.0, 8.0, gravityFall); 
+            
+            vec2 localUV = uv - orbPos;
+            
+            // Rotate the UV space to perfectly align the stretch with the directional vector
+            float c = cos(-angle); float s = sin(-angle);
+            vec2 stretchedUV = vec2(c * localUV.x - s * localUV.y, s * localUV.x + c * localUV.y);
+            stretchedUV.x /= stretch; 
+            
+            float dist = length(stretchedUV);
+            float scaleBase = mix(1.0, 0.4, gravityFall);
+            
+            // OLED HDR Bloom
+            float core = exp(-dist * mix(50.0, 80.0, h1) / scaleBase) * 3.0;
+            float halo = exp(-dist * mix(15.0, 30.0, h2) / scaleBase) * 1.0;
+            
+            // Fades perfectly out before hitting the core, and gently in from the edges
+            float orbMask = smoothstep(0.08, 0.3, currentR) * smoothstep(2.5, 1.2, currentR);
+            
+            starlight += (core + halo) * orbMask;
+        }
+        
+        vec3 hotWhite = vec3(1.0, 0.98, 0.95);
+        return mix(vec3(appColor), hotWhite, 0.7) * starlight * elevation;
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 p = fragCoord - (in_Resolution.xy * 0.5); vec2 b = in_Resolution.xy * 0.5;
+        float distFromEdge = -sdRoundRect(p, b, in_CornerRadius); 
+        float screenMask = clamp(distFromEdge * 10.0, 0.0, 1.0) * in_MasterAlpha;
+        
+        vec2 touchVec = fragCoord - in_TouchPos;
+        float distToTouch = length(touchVec);
+        
+        float tensionWidth = in_Resolution.x * in_EffectSize * 4.0; 
+        
+        // 1. THE MENISCUS TENSION
+        float elevation = exp(-(distToTouch * distToTouch) / (tensionWidth * tensionWidth)) * in_TouchActive * in_FluidVolume;
+        float corePinch = exp(-distToTouch / (tensionWidth * 0.15)) * in_FluidVolume; 
+
+        vec2 pullDir = normalize(touchVec + vec2(0.001)); 
+        vec2 warpedCoord = fragCoord + (touchVec * elevation * 1.5) + (touchVec * corePinch * 3.0);
+
+        float rgbSplit = elevation * 8.0;
+        vec2 splitDir = normalize(touchVec + vec2(0.001));
+        float bgR = in_Background.eval(warpedCoord - splitDir * rgbSplit).r;
+        float bgG = in_Background.eval(warpedCoord).g;
+        float bgB = in_Background.eval(warpedCoord + splitDir * rgbSplit).b;
+        vec3 refractedBG = vec3(bgR, bgG, bgB);
+
+        // 2. CONVEX HIGHLIGHT & SHADOWS
+        vec2 gradient = 2.0 * touchVec / (tensionWidth * tensionWidth) * elevation; 
+        vec3 normal = normalize(vec3(gradient.x, gradient.y, 0.015)); 
+        
+        vec3 lightDir = normalize(vec3(0.0, 1.0, 1.0)); 
+        float spec = pow(max(dot(normal, lightDir), 0.0), 40.0) * elevation;
+        vec3 convexHighlight = vec3(1.0) * spec * 1.5;
+
+        float vignette = smoothstep(tensionWidth * 2.5, tensionWidth * 0.2, distToTouch);
+        refractedBG *= mix(1.0, vignette, in_FluidVolume * 0.85);
+
+        // 3. YOUR DIRECTIONAL ORBS
+        vec2 normalizedVec = touchVec / tensionWidth;
+        vec3 starlight = drawDirectionalOrbs(normalizedVec, in_Time, in_WavePhase, in_TransferDirection, elevation, in_AppColor);
+
+        // 4. THE CORE IGNITION
+        float edgeLight = exp(-pow(distToTouch / (tensionWidth * 0.12), 4.0)) * in_FluidVolume;
+        vec3 coreIgnition = vec3(1.0, 0.98, 0.95) * edgeLight * 2.5;
+
+        vec3 finalColor = refractedBG + convexHighlight + starlight + coreIgnition;
+        
+        return half4(half3(finalColor * screenMask), half(screenMask));
+    }
+"""
+
+
+// ==========================================
 // PASSIVE NOTIFICATION SHADERS
 // ==========================================
 
