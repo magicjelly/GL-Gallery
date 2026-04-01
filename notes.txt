@@ -1,5 +1,5 @@
 // ==========================================
-// MEDIA PLAYER SHADER: IDLE 3D NORMAL-MAPPED SMOKE
+// MEDIA PLAYER SHADER: INFINITELY STABLE 3D SMOKE
 // ==========================================
 const val WAVE_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
@@ -29,28 +29,32 @@ const val WAVE_SHADER = """
     // Procedural density map mimicking advected fluid
     float getShade(vec2 p, float time, float resX) {
         vec2 st = p / resX;
-        vec2 dir = normalize(st + 0.0001);
         
-        // Calculate distance inside the function for accurate 3D normals
         float artSize = ((resX * 0.85) * 0.5) - 2.0;
         float cornerRadius = resX * 0.045; 
         float distFromArt = max(sdRoundRect(p, vec2(artSize), cornerRadius), 0.0);
-        
-        // Normalize the distance (0.0 to ~1.0)
         float normalizedDist = distFromArt / resX;
 
-        // Smoke physically drifts outward and upward
-        vec2 flow = st - (dir * time * 0.1) + vec2(0.0, -time * 0.2);
+        // THE FIX: Static Grid Panning. 
+        // We never multiply the coordinates by time. Time is strictly added as a linear offset.
+        // This permanently eliminates coordinate shearing and spiking.
+        vec2 upwardDrift = vec2(0.0, -time * 0.15); 
         
-        // Deep turbulence
-        vec2 q = vec2(fBm(flow * 3.0), fBm(flow * 3.0 + vec2(2.4, 4.8)));
-        float n = fBm(flow * 4.0 + q * 2.0 - time * 0.2);
+        // We use domain warping to create the rolling, outward-churning billows.
+        // The noise folds over itself cleanly because the underlying grid is perfectly stable.
+        vec2 q = vec2(
+            fBm(st * 3.0 + upwardDrift + vec2(time * 0.12, 0.0)),
+            fBm(st * 3.0 + upwardDrift + vec2(0.0, time * 0.14))
+        );
         
-        // Expansion: Dense near the album, dissolving as it floats away (15% of screen width)
+        vec2 flow = (st * 4.0) + (q * 1.5) + upwardDrift;
+        float n = fBm(flow);
+        
+        // Masking: Dense near the album, dissolving as it floats away
         float maxReach = 0.15; 
         float mask = smoothstep(maxReach, 0.0, normalizedDist);
         
-        // Squaring the noise creates chunky, separated plumes
+        // Squaring the noise creates cohesive, separated, chunky plumes
         return clamp(pow(n, 1.5) * mask * 2.5, 0.0, 1.0);
     }
 
@@ -73,7 +77,7 @@ const val WAVE_SHADER = """
         // ==========================================
         float shade = getShade(p, time, in_Resolution.x);
         
-        // Early exit saves GPU power
+        // Early exit saves massive GPU overhead
         if (shade <= 0.01) return in_Background.eval(fragCoord);
 
         float flame = pow(shade, 3.0);
@@ -81,16 +85,16 @@ const val WAVE_SHADER = """
         float height = flame;
 
         // ==========================================
-        // 2. NORMALS 
+        // 2. 3D NORMALS 
         // ==========================================
-        float eps = 2.0; // 2 pixels for accurate GPU sampling
+        float eps = 2.0; 
         float dX = getShade(p + vec2(eps, 0.0), time, in_Resolution.x) - getShade(p - vec2(eps, 0.0), time, in_Resolution.x);
         float dY = getShade(p + vec2(0.0, eps), time, in_Resolution.x) - getShade(p - vec2(0.0, eps), time, in_Resolution.x);
         
         vec3 normal = normalize(vec3(dX, dY, height * 0.2 + 0.01));
 
         // ==========================================
-        // 3. LIGHTING 
+        // 3. LIGHTING & MATERIALS
         // ==========================================
         vec3 dir = normalize(vec3(0.0, -0.5, 0.5));
         float light = dot(normal, dir) * 0.5 + 0.5;
@@ -104,6 +108,7 @@ const val WAVE_SHADER = """
         color += baseColor * light * 0.7; 
         color *= smoke;
 
+        // Mask off the edges of the phone display cleanly
         float screenMask = smoothstep(0.0, 0.05, min(uv.x, 1.0 - uv.x)) * smoothstep(0.0, 0.05, min(uv.y, 1.0 - uv.y));
         float finalAlpha = clamp(smoke * screenMask * in_MasterAlpha, 0.0, 1.0);
         
