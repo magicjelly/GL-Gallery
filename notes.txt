@@ -26,39 +26,42 @@ const val WAVE_SHADER = """
         vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
 
-    // This replaces the ShaderToy 'Buffer'. 
-    // It generates a procedural density map that perfectly mimics advected fluid.
-    float getShade(vec2 st, float time, float distFromArt, float resX) {
+    // Procedural density map mimicking advected fluid
+    float getShade(vec2 p, float time, float resX) {
+        vec2 st = p / resX;
         vec2 dir = normalize(st + 0.0001);
         
-        // Smoke physically drifts outward and upward over time
-        vec2 flow = st - (dir * time * 0.1) + vec2(0.0, -time * 0.3);
+        // Calculate distance inside the function for accurate 3D normals
+        float artSize = ((resX * 0.85) * 0.5) - 2.0;
+        float cornerRadius = resX * 0.045; 
+        float distFromArt = max(sdRoundRect(p, vec2(artSize), cornerRadius), 0.0);
         
-        // Deep turbulence (mimicking the buffer's offset logic)
+        // Normalize the distance (0.0 to ~1.0)
+        float normalizedDist = distFromArt / resX;
+
+        // Smoke physically drifts outward and upward
+        vec2 flow = st - (dir * time * 0.1) + vec2(0.0, -time * 0.2);
+        
+        // Deep turbulence
         vec2 q = vec2(fBm(flow * 3.0), fBm(flow * 3.0 + vec2(2.4, 4.8)));
         float n = fBm(flow * 4.0 + q * 2.0 - time * 0.2);
         
-        // Expansion / Energy loss: Dense near the album, dissolving as it floats away
-        float maxReach = 0.25; 
-        float mask = smoothstep(maxReach, 0.0, distFromArt);
+        // Expansion: Dense near the album, dissolving as it floats away (15% of screen width)
+        float maxReach = 0.15; 
+        float mask = smoothstep(maxReach, 0.0, normalizedDist);
         
-        // Squaring the noise creates chunky, separated plumes of smoke
+        // Squaring the noise creates chunky, separated plumes
         return clamp(pow(n, 1.5) * mask * 2.5, 0.0, 1.0);
     }
 
     half4 main(in float2 fragCoord) {
         vec2 center = in_Resolution.xy * 0.5;
         vec2 p = fragCoord - center;
-        
-        // Isotropic coordinates
-        vec2 st = p / in_Resolution.x;
-        vec2 uv = fragCoord / in_Resolution.xy; // Needed for the lighting height multiplier
+        vec2 uv = fragCoord / in_Resolution.xy; 
         
         float artSize = ((in_Resolution.x * 0.85) * 0.5) - 2.0;
         float cornerRadius = in_Resolution.x * 0.045; 
-        
         float rawDist = sdRoundRect(p, vec2(artSize), cornerRadius);
-        float distFromArt = max(rawDist, 0.0);
 
         // Absolute UI Masking
         if (rawDist <= 0.0) return in_Background.eval(fragCoord);
@@ -66,11 +69,11 @@ const val WAVE_SHADER = """
         float time = in_Time * 0.5;
 
         // ==========================================
-        // 1. MASKS (Directly adapted from your snippet)
+        // 1. MASKS 
         // ==========================================
-        float shade = getShade(st, time, distFromArt, in_Resolution.x);
+        float shade = getShade(p, time, in_Resolution.x);
         
-        // If there's no smoke here, exit early to save GPU power
+        // Early exit saves GPU power
         if (shade <= 0.01) return in_Background.eval(fragCoord);
 
         float flame = pow(shade, 3.0);
@@ -78,34 +81,29 @@ const val WAVE_SHADER = """
         float height = flame;
 
         // ==========================================
-        // 2. NORMALS (Directly adapted from your snippet)
+        // 2. NORMALS 
         // ==========================================
-        float eps = 0.005;
-        // Calculating the derivative to fake a 3D surface
-        float dX = getShade(st + vec2(eps, 0.0), time, distFromArt, in_Resolution.x) - getShade(st - vec2(eps, 0.0), time, distFromArt, in_Resolution.x);
-        float dY = getShade(st - vec2(0.0, eps), time, distFromArt, in_Resolution.x) - getShade(st + vec2(0.0, eps), time, distFromArt, in_Resolution.x);
+        float eps = 2.0; // 2 pixels for accurate GPU sampling
+        float dX = getShade(p + vec2(eps, 0.0), time, in_Resolution.x) - getShade(p - vec2(eps, 0.0), time, in_Resolution.x);
+        float dY = getShade(p + vec2(0.0, eps), time, in_Resolution.x) - getShade(p - vec2(0.0, eps), time, in_Resolution.x);
         
         vec3 normal = normalize(vec3(dX, dY, height * 0.2 + 0.01));
 
         // ==========================================
-        // 3. LIGHTING (Directly adapted from your snippet)
+        // 3. LIGHTING 
         // ==========================================
-        // Light direction from top-front
         vec3 dir = normalize(vec3(0.0, -0.5, 0.5));
         float light = dot(normal, dir) * 0.5 + 0.5;
         light = pow(light, 0.5);
         light *= (uv.y + 0.5); 
         
-        // Instead of the hardcoded ShaderToy colors, we integrate it cleanly into the OS
         vec3 baseColor = in_AppColor;
-        vec3 tint = mix(vec3(0.02), baseColor * 1.5, flame); // Core burns bright, edges fall to dark smoke
+        vec3 tint = mix(vec3(0.02), baseColor * 1.5, flame); 
         
         vec3 color = tint * flame;
-        // Tint the directional light slightly with the app color for a cohesive look
         color += baseColor * light * 0.7; 
         color *= smoke;
 
-        // Mask off the edges of the phone display cleanly
         float screenMask = smoothstep(0.0, 0.05, min(uv.x, 1.0 - uv.x)) * smoothstep(0.0, 0.05, min(uv.y, 1.0 - uv.y));
         float finalAlpha = clamp(smoke * screenMask * in_MasterAlpha, 0.0, 1.0);
         
