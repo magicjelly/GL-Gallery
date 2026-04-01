@@ -1,9 +1,10 @@
 // ==========================================
-// MEDIA PLAYER SHADER: INFLATING SOLID CORE SMOKE
+// MEDIA PLAYER SHADER: ASYMMETRIC CHURNING SMOKE
 // ==========================================
 const val WAVE_SHADER = """
     uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     
+    // Fast 2D rotation matrix for mobile performance
     const mat2 m = mat2(0.80, 0.60, -0.60, 0.80);
 
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
@@ -12,6 +13,7 @@ const val WAVE_SHADER = """
         return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
     }
     
+    // Smooth 3-octave fractional Brownian motion
     float fBm(vec2 p) {
         float f = 0.0;
         f += 0.5000 * noise(p); p = m * p * 2.02;
@@ -27,6 +29,8 @@ const val WAVE_SHADER = """
     half4 main(in float2 fragCoord) {
         vec2 center = in_Resolution.xy * 0.5;
         vec2 p = fragCoord - center;
+        
+        // Isotropic coordinates (permanently prevents horizontal stretching)
         vec2 st = p / in_Resolution.x;
         
         float artSize = ((in_Resolution.x * 0.85) * 0.5) - 2.0;
@@ -35,78 +39,81 @@ const val WAVE_SHADER = """
         float rawDist = sdRoundRect(p, vec2(artSize), cornerRadius);
         float distFromArt = max(rawDist, 0.0);
 
-        // Mask out the UI cleanly
+        // Absolute UI Masking (Protects the album art)
         float innerMask = smoothstep(0.0, 2.0, rawDist);
         if (innerMask <= 0.0) {
             return in_Background.eval(fragCoord);
         }
 
         // ==========================================
-        // 1. INFLATING SOLID CORE MASS
+        // 1. ASYMMETRIC AUDIO REACTIVITY
         // ==========================================
         float audioPressure = clamp((in_Amplitude - 10.0) / 90.0, 0.0, 1.0);
         float time = in_Time * 0.25;
         
-        // THE FIX: We define a solid ring of smoke OUTSIDE the album art that inflates with audio.
-        float coreRadius = in_Resolution.x * 0.02 + (in_Resolution.x * 0.05 * audioPressure);
-        
-        // The outer boundary where the smoke finally breaks apart and fades
-        float maxReach = coreRadius + in_Resolution.x * 0.06 + (in_Resolution.x * 0.15 * audioPressure);
-        
-        // This falloff is 0.0 inside the solid core, and ramps to 1.0 at the extreme outer edge
-        float boundaryFalloff = smoothstep(coreRadius, maxReach, distFromArt);
+        // We generate a low-frequency radial noise map to distribute the audio energy.
+        // This ensures the bass hits in distinct, shifting "bursts" around the circle, completely killing the uniform balloon bounce.
+        vec2 radialUV = normalize(p + 0.001) * 1.5;
+        float energyDistribution = fBm(radialUV + time * 0.5);
+        float localAudioPush = audioPressure * pow(energyDistribution, 1.5) * 2.5;
 
         // ==========================================
-        // 2. DOMAIN WARPING
+        // 2. CHURNING DOMAIN WARP (No Spikes)
         // ==========================================
-        vec2 dir = normalize(st + 0.0001); 
-        vec2 flowOffset = (dir * time * 0.8) + vec2(0.0, -time * 0.4); 
+        // Gentle upward thermal drift
+        vec2 drift = vec2(0.0, -time * 0.5);
         
-        vec2 q = vec2(fBm(st * 2.5 - flowOffset), fBm(st * 2.5 - flowOffset + vec2(5.2, 1.3)));
-        vec2 flow = (st * 3.0) - flowOffset + (q * 0.5);
+        // Deep Domain Warping: The high multiplier (1.5) forces the noise grid to fold over itself repeatedly.
+        // This creates heavy, rolling cauliflower billows instead of flat static.
+        vec2 q = vec2(0.0);
+        q.x = fBm(st * 3.0 + drift + vec2(time * 0.3, 0.0));
+        q.y = fBm(st * 3.0 + drift + vec2(0.0, time * 0.4));
+        
+        vec2 flow = (st * 4.0) + drift + (q * 1.5);
+        
+        // The structural volume of the smoke at this pixel
+        float cloudNoise = fBm(flow);
 
-        float n = fBm(flow); 
-        
         // ==========================================
-        // 3. GUARANTEED COHESION (Kills the Spikes)
+        // 3. PHYSICAL CLOUD BOUNDARY
         // ==========================================
-        // By adding 0.4 to the noise, the result inside the core radius is always > 1.0.
-        // This guarantees the core is an unbreakable, solid mass of black smoke.
-        // As it hits the boundaryFalloff, we subtract heavily, softly carving the edges into puffy clouds.
-        float shape = n + 0.4 - (boundaryFalloff * 1.5);
+        // The smoke pushes outward based on the noise structure AND the localized audio bursts
+        float physicalReach = (in_Resolution.x * 0.06 * cloudNoise) + (in_Resolution.x * 0.18 * localAudioPush);
         
-        // Tight threshold for thick, physical, non-blurry edges
-        float density = smoothstep(0.3, 0.6, shape);
+        // Subtract distance to carve the exact shape of the physical cloud mass
+        float boundary = distFromArt - physicalReach;
+        
+        // A tight threshold creates a thick, opaque physical mass with puffy rounded edges.
+        float density = 1.0 - smoothstep(0.0, in_Resolution.x * 0.02, boundary);
 
         if (density <= 0.0) {
             return in_Background.eval(fragCoord);
         }
 
         // ==========================================
-        // 4. 3D LIGHTING & NORMALS
+        // 4. 3D SHADING & MATERIAL
         // ==========================================
+        // Calculate Fake 3D Normals to give the billows physical depth
         float eps = 0.02;
         float nX = fBm(flow + vec2(eps, 0.0));
         float nY = fBm(flow + vec2(0.0, eps));
         
-        vec3 normal = normalize(vec3(n - nX, n - nY, 0.4));
-        vec3 lightDir = normalize(vec3(-st.x, -st.y, 0.6));
+        vec3 normal = normalize(vec3(cloudNoise - nX, cloudNoise - nY, 0.25));
+        
+        // Light radiates radially outward from the center
+        vec3 lightDir = normalize(vec3(-st.x, -st.y, 0.5));
         float nDotL = max(dot(normal, lightDir), 0.0);
 
         vec3 neonColor = vec3(in_AppColor);
         vec3 darkSmoke = vec3(0.015, 0.02, 0.025); // Pitch black charcoal
         
-        // The 3D peaks of the dark smoke slightly catch the ambient room light
-        vec3 surfaceColor = darkSmoke + (neonColor * nDotL * 0.25);
+        // The unlit parts are pitch black, the ridges facing the UI catch the neon
+        vec3 surfaceColor = darkSmoke + (neonColor * nDotL * 0.3);
         
-        // Backlighting: A fierce rim-light trapped exactly against the glass of the UI
-        float rimGlow = exp(-distFromArt / (in_Resolution.x * 0.02));
+        // Intense subsurface backlighting trapped right against the glass
+        float backlight = exp(-distFromArt / (in_Resolution.x * 0.025));
         
-        // Subsurface Glow: Light penetrating the thinner puffs at the outer boundary
-        float subsurfaceGlow = (1.0 - density) * exp(-distFromArt / (in_Resolution.x * 0.08));
-
-        // Combine the solid dark mass with the intense backlights
-        vec3 finalColor = surfaceColor + (neonColor * rimGlow * 1.5) + (neonColor * subsurfaceGlow * (0.5 + audioPressure));
+        vec3 finalColor = surfaceColor + (neonColor * backlight * 2.0 * (1.0 + localAudioPush));
 
         // Mask off the edges of the phone display cleanly
         float screenMask = smoothstep(0.0, in_Resolution.x * 0.05, min(fragCoord.x, in_Resolution.x - fragCoord.x)) * smoothstep(0.0, in_Resolution.y * 0.05, min(fragCoord.y, in_Resolution.y - fragCoord.y));
