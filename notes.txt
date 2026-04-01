@@ -1,790 +1,119 @@
-
-
 // ==========================================
-// 4. TabSendReceive.kt (Indication Crash Patched)
+// MEDIA PLAYER SHADER: INFLATING SOLID CORE SMOKE
 // ==========================================
-
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CallReceived
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-
-@Composable
-fun TabSendReceive(
-    state: EngineState,
-    screenWidthPx: Float
-) {
-    val coroutineScope = rememberCoroutineScope()
+const val WAVE_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
     
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { coroutineScope.launch { state.transferDirection = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f; state.fluidState = FluidState.MAGNETIC_HOLD; state.fluidVolumeTarget = 1f } }, 
-                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
-                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Send", fontWeight = FontWeight.Bold)
-            }
-            Button(
-                onClick = { coroutineScope.launch { state.transferDirection = -1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f; state.fluidState = FluidState.MAGNETIC_HOLD; state.fluidVolumeTarget = 1f } }, 
-                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Icon(Icons.Default.CallReceived, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Receive", fontWeight = FontWeight.Bold)
-            }
-            Button(
-                onClick = { state.fluidVolumeTarget = 0f; state.fluidState = FluidState.IDLE }, 
-                modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-            ) {
-                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Fail", fontWeight = FontWeight.Bold)
-            }
-        }
+    const mat2 m = mat2(0.80, 0.60, -0.60, 0.80);
 
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                val currentEffects = listOf("Magnetic Meniscus", "OLED State-Change", "Cinematic Wormhole")
-                currentEffects.forEachIndexed { index, name ->
-                    val isSelected = state.selectedPhysicsIndex == index
-                    TextButton(
-                        onClick = { 
-                            state.selectedPhysicsIndex = index
-                            state.isNotificationActive = false 
-                        }, 
-                        colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), 
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) {
-                        Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
-        }
-
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                state.appColors.forEach { color ->
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(color, CircleShape)
-                            .border(width = if (state.selectedAppColor == color) 3.dp else 1.dp, color = if (state.selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
-                            .clip(CircleShape) // Secures the ripple inside the circle
-                            .clickable { 
-                                state.selectedAppColor = color
-                                state.isNotificationActive = false 
-                            }
-                    )
-                }
-            }
-        }
-
-        TuningSlider("Speed", state.flowSpeed, 0.1f..5.0f) { state.flowSpeed = it }
-        TuningSlider("Effect X Position", state.effectPosX, 0.0f..1.0f) { state.effectPosX = it }
-        TuningSlider("Effect Y Position", state.effectPosY, 0.0f..1.0f) { state.effectPosY = it }
-        TuningSlider("Effect Size Base", state.effectSize, 0.05f..0.4f) { state.effectSize = it }
-    }
-}
-
-
-// ==========================================
-// 3. TabNotifications.kt (Indication Crash Patched)
-// ==========================================
-
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-
-@Composable
-fun TabNotifications(state: EngineState) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                val currentEffects = listOf("Lava", "Glint", "Prism", "Sparks", "Aura", "Rays")
-                currentEffects.forEachIndexed { index, name ->
-                    val isSelected = state.selectedNotificationIndex == index
-                    TextButton(
-                        onClick = { 
-                            state.selectedNotificationIndex = index
-                            state.isNotificationActive = true 
-                        }, 
-                        colors = ButtonDefaults.textButtonColors(contentColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface), 
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) {
-                        Text(name, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
-        }
-
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                state.appColors.forEach { color ->
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(color, CircleShape)
-                            .border(width = if (state.selectedAppColor == color) 3.dp else 1.dp, color = if (state.selectedAppColor == color) MaterialTheme.colorScheme.primary else Color.Gray, shape = CircleShape)
-                            .clip(CircleShape) // Secures the ripple inside the circle
-                            .clickable { 
-                                state.selectedAppColor = color
-                                state.isNotificationActive = true 
-                            }
-                    )
-                }
-            }
-        }
-
-        TuningSlider("Speed", state.flowSpeed, 0.1f..5.0f) { state.flowSpeed = it }
-        TuningSlider("Thickness", state.thickness, 10f..100f) { state.thickness = it }
-        TuningSlider("Amplitude", state.amplitude, 10f..200f) { state.amplitude = it }
-        TuningSlider("Noise Scale", state.noiseScale, 0.5f..10.0f) { state.noiseScale = it }
-    }
-}
-
-
-
-
-
-// ==========================================
-// 5. TabMediaPlayer.kt (Safe Node Lifecycle)
-// ==========================================
-
-import android.Manifest
-import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
-import android.media.audiofx.Visualizer
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
-import android.provider.OpenableColumns
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.palette.graphics.Palette
-import kotlin.math.sqrt
-
-@Composable
-fun TabMediaPlayer(
-    state: EngineState,
-    mediaPlayer: MediaPlayer
-) {
-    val context = LocalContext.current
-    var rawAudioEnergy by remember { mutableFloatStateOf(0f) }
-    
-    var hasAudioPermission by remember { 
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) 
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
     }
     
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        hasAudioPermission = isGranted
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = m * p * 2.02;
+        f += 0.2500 * noise(p); p = m * p * 2.03;
+        f += 0.1250 * noise(p);
+        return f;
     }
     
-    val smoothedEnergy by animateFloatAsState(
-        targetValue = rawAudioEnergy,
-        animationSpec = tween(durationMillis = 120), 
-        label = "audio_smoothing"
-    )
-
-    LaunchedEffect(smoothedEnergy, state.isPlaying) {
-        if (state.isPlaying && hasAudioPermission) {
-            state.amplitude = 20f + (smoothedEnergy * 280f) 
-            state.flowSpeed = 1.0f + (smoothedEnergy * 1.5f)
-        } else {
-            state.amplitude = 8f
-            state.flowSpeed = 0.15f 
-        }
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
     }
 
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { selectedUri ->
-            try {
-                if (mediaPlayer.isPlaying) mediaPlayer.stop()
-                mediaPlayer.reset()
-                
-                mediaPlayer.setDataSource(context, selectedUri)
-                mediaPlayer.prepare()
-                
-                state.mediaDuration = mediaPlayer.duration
-                state.currentPosition = 0
-                state.isPlaying = false
-                rawAudioEnergy = 0f
-                
-                var trackName = "Unknown Track"
-                context.contentResolver.query(selectedUri, null, null, null, null)?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (cursor.moveToFirst() && nameIndex != -1) trackName = cursor.getString(nameIndex)
-                }
-                
-                val mmr = MediaMetadataRetriever()
-                mmr.setDataSource(context, selectedUri)
-                
-                val title = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
-                val artist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                if (!title.isNullOrEmpty()) {
-                    trackName = if (!artist.isNullOrEmpty()) "$artist - $title" else title
-                }
-                state.currentTrackName = trackName
+    half4 main(in float2 fragCoord) {
+        vec2 center = in_Resolution.xy * 0.5;
+        vec2 p = fragCoord - center;
+        vec2 st = p / in_Resolution.x;
+        
+        float artSize = ((in_Resolution.x * 0.85) * 0.5) - 2.0;
+        float cornerRadius = in_Resolution.x * 0.045; 
+        
+        float rawDist = sdRoundRect(p, vec2(artSize), cornerRadius);
+        float distFromArt = max(rawDist, 0.0);
 
-                val artBytes = mmr.embeddedPicture
-                if (artBytes != null) {
-                    val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
-                    state.mediaAlbumArt = bitmap.asImageBitmap()
-                    
-                    Palette.from(bitmap).maximumColorCount(128).clearFilters().generate { palette ->
-                        val swatches = palette?.swatches ?: emptyList()
-                        val bestSwatch = swatches.maxByOrNull { swatch ->
-                            val hsl = swatch.hsl
-                            if (hsl[1] < 0.15f || hsl[2] < 0.1f || hsl[2] > 0.9f) -1f else (hsl[1] * 1000f) + (hsl[2] * 500f)
-                        }
-                        val targetColorInt = bestSwatch?.rgb ?: palette?.vibrantSwatch?.rgb ?: android.graphics.Color.WHITE
-                        state.extractedMediaColor = Color(targetColorInt)
-                    }
-                } else {
-                    state.mediaAlbumArt = null
-                    state.extractedMediaColor = Color(0xFFFFFFFF)
-                }
-                mmr.release()
-            } catch (e: Exception) { e.printStackTrace() }
+        // Mask out the UI cleanly
+        float innerMask = smoothstep(0.0, 2.0, rawDist);
+        if (innerMask <= 0.0) {
+            return in_Background.eval(fragCoord);
         }
+
+        // ==========================================
+        // 1. INFLATING SOLID CORE MASS
+        // ==========================================
+        float audioPressure = clamp((in_Amplitude - 10.0) / 90.0, 0.0, 1.0);
+        float time = in_Time * 0.25;
+        
+        // THE FIX: We define a solid ring of smoke OUTSIDE the album art that inflates with audio.
+        float coreRadius = in_Resolution.x * 0.02 + (in_Resolution.x * 0.05 * audioPressure);
+        
+        // The outer boundary where the smoke finally breaks apart and fades
+        float maxReach = coreRadius + in_Resolution.x * 0.06 + (in_Resolution.x * 0.15 * audioPressure);
+        
+        // This falloff is 0.0 inside the solid core, and ramps to 1.0 at the extreme outer edge
+        float boundaryFalloff = smoothstep(coreRadius, maxReach, distFromArt);
+
+        // ==========================================
+        // 2. DOMAIN WARPING
+        // ==========================================
+        vec2 dir = normalize(st + 0.0001); 
+        vec2 flowOffset = (dir * time * 0.8) + vec2(0.0, -time * 0.4); 
+        
+        vec2 q = vec2(fBm(st * 2.5 - flowOffset), fBm(st * 2.5 - flowOffset + vec2(5.2, 1.3)));
+        vec2 flow = (st * 3.0) - flowOffset + (q * 0.5);
+
+        float n = fBm(flow); 
+        
+        // ==========================================
+        // 3. GUARANTEED COHESION (Kills the Spikes)
+        // ==========================================
+        // By adding 0.4 to the noise, the result inside the core radius is always > 1.0.
+        // This guarantees the core is an unbreakable, solid mass of black smoke.
+        // As it hits the boundaryFalloff, we subtract heavily, softly carving the edges into puffy clouds.
+        float shape = n + 0.4 - (boundaryFalloff * 1.5);
+        
+        // Tight threshold for thick, physical, non-blurry edges
+        float density = smoothstep(0.3, 0.6, shape);
+
+        if (density <= 0.0) {
+            return in_Background.eval(fragCoord);
+        }
+
+        // ==========================================
+        // 4. 3D LIGHTING & NORMALS
+        // ==========================================
+        float eps = 0.02;
+        float nX = fBm(flow + vec2(eps, 0.0));
+        float nY = fBm(flow + vec2(0.0, eps));
+        
+        vec3 normal = normalize(vec3(n - nX, n - nY, 0.4));
+        vec3 lightDir = normalize(vec3(-st.x, -st.y, 0.6));
+        float nDotL = max(dot(normal, lightDir), 0.0);
+
+        vec3 neonColor = vec3(in_AppColor);
+        vec3 darkSmoke = vec3(0.015, 0.02, 0.025); // Pitch black charcoal
+        
+        // The 3D peaks of the dark smoke slightly catch the ambient room light
+        vec3 surfaceColor = darkSmoke + (neonColor * nDotL * 0.25);
+        
+        // Backlighting: A fierce rim-light trapped exactly against the glass of the UI
+        float rimGlow = exp(-distFromArt / (in_Resolution.x * 0.02));
+        
+        // Subsurface Glow: Light penetrating the thinner puffs at the outer boundary
+        float subsurfaceGlow = (1.0 - density) * exp(-distFromArt / (in_Resolution.x * 0.08));
+
+        // Combine the solid dark mass with the intense backlights
+        vec3 finalColor = surfaceColor + (neonColor * rimGlow * 1.5) + (neonColor * subsurfaceGlow * (0.5 + audioPressure));
+
+        // Mask off the edges of the phone display cleanly
+        float screenMask = smoothstep(0.0, in_Resolution.x * 0.05, min(fragCoord.x, in_Resolution.x - fragCoord.x)) * smoothstep(0.0, in_Resolution.y * 0.05, min(fragCoord.y, in_Resolution.y - fragCoord.y));
+
+        float finalAlpha = clamp(density * innerMask * screenMask * in_MasterAlpha, 0.0, 1.0);
+        
+        half4 bg = in_Background.eval(fragCoord); 
+        return half4(mix(bg.rgb, finalColor, finalAlpha), 1.0);
     }
-
-    DisposableEffect(state.isPlaying, hasAudioPermission) {
-        var visualizer: Visualizer? = null
-        if (state.isPlaying && hasAudioPermission) {
-            try {
-                visualizer = Visualizer(mediaPlayer.audioSessionId)
-                visualizer.captureSize = Visualizer.getCaptureSizeRange()[1] 
-                visualizer.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
-                    override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
-                        waveform?.let {
-                            var sum = 0.0
-                            for (byte in it) {
-                                val amplitude = (byte.toInt() and 0xFF) - 128
-                                sum += (amplitude * amplitude).toDouble()
-                            }
-                            val rms = sqrt(sum / it.size)
-                            val normalizedEnergy = (rms / 128.0).coerceIn(0.0, 1.0).toFloat()
-                            val finalEnergy = (normalizedEnergy * 1.5f).coerceAtMost(1.0f)
-                            
-                            // Safely route the background audio data to the UI thread
-                            Handler(Looper.getMainLooper()).post {
-                                rawAudioEnergy = finalEnergy
-                            }
-                        }
-                    }
-                    override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {}
-                }, Visualizer.getMaxCaptureRate() / 2, true, false)
-                visualizer.enabled = true
-            } catch (e: Exception) { e.printStackTrace() }
-        } else {
-            rawAudioEnergy = 0f
-        }
-        onDispose { visualizer?.enabled = false; visualizer?.release() }
-    }
-
-    val uiAlpha by animateFloatAsState(targetValue = if (state.isMediaUiVisible) 1f else 0f, animationSpec = tween(300), label = "uiAlpha")
-    val uiOffsetY by animateDpAsState(targetValue = if (state.isMediaUiVisible) 0.dp else 50.dp, animationSpec = tween(300), label = "uiOffset")
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .offset(y = uiOffsetY)
-            .graphicsLayer { alpha = uiAlpha },
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // FIX: Pure if statement removes the node cleanly without exit animations
-        if (!hasAudioPermission) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Visualizer Disabled", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Android requires microphone access to read the internal audio track.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Text("Grant Permission")
-                    }
-                }
-            }
-        }
-
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Column(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Extracted: ", style = MaterialTheme.typography.labelMedium)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Box(modifier = Modifier.size(24.dp).background(state.extractedMediaColor, CircleShape).border(1.dp, Color.White, CircleShape))
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Text("Test Palettes:", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    val testColors = listOf(Color(0xFF00FF00), Color(0xFFFF0055), Color(0xFF00DDFF), Color(0xFFFF5500), Color(0xFFAA00FF))
-                    testColors.forEach { color ->
-                        Box(modifier = Modifier.size(32.dp).background(color, CircleShape).border(if (state.extractedMediaColor == color) 2.dp else 0.dp, Color.White, CircleShape).clickable { state.extractedMediaColor = color })
-                    }
-                }
-            }
-        }
-
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                
-                Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary), modifier = Modifier.fillMaxWidth(0.8f)) {
-                    Text("Load MP3", fontWeight = FontWeight.Bold)
-                }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(text = state.currentTrackName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                
-                Slider(
-                    value = if (state.mediaDuration > 0) state.currentPosition.toFloat() / state.mediaDuration.toFloat() else 0f,
-                    onValueChange = { 
-                        val newPos = (it * state.mediaDuration).toInt()
-                        state.currentPosition = newPos
-                        try { mediaPlayer.seekTo(newPos) } catch(e: Exception) {}
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Button(
-                        onClick = { try { mediaPlayer.start(); state.isPlaying = true; state.fluidVolumeTarget = 1f } catch(e: Exception) {} },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text("Start") }
-                    Button(
-                        onClick = { try { mediaPlayer.pause(); state.isPlaying = false } catch(e: Exception) {} },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                    ) { Text("Pause") }
-                    Button(
-                        onClick = { try { mediaPlayer.pause(); mediaPlayer.seekTo(0); state.currentPosition = 0; state.isPlaying = false; state.fluidVolumeTarget = 0f } catch(e: Exception) {} },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                    ) { Text("Stop") }
-                }
-            }
-        }
-        TuningSlider("Noise Scale", state.noiseScale, 0.5f..10.0f) { state.noiseScale = it }
-    }
-}
-
-
-
-
-// ==========================================
-// 6. MainActivity.kt (Lifecycle Crash Patched)
-// ==========================================
-
-import android.content.Context
-import android.graphics.RenderEffect
-import android.graphics.RuntimeShader
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.media.MediaPlayer
-import android.os.Build
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.annotation.RequiresApi
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.android.awaitFrame
-
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        NotificationSyncPrototype()
-                    }
-                }
-            }
-        }
-    }
-}
-
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
-@Composable
-fun NotificationSyncPrototype() {
-    val context = LocalContext.current
-    val density = LocalDensity.current
-    val config = LocalConfiguration.current
-    
-    val state = remember { EngineState() }
-    
-    var rawGravityX by remember { mutableFloatStateOf(0f) }
-    var rawGravityY by remember { mutableFloatStateOf(0f) }
-
-    val sensorManager = remember { context.getSystemService(Context.SENSOR_SERVICE) as SensorManager }
-    DisposableEffect(Unit) {
-        val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
-        val listener = object : SensorEventListener {
-            override fun onSensorChanged(event: SensorEvent?) {
-                event?.let {
-                    rawGravityX = it.values[0] / 9.81f
-                    rawGravityY = it.values[1] / 9.81f
-                }
-            }
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-        }
-        sensorManager.registerListener(listener, gravitySensor, SensorManager.SENSOR_DELAY_GAME)
-        onDispose { sensorManager.unregisterListener(listener) }
-    }
-    
-    val fluidMomentumX by animateFloatAsState(targetValue = -rawGravityX, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_x")
-    val fluidMomentumY by animateFloatAsState(targetValue = rawGravityY, animationSpec = spring(dampingRatio = 0.5f, stiffness = 25f), label = "fluid_y")
-
-    val isMagneticPullActive = state.isScreenTouched || state.fluidState == FluidState.MAGNETIC_HOLD
-    val magneticTouchStrength by animateFloatAsState(
-        targetValue = if (isMagneticPullActive) 1f else 0f,
-        animationSpec = if (isMagneticPullActive) tween(600, easing = FastOutSlowInEasing) else spring(dampingRatio = 0.75f, stiffness = 40f),
-        label = "magnetic_pull"
-    )
-    
-    val fluidVolume by animateFloatAsState(
-        targetValue = state.fluidVolumeTarget,
-        animationSpec = tween(1500, easing = LinearOutSlowInEasing),
-        label = "fluid_volume"
-    )
-    
-    val mediaPlayer = remember { MediaPlayer() }
-
-    DisposableEffect(Unit) {
-        onDispose { mediaPlayer.release() }
-    }
-
-    LaunchedEffect(state.isPlaying) {
-        while (state.isPlaying) {
-            try {
-                if (mediaPlayer.isPlaying) {
-                    state.currentPosition = mediaPlayer.currentPosition
-                } else {
-                    state.currentPosition = (state.currentPosition + 50).coerceAtMost(state.mediaDuration)
-                    if (state.currentPosition >= state.mediaDuration) {
-                        state.isPlaying = false
-                        state.fluidVolumeTarget = 0f
-                        state.currentPosition = 0
-                    }
-                }
-            } catch(e: Exception) {}
-            delay(50)
-        }
-    }
-
-    val activeShaderString = when (state.selectedCategory) {
-        0 -> when (state.selectedNotificationIndex) {
-            0 -> LAVA_SHADER; 1 -> GLINT_SHADER; 2 -> PRISMATIC_SHADER; 3 -> SPARK_SHADER; 
-            4 -> AURA_SHADER; else -> SUNLIGHT_SHADER
-        }
-        1 -> when (state.selectedPhysicsIndex) {
-            0 -> MENISCUS_SHADER; 1 -> STATE_CHANGE_SHADER; else -> WORMHOLE_SHADER
-        }
-        else -> WAVE_SHADER
-    }
-
-    val pillOffsetY by animateDpAsState(targetValue = if (state.isNotificationActive) 32.dp else (-100).dp, animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f), label = "pill")
-    
-    val masterAlpha by animateFloatAsState(
-        targetValue = if (state.selectedCategory != 0 || state.isNotificationActive) 1f else 0f, 
-        animationSpec = tween(durationMillis = 300, easing = LinearOutSlowInEasing), 
-        label = "alpha"
-    )
-
-    val screenWidthPx = with(density) { config.screenWidthDp.dp.toPx() }
-    val screenHeightPx = with(density) { config.screenHeightDp.dp.toPx() }
-    val pillWidthPx = screenWidthPx * 0.9f
-    val pillHeightPx = with(density) { 64.dp.toPx() }
-    val pillCenterYPx = with(density) { pillOffsetY.toPx() + (64.dp.toPx() / 2f) }
-
-    val activeTouchX = if (state.selectedCategory == 1) state.effectPosX * screenWidthPx else state.touchX
-    val activeTouchY = if (state.selectedCategory == 1) state.effectPosY * screenHeightPx else state.touchY
-
-    val activeColorTarget = if (state.selectedCategory == 2) state.extractedMediaColor else state.selectedAppColor
-    val animatedAppColor by animateColorAsState(
-        targetValue = activeColorTarget,
-        animationSpec = tween(durationMillis = 1500, easing = LinearOutSlowInEasing),
-        label = "color_crossfade"
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull()
-                        if (change != null) {
-                            if (state.fluidState == FluidState.IDLE) {
-                                state.touchX = change.position.x
-                                state.touchY = change.position.y
-                            }
-                            state.isScreenTouched = change.pressed
-                        }
-                    }
-                }
-            }
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { 
-                        if (state.selectedCategory == 0) {
-                            state.isNotificationActive = true 
-                        } else if (state.selectedCategory == 2) {
-                            state.isMediaUiVisible = !state.isMediaUiVisible
-                        }
-                    }, 
-                    onDoubleTap = { state.isNotificationActive = false }
-                )
-            }
-    ) {
-        AmbientEdgeLighting(
-            modifier = Modifier.fillMaxSize(),
-            shaderString = activeShaderString,
-            cornerRadius = 120f, appColor = animatedAppColor,
-            speed = state.flowSpeed, thickness = state.thickness, amplitude = state.amplitude, noiseScale = state.noiseScale,
-            masterAlpha = masterAlpha,
-            pillCenterY = pillCenterYPx, pillWidth = pillWidthPx, pillHeight = pillHeightPx,
-            gravityX = fluidMomentumX, gravityY = fluidMomentumY,
-            touchX = activeTouchX, touchY = activeTouchY, touchActive = magneticTouchStrength,
-            fluidVolume = fluidVolume,
-            transferDirection = state.transferDirection,
-            effectSize = state.effectSize
-        ) {
-            // FIX 1: Safe Background Crossfade
-            Crossfade(
-                targetState = state.selectedCategory == 2 && state.mediaAlbumArt != null,
-                animationSpec = tween(800),
-                label = "bg_crossfade"
-            ) { isMediaBg ->
-                if (isMediaBg) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().background(Color.Black),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            bitmap = state.mediaAlbumArt!!,
-                            contentDescription = "Album Art",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth(0.85f).aspectRatio(1f).clip(RoundedCornerShape(16.dp))
-                        )
-                    }
-                } else {
-                    Image(
-                        painter = painterResource(id = android.R.drawable.sym_def_app_icon), 
-                        contentDescription = "Background", 
-                        contentScale = ContentScale.Crop, 
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-        }
-
-        if (state.selectedCategory == 0) {
-            Card(
-                modifier = Modifier.align(Alignment.TopCenter).offset(y = pillOffsetY).alpha(masterAlpha).fillMaxWidth(0.9f).height(64.dp),
-                shape = RoundedCornerShape(32.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp) 
-            ) {}
-        }
-
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            
-            Box(modifier = Modifier.fillMaxHeight(0.55f)) {
-                // FIX 2: LayoutNode Tab Clamping fix
-                // Each tab now isolates its own layout tree during the fade transition
-                Crossfade(
-                    targetState = state.selectedCategory, 
-                    animationSpec = tween(400),
-                    label = "tab_crossfade"
-                ) { category ->
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        when (category) {
-                            0 -> TabNotifications(state)
-                            1 -> TabSendReceive(state, screenWidthPx)
-                            2 -> TabMediaPlayer(state, mediaPlayer)
-                        }
-                    }
-                }
-            }
-            
-            val isTabBarVisible = state.selectedCategory != 2 || state.isMediaUiVisible
-            val tabBarAlpha by animateFloatAsState(targetValue = if (isTabBarVisible) 1f else 0f, animationSpec = tween(300), label = "tabAlpha")
-            val tabBarOffsetY by animateDpAsState(targetValue = if (isTabBarVisible) 0.dp else 100.dp, animationSpec = tween(300), label = "tabOffset")
-
-            Card(
-                modifier = Modifier.offset(y = tabBarOffsetY).graphicsLayer { alpha = tabBarAlpha },
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-            ) {
-                TabRow(selectedTabIndex = state.selectedCategory, containerColor = Color.Transparent, indicator = { tabPositions -> TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(tabPositions[state.selectedCategory]), color = MaterialTheme.colorScheme.primary) }) {
-                    Tab(selected = state.selectedCategory == 0, onClick = { 
-                        state.selectedCategory = 0; state.isNotificationActive = true; state.fluidVolumeTarget = 1f; state.touchX = screenWidthPx / 2f; state.touchY = 0f 
-                    }, text = { Text("Notifications", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                    Tab(selected = state.selectedCategory == 1, onClick = { 
-                        state.selectedCategory = 1; state.isNotificationActive = false; state.fluidVolumeTarget = 0f 
-                    }, text = { Text("Send/Receive", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                    Tab(selected = state.selectedCategory == 2, onClick = { 
-                        state.selectedCategory = 2; state.isNotificationActive = false; state.fluidVolumeTarget = 1f 
-                    }, text = { Text("Media", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium) })
-                }
-            }
-        }
-    }
-}
-
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
-@Composable
-fun AmbientEdgeLighting(
-    modifier: Modifier = Modifier, shaderString: String, cornerRadius: Float = 120f,
-    appColor: Color, speed: Float, thickness: Float, amplitude: Float, noiseScale: Float, masterAlpha: Float,
-    pillCenterY: Float, pillWidth: Float, pillHeight: Float, gravityX: Float, gravityY: Float,
-    touchX: Float, touchY: Float, touchActive: Float, fluidVolume: Float, transferDirection: Float,
-    effectSize: Float,
-    content: @Composable () -> Unit
-) {
-    var time by remember { mutableFloatStateOf(0f) }
-    var wavePhase by remember { mutableFloatStateOf(0f) }
-    
-    LaunchedEffect(Unit) {
-        val startTime = System.nanoTime()
-        var lastTime = startTime
-        while (true) {
-            awaitFrame()
-            val currentTime = System.nanoTime()
-            val dt = (currentTime - lastTime) / 1_000_000_000f
-            lastTime = currentTime
-            
-            time = (currentTime - startTime) / 1_000_000_000f
-            wavePhase += (dt * speed * 15f) * fluidVolume
-        }
-    }
-
-    val shader = remember(shaderString) { 
-        RuntimeShader(shaderString.filter { it.code in 0..127 }) 
-    }
-
-    Box(
-        modifier = modifier.graphicsLayer {
-            shader.setFloatUniform("in_Resolution", size.width, size.height)
-            shader.setFloatUniform("in_Time", time)
-            shader.setFloatUniform("in_WavePhase", wavePhase) 
-            shader.setFloatUniform("in_CornerRadius", cornerRadius)
-            shader.setFloatUniform("in_AppColor", appColor.red, appColor.green, appColor.blue)
-            shader.setFloatUniform("in_Speed", speed)
-            shader.setFloatUniform("in_Spread", thickness)
-            shader.setFloatUniform("in_Amplitude", amplitude)
-            shader.setFloatUniform("in_NoiseScale", noiseScale)
-            shader.setFloatUniform("in_MasterAlpha", masterAlpha) 
-            shader.setFloatUniform("in_PillCenterY", pillCenterY)
-            shader.setFloatUniform("in_PillWidth", pillWidth)
-            shader.setFloatUniform("in_PillHeight", pillHeight)
-            shader.setFloatUniform("in_Gravity", gravityX, gravityY)
-            shader.setFloatUniform("in_TouchPos", touchX, touchY)
-            shader.setFloatUniform("in_TouchActive", touchActive)
-            shader.setFloatUniform("in_FluidVolume", fluidVolume)
-            shader.setFloatUniform("in_TransferDirection", transferDirection)
-            shader.setFloatUniform("in_EffectSize", effectSize)
-            
-            renderEffect = RenderEffect.createRuntimeShaderEffect(shader, "in_Background").asComposeRenderEffect()
-            clip = true
-        }
-    ) {
-        content()
-    }
-}
+"""
