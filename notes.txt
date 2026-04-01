@@ -1,117 +1,115 @@
-common
+// ==========================================
+// MEDIA PLAYER SHADER: IDLE 3D NORMAL-MAPPED SMOKE
+// ==========================================
+const val WAVE_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+    
+    // Optimized 2D rotation matrix
+    const mat2 m = mat2(0.80, 0.60, -0.60, 0.80);
 
-#define repeat(p,r) (mod(p,r)-r/2.)
-#define TEX(uv) texture(iChannel0, uv).r
-mat2 rot (float a) { return mat2(cos(a),-sin(a),sin(a),cos(a)); }
-float box (vec2 p, vec2 r) { return max(abs(p.x)-r.x,abs(p.y)-r.y); }
-
-
-buffer
-
-    float current = texture(iChannel0, uv).r;
-    
-    // shape
-    float shape = abs(max(abs(p.x)-.1, abs(p.y)-.2))-.01;    
-    
-    // masks
-    float shade = smoothstep(.01,.0,shape);
-    float smoke = pow(uv.y,.5);
-    float flame = 1.-uv.y;
-    float steam = pow(current, 0.2);
-    float cycle = .5 + .5 * sin(iTime-uv.x*3.);
-    
-    vec2 offset = vec2(0);
-    
-    // bubble animation cycle
-    vec2 pp = fract(p*1.-vec2(.5,iTime*.2))-.5;
-    float lpp = length(pp);
-    float mask = smoothstep(.5,.0,lpp);
-    offset += (-pp)*mask*5.;
-    
-    // ignit with bubble
-    shade *= .5+.5*mask;
-    
-    // environment
-    /*
-    vec2 q = p;
-    float c = .05;
-    q.x += floor(q.y/c)*.02+.1;
-    q.y = repeat(q.y, c);
-    shape = max(p.y+.22, abs(box(q, vec2(.1,.002))));
-    shape = min(shape, abs(length(p+vec2(0,.2))-.8));
-    shade = min(1., shade+.75*smoothstep(.01,.0,abs(shape)));
-    */
-    
-    // expansion
-    vec4 data = texture(iChannel0, uv);
-    vec3 unit = vec3(2./iResolution.xy,0);
-    vec3 normal = normalize(vec3(
-        TEX(uv - unit.xz)-TEX(uv + unit.xz),
-        TEX(uv - unit.zy)-TEX(uv + unit.zy),
-        data.x*data.x*data.x)+.001);
-    offset -= normal.xy * smoke;
-    
-    // turbulence
-    vec3 seed = vec3(p*4.,p.y+iTime);
-    float angle = fbm(seed)*6.28*2.;
-    offset += vec2(cos(angle),sin(angle)) * flame;
-    
-    // energy loss
-    vec4 frame = texture(iChannel0, uv+offset/iResolution.xy);
-    shade = max(shade, frame.r-dt*.4);
-    fragColor = vec4(shade);
-}
-
-
-
-image
-
-void mainImage( out vec4 fragColor, in vec2 fragCoord )
-{
-    vec2 uv = fragCoord/iResolution.xy;
-    vec3 blue = texture(iChannel1, fragCoord/1024.).rgb;
-    vec3 color = vec3(0);
-    
-    // masks
-    float shade = texture(iChannel0, uv).r;
-    float flame = pow(shade, 3.);
-    float smoke = pow(shade, .5);
-    float height = flame;
-    
-    // normal
-    float range = 30.*blue.x;
-    vec3 unit = vec3(range/iResolution.xy,0);
-    vec3 normal = normalize(vec3(
-        TEX(uv + unit.xz)-TEX(uv - unit.xz),
-        TEX(uv - unit.zy)-TEX(uv + unit.zy),
-        height));
-        
-    // lighting
-    vec3 tint = .5+.5*cos(vec3(1,2,3)-flame*5.-4.);
-    vec3 dir = normalize(vec3(0,-.5,0.5));
-    float light = dot(normal, dir)*.5+.5;
-    light = pow(light,.5);
-    light *= (uv.y+.5); 
-    color += tint * flame;
-    color += vec3(.5) * light;
-    color *= smoke;
-    color -= .1*blue.x;
-    color += smoothstep(.1,.0,1.-shade);
-    
-    // show layers
-    if (iMouse.z > 0.5) {
-        if (iMouse.x < 20.) {
-            if (uv.y < .25) {
-                color = vec3(shade);
-            } else if (uv.y < .5) {
-                color = normal;
-            } else if (uv.y < .75) {
-                color = tint;
-            } else {
-                color = vec3(.5)*light;
-            }
-        }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
     }
     
-    fragColor = vec4(color,1.0);
-}
+    // 3-octave limit for 60fps mobile rendering
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = m * p * 2.02;
+        f += 0.2500 * noise(p); p = m * p * 2.03;
+        f += 0.1250 * noise(p);
+        return f;
+    }
+    
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    // This replaces the ShaderToy 'Buffer'. 
+    // It generates a procedural density map that perfectly mimics advected fluid.
+    float getShade(vec2 st, float time, float distFromArt, float resX) {
+        vec2 dir = normalize(st + 0.0001);
+        
+        // Smoke physically drifts outward and upward over time
+        vec2 flow = st - (dir * time * 0.1) + vec2(0.0, -time * 0.3);
+        
+        // Deep turbulence (mimicking the buffer's offset logic)
+        vec2 q = vec2(fBm(flow * 3.0), fBm(flow * 3.0 + vec2(2.4, 4.8)));
+        float n = fBm(flow * 4.0 + q * 2.0 - time * 0.2);
+        
+        // Expansion / Energy loss: Dense near the album, dissolving as it floats away
+        float maxReach = 0.25; 
+        float mask = smoothstep(maxReach, 0.0, distFromArt);
+        
+        // Squaring the noise creates chunky, separated plumes of smoke
+        return clamp(pow(n, 1.5) * mask * 2.5, 0.0, 1.0);
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 center = in_Resolution.xy * 0.5;
+        vec2 p = fragCoord - center;
+        
+        // Isotropic coordinates
+        vec2 st = p / in_Resolution.x;
+        vec2 uv = fragCoord / in_Resolution.xy; // Needed for the lighting height multiplier
+        
+        float artSize = ((in_Resolution.x * 0.85) * 0.5) - 2.0;
+        float cornerRadius = in_Resolution.x * 0.045; 
+        
+        float rawDist = sdRoundRect(p, vec2(artSize), cornerRadius);
+        float distFromArt = max(rawDist, 0.0);
+
+        // Absolute UI Masking
+        if (rawDist <= 0.0) return in_Background.eval(fragCoord);
+
+        float time = in_Time * 0.5;
+
+        // ==========================================
+        // 1. MASKS (Directly adapted from your snippet)
+        // ==========================================
+        float shade = getShade(st, time, distFromArt, in_Resolution.x);
+        
+        // If there's no smoke here, exit early to save GPU power
+        if (shade <= 0.01) return in_Background.eval(fragCoord);
+
+        float flame = pow(shade, 3.0);
+        float smoke = pow(shade, 0.5);
+        float height = flame;
+
+        // ==========================================
+        // 2. NORMALS (Directly adapted from your snippet)
+        // ==========================================
+        float eps = 0.005;
+        // Calculating the derivative to fake a 3D surface
+        float dX = getShade(st + vec2(eps, 0.0), time, distFromArt, in_Resolution.x) - getShade(st - vec2(eps, 0.0), time, distFromArt, in_Resolution.x);
+        float dY = getShade(st - vec2(0.0, eps), time, distFromArt, in_Resolution.x) - getShade(st + vec2(0.0, eps), time, distFromArt, in_Resolution.x);
+        
+        vec3 normal = normalize(vec3(dX, dY, height * 0.2 + 0.01));
+
+        // ==========================================
+        // 3. LIGHTING (Directly adapted from your snippet)
+        // ==========================================
+        // Light direction from top-front
+        vec3 dir = normalize(vec3(0.0, -0.5, 0.5));
+        float light = dot(normal, dir) * 0.5 + 0.5;
+        light = pow(light, 0.5);
+        light *= (uv.y + 0.5); 
+        
+        // Instead of the hardcoded ShaderToy colors, we integrate it cleanly into the OS
+        vec3 baseColor = in_AppColor;
+        vec3 tint = mix(vec3(0.02), baseColor * 1.5, flame); // Core burns bright, edges fall to dark smoke
+        
+        vec3 color = tint * flame;
+        // Tint the directional light slightly with the app color for a cohesive look
+        color += baseColor * light * 0.7; 
+        color *= smoke;
+
+        // Mask off the edges of the phone display cleanly
+        float screenMask = smoothstep(0.0, 0.05, min(uv.x, 1.0 - uv.x)) * smoothstep(0.0, 0.05, min(uv.y, 1.0 - uv.y));
+        float finalAlpha = clamp(smoke * screenMask * in_MasterAlpha, 0.0, 1.0);
+        
+        half4 bg = in_Background.eval(fragCoord); 
+        return half4(mix(bg.rgb, color, finalAlpha), 1.0);
+    }
+"""
