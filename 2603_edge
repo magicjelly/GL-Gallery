@@ -1,3 +1,219 @@
+tabmediaplayer 0402
+
+@Composable
+fun TabMediaPlayer(
+    state: EngineState,
+    mediaPlayer: MediaPlayer
+) {
+    val context = LocalContext.current
+    var rawAudioEnergy by remember { mutableFloatStateOf(0f) }
+    var showTuners by remember { mutableStateOf(false) } 
+    
+    var hasAudioPermission by remember { 
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) 
+    }
+    
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted -> hasAudioPermission = isGranted }
+    
+    val smoothedEnergy by animateFloatAsState(
+        targetValue = rawAudioEnergy,
+        animationSpec = tween(durationMillis = 400, easing = LinearOutSlowInEasing), 
+        label = "audio_smoothing"
+    )
+
+    LaunchedEffect(smoothedEnergy, state.isPlaying, state.mediaBaseAmplitude) {
+        if (state.isPlaying && hasAudioPermission) {
+            state.mediaAmplitude = state.mediaBaseAmplitude + (smoothedEnergy * 90f) 
+        } else {
+            state.mediaAmplitude = state.mediaBaseAmplitude
+        }
+    }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { selectedUri ->
+            try {
+                if (mediaPlayer.isPlaying) mediaPlayer.stop()
+                mediaPlayer.reset()
+                mediaPlayer.setDataSource(context, selectedUri)
+                mediaPlayer.prepare()
+                
+                state.mediaDuration = mediaPlayer.duration
+                state.currentPosition = 0
+                state.isPlaying = false
+                rawAudioEnergy = 0f
+                
+                var trackName = "Unknown Track"
+                context.contentResolver.query(selectedUri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameIndex != -1) trackName = cursor.getString(nameIndex)
+                }
+                
+                val mmr = MediaMetadataRetriever()
+                mmr.setDataSource(context, selectedUri)
+                val title = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                val artist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                if (!title.isNullOrEmpty()) {
+                    trackName = if (!artist.isNullOrEmpty()) "$artist - $title" else title
+                }
+                state.currentTrackName = trackName
+
+                val artBytes = mmr.embeddedPicture
+                if (artBytes != null) {
+                    val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                    state.mediaAlbumArt = bitmap.asImageBitmap()
+                    
+                    Palette.from(bitmap).maximumColorCount(128).clearFilters().generate { palette ->
+                        val swatches = palette?.swatches ?: emptyList()
+                        val bestSwatch = swatches.maxByOrNull { swatch ->
+                            val hsl = swatch.hsl
+                            if (hsl[1] < 0.15f || hsl[2] < 0.1f || hsl[2] > 0.9f) -1f else (hsl[1] * 1000f) + (hsl[2] * 500f)
+                        }
+                        val targetColorInt = bestSwatch?.rgb ?: palette?.vibrantSwatch?.rgb ?: android.graphics.Color.WHITE
+                        state.extractedMediaColor = Color(targetColorInt)
+                    }
+                } else {
+                    state.mediaAlbumArt = null
+                    state.extractedMediaColor = Color(0x00111111)
+                }
+                mmr.release()
+            } catch (e: Exception) { e.printStackTrace() }
+        }
+    }
+
+    DisposableEffect(state.isPlaying, hasAudioPermission) {
+        var visualizer: Visualizer? = null
+        if (state.isPlaying && hasAudioPermission) {
+            try {
+                visualizer = Visualizer(mediaPlayer.audioSessionId)
+                visualizer.captureSize = Visualizer.getCaptureSizeRange()[1] 
+                visualizer.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(visualizer: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
+                        waveform?.let {
+                            var sum = 0.0
+                            for (byte in it) {
+                                val amplitude = (byte.toInt() and 0xFF) - 128
+                                sum += (amplitude * amplitude).toDouble()
+                            }
+                            val rms = sqrt(sum / it.size)
+                            val normalizedEnergy = (rms / 128.0).coerceIn(0.0, 1.0).toFloat()
+                            val finalEnergy = (normalizedEnergy * 1.5f).coerceAtMost(1.0f)
+                            Handler(Looper.getMainLooper()).post { rawAudioEnergy = finalEnergy }
+                        }
+                    }
+                    override fun onFftDataCapture(visualizer: Visualizer?, fft: ByteArray?, samplingRate: Int) {}
+                }, Visualizer.getMaxCaptureRate() / 2, true, false)
+                visualizer.enabled = true
+            } catch (e: Exception) { e.printStackTrace() }
+        } else {
+            rawAudioEnergy = 0f
+        }
+        onDispose { visualizer?.enabled = false; visualizer?.release() }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (!hasAudioPermission) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp), 
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Mic permission needed for visualizer", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                    Button(
+                        onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) { Text("Allow", fontSize = MaterialTheme.typography.labelSmall.fontSize) }
+                }
+            }
+        }
+
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            if (showTuners) {
+                // THE TUNER FACE
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Volumetric Physics Tuning", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        IconButton(onClick = { showTuners = false }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Close Tuners", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    
+                    TuningSlider("Convection Rate", state.mediaFlowSpeed, 0.1f..5.0f) { state.mediaFlowSpeed = it }
+                    TuningSlider("Atmos. Decay", state.mediaThickness, 10f..100f) { state.mediaThickness = it }
+                    TuningSlider("Subsurface Bleed", state.mediaBaseAmplitude, 10f..200f) { state.mediaBaseAmplitude = it }
+                    TuningSlider("Volumetric Depth", state.mediaNoiseScale, 0.5f..10.0f) { state.mediaNoiseScale = it }
+                }
+            } else {
+                // THE PLAYBACK FACE
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = state.currentTrackName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(text = if (state.isPlaying) "Playing" else "Paused", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                        
+                        // THE FIX: Explicit Settings Button
+                        IconButton(onClick = { showTuners = true }, modifier = Modifier.padding(end = 8.dp).size(28.dp)) {
+                            Icon(Icons.Rounded.Settings, contentDescription = "Tune Physics", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        
+                        Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(state.extractedMediaColor).border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape))
+                    }
+                    
+                    Slider(
+                        value = if (state.mediaDuration > 0) state.currentPosition.toFloat() / state.mediaDuration.toFloat() else 0f,
+                        onValueChange = { 
+                            val newPos = (it * state.mediaDuration).toInt()
+                            state.currentPosition = newPos
+                            try { mediaPlayer.seekTo(newPos) } catch(e: Exception) {}
+                        },
+                        modifier = Modifier.fillMaxWidth().height(24.dp),
+                        colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary, activeTrackColor = MaterialTheme.colorScheme.primary)
+                    )
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { filePickerLauncher.launch("audio/*") }) {
+                            Icon(Icons.Rounded.FolderOpen, contentDescription = "Load", tint = MaterialTheme.colorScheme.onSurface)
+                        }
+                        IconButton(
+                            onClick = { try { mediaPlayer.start(); state.isPlaying = true; state.fluidVolumeTarget = 1f } catch(e: Exception) {} },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                        IconButton(onClick = { try { mediaPlayer.pause(); state.isPlaying = false } catch(e: Exception) {} }) {
+                            Icon(Icons.Rounded.Pause, contentDescription = "Pause", tint = MaterialTheme.colorScheme.onSurface)
+                        }
+                        IconButton(onClick = { try { mediaPlayer.pause(); mediaPlayer.seekTo(0); state.currentPosition = 0; state.isPlaying = false; state.fluidVolumeTarget = 0f } catch(e: Exception) {} }) {
+                            Icon(Icons.Rounded.Stop, contentDescription = "Stop", tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
 engine.kt
 
 import androidx.compose.runtime.getValue
