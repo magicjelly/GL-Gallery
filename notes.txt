@@ -1,3 +1,105 @@
+const val WAVE_SHADER = """
+    uniform shader in_Background; uniform float2 in_Resolution; uniform float in_Time; uniform float in_WavePhase; uniform float in_CornerRadius; uniform half3 in_AppColor; uniform float in_Speed; uniform float in_Spread; uniform float in_Amplitude; uniform float in_NoiseScale; uniform float in_MasterAlpha; uniform float in_PillCenterY; uniform float in_PillWidth; uniform float in_PillHeight; uniform float2 in_Gravity; uniform float2 in_TouchPos; uniform float in_TouchActive; uniform float in_FluidVolume; uniform float in_TransferDirection; uniform float in_EffectSize;
+    
+    uniform float in_SmokeWidth;
+    uniform float in_SmokeHeight;
+    uniform float in_SmokeDir;
+    
+    const mat2 m = mat2(0.80, 0.60, -0.60, 0.80);
+
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    
+    float fBm(vec2 p) {
+        float f = 0.0;
+        f += 0.5000 * noise(p); p = m * p * 2.02;
+        f += 0.2500 * noise(p); p = m * p * 2.03;
+        f += 0.1250 * noise(p);
+        return f;
+    }
+    
+    float sdRoundRect(vec2 p, vec2 b, float r) {
+        vec2 d = abs(p) - b + vec2(r); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
+    float getShade(vec2 p, float time, float resX) {
+        vec2 st = p / resX;
+        
+        float artSize = ((resX * 0.85) * 0.5) - 2.0;
+        float cornerRadius = resX * 0.045; 
+        
+        vec2 scaleParams = vec2(1.0 / max(in_SmokeWidth, 0.01), 1.0 / max(in_SmokeHeight, 0.01));
+        float scaledDist = max(sdRoundRect(p * scaleParams, vec2(artSize) * scaleParams, cornerRadius), 0.0);
+        float normalizedScaledDist = scaledDist / resX;
+
+        vec2 verticalDrift = vec2(0.0, time * 0.15 * in_SmokeDir); 
+        
+        vec2 q = vec2(
+            fBm(st * 3.0 + verticalDrift + vec2(time * 0.12, 0.0)),
+            fBm(st * 3.0 + verticalDrift + vec2(0.0, time * 0.14))
+        );
+        
+        vec2 flow = (st * 4.0) + (q * 1.5) + verticalDrift;
+        float n = fBm(flow);
+        
+        float mask = exp(-normalizedScaledDist * 5.0);
+        return clamp(pow(n, 2.0) * mask * 3.5, 0.0, 1.0);
+    }
+
+    half4 main(in float2 fragCoord) {
+        vec2 center = in_Resolution.xy * 0.5;
+        vec2 p = fragCoord - center;
+        vec2 uv = fragCoord / in_Resolution.xy; 
+        
+        float artSize = ((in_Resolution.x * 0.85) * 0.5) - 2.0;
+        float cornerRadius = in_Resolution.x * 0.045; 
+        
+        if (max(sdRoundRect(p, vec2(artSize), cornerRadius), 0.0) <= 0.0) {
+            return in_Background.eval(fragCoord);
+        }
+
+        float time = in_Time * 0.5;
+
+        float shade = getShade(p, time, in_Resolution.x);
+        if (shade <= 0.01) return in_Background.eval(fragCoord);
+
+        float flame = pow(shade, 3.0);
+        float smoke = pow(shade, 0.5);
+        float height = flame;
+
+        float eps = 2.0; 
+        float dX = getShade(p + vec2(eps, 0.0), time, in_Resolution.x) - getShade(p - vec2(eps, 0.0), time, in_Resolution.x);
+        float dY = getShade(p + vec2(0.0, eps), time, in_Resolution.x) - getShade(p - vec2(0.0, eps), time, in_Resolution.x);
+        
+        vec3 normal = normalize(vec3(dX, dY, height * 0.2 + 0.01));
+
+        vec3 dir = normalize(vec3(0.0, -0.5, 0.5));
+        float light = dot(normal, dir) * 0.5 + 0.5;
+        light = pow(light, 0.5);
+        light *= (uv.y + 0.5); 
+        
+        vec3 baseColor = in_AppColor;
+        vec3 tint = mix(vec3(0.02), baseColor * 1.5, flame); 
+        
+        vec3 color = tint * flame;
+        color += baseColor * light * 0.7; 
+        color *= smoke;
+
+        float screenMask = smoothstep(0.0, 0.05, min(uv.x, 1.0 - uv.x)) * smoothstep(0.0, 0.05, min(uv.y, 1.0 - uv.y));
+        float finalAlpha = clamp(smoke * screenMask * in_MasterAlpha, 0.0, 1.0);
+        
+        return half4(mix(in_Background.eval(fragCoord).rgb, color, finalAlpha), 1.0);
+    }
+"""
+
+
+
+
+
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
