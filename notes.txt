@@ -20,11 +20,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ChatBubble
-import androidx.compose.material.icons.rounded.Email
-import androidx.compose.material.icons.rounded.Notifications
-import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.*
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
@@ -159,7 +154,6 @@ fun NotificationSyncPrototype() {
     val screenWidthPx = with(density) { config.screenWidthDp.dp.toPx() }
     val screenHeightPx = with(density) { config.screenHeightDp.dp.toPx() }
     
-    // EXPLICIT SAMSUNG BRIEF POPUP GEOMETRY
     val pillWidthPx = with(density) { 288.dp.toPx() }
     val pillHeightPx = with(density) { 36.dp.toPx() }
     val pillCenterYPx = with(density) { pillOffsetY.toPx() + (pillHeightPx / 2f) }
@@ -246,12 +240,12 @@ fun NotificationSyncPrototype() {
 
         if (state.selectedCategory == 0) {
             
-            // DYNAMIC BRIEF POPUP ICON & TEXT MAPPER
-            val appIcon = when (state.selectedAppColor) {
-                Color(0xFF1999FF) -> Icons.Rounded.Email
-                Color(0xFF25D366) -> Icons.Rounded.ChatBubble
-                Color(0xFFFFFC00) -> Icons.Rounded.PhotoCamera
-                else -> Icons.Rounded.Notifications
+            // Replaced Vector Icons with standard Android Framework PNG Resource IDs
+            val appIconRes = when (state.selectedAppColor) {
+                Color(0xFF1999FF) -> android.R.drawable.ic_dialog_email
+                Color(0xFF25D366) -> android.R.drawable.ic_dialog_info
+                Color(0xFFFFFC00) -> android.R.drawable.ic_menu_camera
+                else -> android.R.drawable.sym_def_app_icon
             }
             val appName = when (state.selectedAppColor) {
                 Color(0xFF1999FF) -> "Mail"
@@ -275,19 +269,15 @@ fun NotificationSyncPrototype() {
                     modifier = Modifier.fillMaxSize().padding(horizontal = 5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
+                    // PNG Image physically clamped to 26dp exact footprint
+                    Image(
+                        painter = painterResource(id = appIconRes),
+                        contentDescription = "App Icon",
+                        contentScale = ContentScale.Crop, 
                         modifier = Modifier
                             .size(26.dp)
-                            .background(state.selectedAppColor, CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = appIcon,
-                            contentDescription = "App Icon",
-                            tint = if (state.selectedAppColor == Color(0xFFFFFFFF)) Color.Black else Color.White,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
+                            .clip(CircleShape)
+                    )
                     
                     Spacer(modifier = Modifier.width(8.dp))
                     
