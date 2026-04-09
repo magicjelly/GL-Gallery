@@ -1,0 +1,232 @@
+import android.graphics.RuntimeShader
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+
+// AGSL Shader: The Math behind the "Living Substrate"
+@org.intellij.lang.annotations.Language("AGSL")
+const val PERIMETER_SHADER = """
+    uniform float2 resolution;
+    uniform float time;
+    uniform int scenario; // 0: Share, 1: Tether, 2: AI Vessel, 3: Canvas Pull
+    uniform float2 touchPos;
+    
+    // Polynomial smooth minimum for fluid viscosity (k = viscosity factor)
+    float smin(float a, float b, float k) {
+        float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+        return mix(b, a, h) - k * h * (1.0 - h);
+    }
+    
+    // Distance to edge (SDF)
+    float sdEdge(float2 p, float2 res) {
+        float dTop = p.y;
+        float dBottom = res.y - p.y;
+        float dLeft = p.x;
+        float dRight = res.x - p.x;
+        return min(min(dTop, dBottom), min(dLeft, dRight));
+    }
+
+    half4 main(float2 fragCoord) {
+        float2 uv = fragCoord / resolution;
+        float edgeDist = sdEdge(fragCoord, resolution);
+        
+        half3 color = half3(0.0);
+        float alpha = 0.0;
+        
+        if (scenario == 0) {
+            // 1. Symbiotic Share (Right Edge Pooling)
+            float rightEdge = resolution.x - fragCoord.x;
+            float wave = sin(uv.y * 10.0 - time * 5.0) * 20.0;
+            float fluid = smin(rightEdge + wave, length(fragCoord - float2(resolution.x, resolution.y*0.5)) - 150.0, 80.0);
+            if (fluid < 40.0) {
+                color = half3(0.1, 0.6, 1.0); // Liquid Blue
+                alpha = 1.0 - (fluid / 40.0);
+            }
+        } 
+        else if (scenario == 1) {
+            // 2. Spatial Tether (Top Edge Focus)
+            float topEdge = fragCoord.y;
+            float focusPoint = length(fragCoord - float2(resolution.x * 0.5, 0.0));
+            float flare = smin(topEdge, focusPoint - (sin(time*8.0)*10.0 + 50.0), 100.0);
+            if (flare < 30.0) {
+                color = half3(1.0, 0.8, 0.2); // Magnetic Flare Gold
+                alpha = 1.0 - (flare / 30.0);
+            }
+        }
+        else if (scenario == 2) {
+            // 3. Cognitive Vessel (Bottom AI Swirl)
+            float bottomDist = resolution.y - fragCoord.y;
+            float cornerL = length(fragCoord - float2(0.0, resolution.y));
+            float cornerR = length(fragCoord - float2(resolution.x, resolution.y));
+            float swirl = smin(cornerL, cornerR, 300.0 + sin(time*3.0)*100.0);
+            float finalAI = smin(bottomDist, swirl - 100.0, 150.0);
+            if (finalAI < 60.0) {
+                color = half3(0.8, 0.2, 1.0); // AI Purple
+                alpha = 1.0 - (finalAI / 60.0);
+            }
+        }
+        else if (scenario == 3) {
+            // 4. Continuous Canvas (Top Edge Pull)
+            float topEdge = fragCoord.y;
+            float dropDist = length(fragCoord - touchPos);
+            // Dynamic viscosity based on how far it's pulled
+            float viscosity = max(50.0, touchPos.y * 0.5); 
+            float surfaceTension = smin(topEdge, dropDist - 60.0, viscosity);
+            
+            if (surfaceTension < 20.0) {
+                color = half3(0.1, 0.1, 0.15); // Frosted Dark UI Material
+                alpha = 0.85; 
+            }
+        }
+        
+        // Add artificial inner specular highlight to mimic thick glass
+        float innerHighlight = smoothstep(0.0, 5.0, edgeDist);
+        color += half3(innerHighlight * 0.1 * alpha);
+
+        return half4(color * alpha, alpha);
+    }
+"""
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            PerimeterPrototypeApp()
+        }
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+@Composable
+fun PerimeterPrototypeApp() {
+    var selectedScenario by remember { mutableIntStateOf(0) }
+    var touchPosition by remember { mutableStateOf(Offset(0f, 0f)) }
+    var screenSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Shader Setup
+    val runtimeShader = remember { RuntimeShader(PERIMETER_SHADER) }
+    val time by rememberInfiniteTransition("time").animateFloat(
+        initialValue = 0f,
+        targetValue = 100f,
+        animationSpec = infiniteRepeatable(tween(100000, easing = LinearEasing))
+    )
+
+    // Update Uniforms
+    runtimeShader.setFloatUniform("resolution", screenSize.width.toFloat(), screenSize.height.toFloat())
+    runtimeShader.setFloatUniform("time", time)
+    runtimeShader.setIntUniform("scenario", selectedScenario)
+    
+    // Spring physics for the drop handle (returning to top when released)
+    val animatedTouchX by animateFloatAsState(
+        targetValue = touchPosition.x,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+    )
+    val animatedTouchY by animateFloatAsState(
+        targetValue = if (touchPosition.y > 0f) touchPosition.y else -100f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+    )
+    runtimeShader.setFloatUniform("touchPos", animatedTouchX, animatedTouchY)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { screenSize = it }
+    ) {
+        // 1. Placeholder Wallpaper Layer
+        Image(
+            painter = painterResource(id = android.R.drawable.sym_def_app_icon), // REPLACE with R.drawable.wallpaper_placeholder
+            contentDescription = "Wallpaper",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 2. The Fluid Perimeter Layer (AGSL RenderNode)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(selectedScenario) {
+                    // Only active during Scenario 3: Continuous Canvas
+                    if (selectedScenario == 3) {
+                        detectDragGestures(
+                            onDragStart = { touchPosition = it },
+                            onDragEnd = { touchPosition = Offset(screenSize.width / 2f, -100f) }, // Snap back up
+                            onDragCancel = { touchPosition = Offset(screenSize.width / 2f, -100f) }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            touchPosition = Offset(
+                                x = touchPosition.x + dragAmount.x,
+                                y = touchPosition.y + dragAmount.y
+                            )
+                        }
+                    }
+                }
+                .background(ShaderBrush(runtimeShader))
+        )
+
+        // 3. UX Control Panel
+        ControlPanel(
+            selectedScenario = selectedScenario,
+            onScenarioSelected = { selectedScenario = it },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+}
+
+@Composable
+fun ControlPanel(
+    selectedScenario: Int,
+    onScenarioSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scenarios = listOf("Share", "Tether", "AI Vessel", "Canvas Pull")
+    
+    Surface(
+        modifier = modifier
+            .padding(bottom = 48.dp)
+            .wrapContentSize(),
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.6f),
+        contentColor = Color.White
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            scenarios.forEachIndexed { index, name ->
+                FilterChip(
+                    selected = selectedScenario == index,
+                    onClick = { onScenarioSelected(index) },
+                    label = { Text(name) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color.White,
+                        selectedLabelColor = Color.Black
+                    ),
+                    shape = CircleShape
+                )
+            }
+        }
+    }
+}
