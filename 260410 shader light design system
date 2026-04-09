@@ -1,11 +1,11 @@
 package com.yourpackage.name // Replace with your actual package name
 
+import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -15,7 +15,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -23,134 +24,115 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
-// AGSL Shader: The Math behind the "Living Substrate"
+// The Acrylic Refraction Shader
 @org.intellij.lang.annotations.Language("AGSL")
-const val PERIMETER_SHADER = """
+const val ACRYLIC_SHADER = """
+    uniform shader background; // THIS IS THE WALLPAPER/UI BENEATH
     uniform float2 resolution;
     uniform float time;
-    uniform int scenario; 
+    uniform int scenario;
     uniform float2 touchPos;
-    
-    // 1. Viscosity Engine
+
+    // Polynomial smooth minimum (Viscosity)
     float smin(float a, float b, float k) {
         float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
         return mix(b, a, h) - k * h * (1.0 - h);
     }
     
-    // 2. Procedural Noise (For Caustics/Turbulence)
-    float hash(float2 p) {
-        return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
-    }
+    // Procedural Noise for internal material imperfections
+    float hash(float2 p) { return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
     float noise(float2 p) {
-        float2 i = floor(p);
-        float2 f = fract(p);
+        float2 i = floor(p); float2 f = fract(p);
         float2 u = f * f * (3.0 - 2.0 * f);
         return mix(mix(hash(i + float2(0.0,0.0)), hash(i + float2(1.0,0.0)), u.x),
                    mix(hash(i + float2(0.0,1.0)), hash(i + float2(1.0,1.0)), u.x), u.y);
     }
 
-    // Distance to edge (SDF)
-    float sdEdge(float2 p, float2 res) {
-        float dTop = p.y;
-        float dBottom = res.y - p.y;
-        float dLeft = p.x;
-        float dRight = res.x - p.x;
-        return min(min(dTop, dBottom), min(dLeft, dRight));
+    // Calculate the distance field (shape) of the fluid
+    float getFluidSDF(float2 p) {
+        if (scenario == 0) { // Symbiotic Share (Right Edge)
+            float rightEdge = resolution.x - p.x;
+            float turbulence = noise(p / resolution * 10.0 + time * 2.0) * 20.0;
+            float baseShape = length(p - float2(resolution.x, resolution.y*0.5)) - 150.0;
+            return smin(rightEdge + turbulence, baseShape, 60.0);
+        } else if (scenario == 3) { // Canvas Pull (Top Edge)
+            float topEdge = p.y;
+            float dropDist = length(p - touchPos);
+            float viscosity = max(50.0, touchPos.y * 0.5); 
+            return smin(topEdge, dropDist - 60.0, viscosity);
+        }
+        return p.y; // Fallback
+    }
+
+    // Calculate the surface normal (slope) for refraction
+    float2 getNormal(float2 p) {
+        float e = 1.0; // Sample distance
+        float d = getFluidSDF(p);
+        float dx = getFluidSDF(p + float2(e, 0.0)) - d;
+        float dy = getFluidSDF(p + float2(0.0, e)) - d;
+        return normalize(float2(dx, dy) + 0.0001); // avoid div by zero
     }
 
     half4 main(float2 fragCoord) {
-        float2 uv = fragCoord / resolution;
-        float edgeDist = sdEdge(fragCoord, resolution);
-        
-        half3 color = half3(0.0);
-        float alpha = 0.0;
-        
-        if (scenario == 0) {
-            // TIER 3 HERO MOMENT: Symbiotic Share (Chromatic Dispersion & Caustics)
-            float rightEdge = resolution.x - fragCoord.x;
-            
-            // Internal Turbulence 
-            float turbulence = noise(uv * 10.0 + time * 2.0) * 30.0;
-            float baseShape = length(fragCoord - float2(resolution.x, resolution.y*0.5)) - 150.0;
-            
-            // Chromatic Dispersion Offset (Simulating high-energy data transfer)
-            float dispersion = 8.0 * sin(time * 5.0); 
-            
-            // Calculate fluid mass for R, G, B separately to create spectrum
-            float fluidR = smin(rightEdge + turbulence, baseShape + dispersion, 80.0);
-            float fluidG = smin(rightEdge + turbulence, baseShape, 80.0);
-            float fluidB = smin(rightEdge + turbulence, baseShape - dispersion, 80.0);
-            
-            // Additive blending for the glowing core
-            if (fluidR < 40.0) { color.r = 1.0 - (fluidR / 40.0); alpha = max(alpha, color.r); }
-            if (fluidG < 40.0) { color.g = 0.8 - (fluidG / 40.0); alpha = max(alpha, color.g); }
-            if (fluidB < 40.0) { color.b = 1.0 - (fluidB / 40.0); alpha = max(alpha, color.b); }
-            
-            // Specular core blowout
-            float core = smin(rightEdge, baseShape, 40.0);
-            if (core < 10.0) {
-                color += half3(0.5); 
-            }
-        } 
-        else if (scenario == 1) {
-            // TIER 2 SYSTEM STATE: Spatial Tether (Top Edge Focus)
-            float topEdge = fragCoord.y;
-            float focusPoint = length(fragCoord - float2(resolution.x * 0.5, 0.0));
-            float flare = smin(topEdge, focusPoint - (sin(time*8.0)*10.0 + 50.0), 100.0);
-            if (flare < 30.0) {
-                color = half3(1.0, 0.8, 0.2); 
-                alpha = 1.0 - (flare / 30.0);
-            }
-        }
-        else if (scenario == 2) {
-            // TIER 2 SYSTEM STATE: Cognitive Vessel (Bottom AI Swirl)
-            float bottomDist = resolution.y - fragCoord.y;
-            float cornerL = length(fragCoord - float2(0.0, resolution.y));
-            float cornerR = length(fragCoord - float2(resolution.x, resolution.y));
-            float swirl = smin(cornerL, cornerR, 300.0 + sin(time*3.0)*100.0);
-            float finalAI = smin(bottomDist, swirl - 100.0, 150.0);
-            if (finalAI < 60.0) {
-                color = half3(0.8, 0.2, 1.0); 
-                alpha = 1.0 - (finalAI / 60.0);
-            }
-        }
-        else if (scenario == 3) {
-            // TIER 1 UTILITY: Continuous Canvas Pull (Quick Panel / Gestures)
-            float topEdge = fragCoord.y;
-            float dropDist = length(fragCoord - touchPos);
-            // Dynamic viscosity based on how far it's pulled
-            float viscosity = max(50.0, touchPos.y * 0.5); 
-            
-            // Clean, polite, heavy glass. No chromatic aberration here.
-            float surfaceTension = smin(topEdge, dropDist - 60.0, viscosity);
-            
-            if (surfaceTension < 20.0) {
-                color = half3(0.1, 0.1, 0.15); // Frosted Dark UI Material
-                alpha = 0.90; 
-                
-                // Sub-surface light reflection
-                float reflection = noise(uv * 20.0 - time) * 0.1;
-                color += half3(reflection);
-            }
-        }
-        
-        // Universal Glass Refraction Edge (Applies to all tiers)
-        float innerHighlight = smoothstep(0.0, 5.0, edgeDist);
-        color += half3(innerHighlight * 0.15 * alpha);
+        float d = getFluidSDF(fragCoord);
 
-        return half4(color * alpha, alpha);
+        // 1. BOUNDARY CHECK: If outside the fluid, just draw the wallpaper normally.
+        // We use 30.0 as the outer boundary of our shape.
+        if (d > 30.0) {
+            return background.eval(fragCoord);
+        }
+
+        // 2. THE ACRYLIC EFFECT (Inside the fluid bounds)
+        float2 normal = getNormal(fragCoord);
+        
+        // Refraction math: bend the coordinate based on the slope of the fluid
+        // The closer to the center (lower 'd'), the stronger the bend.
+        float thickness = 40.0; 
+        float2 refractedCoord = fragCoord - normal * thickness * (1.0 - max(d, 0.0)/30.0);
+        
+        // Sample the wallpaper at the BENT coordinate
+        half4 materialColor = background.eval(refractedCoord);
+
+        // 3. SPECULAR HIGHLIGHT (The shiny glass edge)
+        // Simulate a light source from the top left
+        float2 lightDir = normalize(float2(-1.0, -1.0)); 
+        float diffuse = max(dot(normal, lightDir), 0.0);
+        // Extremely tight specular exponent for a sharp glass reflection
+        float specular = pow(diffuse, 30.0) * 0.9; 
+
+        // 4. CHROMATIC DISPERSION (Edge rainbow on fast data transfer)
+        if (scenario == 0) {
+            float edgeFactor = smoothstep(10.0, 30.0, d);
+            half4 rSample = background.eval(refractedCoord + normal * 10.0 * edgeFactor);
+            half4 bSample = background.eval(refractedCoord - normal * 10.0 * edgeFactor);
+            materialColor.rgb = half3(rSample.r, materialColor.g, bSample.b);
+            
+            // Add a slight blue-ish energy tint for the transfer
+            materialColor.rgb += half3(0.0, 0.1, 0.2); 
+        } else if (scenario == 3) {
+            // Dark frosted tint for the UI pull
+            materialColor.rgb *= 0.7; // Darken the refracted background slightly
+        }
+
+        // Add the shiny reflection on top of the material
+        materialColor.rgb += half3(specular);
+
+        // Anti-alias the outer edge to blend perfectly with the un-distorted wallpaper
+        float edgeAlpha = smoothstep(30.0, 28.0, d);
+        
+        // Blend the acrylic material over the raw background
+        return mix(background.eval(fragCoord), materialColor, edgeAlpha);
     }
 """
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun PerimeterPrototypeApp() {
-    var selectedScenario by remember { mutableIntStateOf(0) }
+    var selectedScenario by remember { mutableIntStateOf(3) } // Default to Canvas Pull
     var touchPosition by remember { mutableStateOf(Offset(0f, 0f)) }
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // Shader Setup
-    val runtimeShader = remember { RuntimeShader(PERIMETER_SHADER) }
+    val runtimeShader = remember { RuntimeShader(ACRYLIC_SHADER) }
     val time by rememberInfiniteTransition(label = "time").animateFloat(
         initialValue = 0f,
         targetValue = 100f,
@@ -163,16 +145,13 @@ fun PerimeterPrototypeApp() {
     runtimeShader.setFloatUniform("time", time)
     runtimeShader.setIntUniform("scenario", selectedScenario)
     
-    // Spring physics for the drop handle (Canvas Pull scenario)
     val animatedTouchX by animateFloatAsState(
         targetValue = touchPosition.x,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-        label = "touchX"
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow), label = "x"
     )
     val animatedTouchY by animateFloatAsState(
         targetValue = if (touchPosition.y > 0f) touchPosition.y else -100f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-        label = "touchY"
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium), label = "y"
     )
     runtimeShader.setFloatUniform("touchPos", animatedTouchX, animatedTouchY)
 
@@ -180,39 +159,44 @@ fun PerimeterPrototypeApp() {
         modifier = Modifier
             .fillMaxSize()
             .onSizeChanged { screenSize = it }
+            .pointerInput(selectedScenario) {
+                if (selectedScenario == 3) {
+                    detectDragGestures(
+                        onDragStart = { touchPosition = it },
+                        onDragEnd = { touchPosition = Offset(screenSize.width / 2f, -100f) },
+                        onDragCancel = { touchPosition = Offset(screenSize.width / 2f, -100f) }
+                    ) { change, dragAmount ->
+                        change.consume()
+                        touchPosition = Offset(touchPosition.x + dragAmount.x, touchPosition.y + dragAmount.y)
+                    }
+                }
+            }
     ) {
-        // 1. Placeholder Wallpaper Layer
-        Image(
-            painter = painterResource(id = android.R.drawable.sym_def_app_icon), // REPLACE with your wallpaper_placeholder drawable ID
-            contentDescription = "Wallpaper",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // 2. The Fluid Perimeter Layer (AGSL RenderNode)
+        // THE MAGIC HAPPENS HERE: 
+        // We apply the RenderEffect to the Box containing the Image.
+        // This takes the Image, feeds it into the "background" uniform of our shader, 
+        // runs our acrylic math, and renders the result.
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(selectedScenario) {
-                    // Touch physics are only active during Scenario 3: Canvas Pull
-                    if (selectedScenario == 3) {
-                        detectDragGestures(
-                            onDragStart = { touchPosition = it },
-                            onDragEnd = { touchPosition = Offset(screenSize.width / 2f, -100f) }, // Snap back up
-                            onDragCancel = { touchPosition = Offset(screenSize.width / 2f, -100f) }
-                        ) { change, dragAmount ->
-                            change.consume()
-                            touchPosition = Offset(
-                                x = touchPosition.x + dragAmount.x,
-                                y = touchPosition.y + dragAmount.y
-                            )
-                        }
-                    }
+                .graphicsLayer {
+                    renderEffect = RenderEffect.createRuntimeShaderEffect(
+                        runtimeShader,
+                        "background" // Matches the uniform name in AGSL
+                    ).asComposeRenderEffect()
                 }
-                .background(ShaderBrush(runtimeShader))
-        )
+        ) {
+            Image(
+                painter = painterResource(id = android.R.drawable.sym_def_app_icon), // REPLACE WITH YOUR WALLPAPER
+                contentDescription = "Wallpaper",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            
+            // You can add other UI elements here (like icons or text). 
+            // The shader will refract them too, making the acrylic look incredibly real!
+        }
 
-        // 3. UX Control Panel
         ControlPanel(
             selectedScenario = selectedScenario,
             onScenarioSelected = { selectedScenario = it },
@@ -227,7 +211,9 @@ fun ControlPanel(
     onScenarioSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val scenarios = listOf("Share", "Tether", "AI Vessel", "Canvas Pull")
+    // Simplified to the two most impactful visual tests for Acrylic
+    val scenarios = listOf("Hero Share", "Canvas Pull")
+    val actualIndices = listOf(0, 3) 
     
     Surface(
         modifier = modifier
@@ -241,10 +227,10 @@ fun ControlPanel(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            scenarios.forEachIndexed { index, name ->
+            scenarios.forEachIndexed { idx, name ->
                 FilterChip(
-                    selected = selectedScenario == index,
-                    onClick = { onScenarioSelected(index) },
+                    selected = selectedScenario == actualIndices[idx],
+                    onClick = { onScenarioSelected(actualIndices[idx]) },
                     label = { Text(name) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Color.White,
