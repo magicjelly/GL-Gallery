@@ -1,4 +1,4 @@
-package com.samsung.oneui.motion.prototype // Adjust as needed
+package com.samsung.oneui.motion.prototype
 
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -69,10 +69,10 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     val rawInput: StateFlow<Float> = _rawInput 
 
     private val _realTimePeak = MutableStateFlow(0f)
-    val realTimePeak: StateFlow<Float> = _realTimePeak // Reactive Energy
+    val realTimePeak: StateFlow<Float> = _realTimePeak 
 
     private val _smoothedResonance = MutableStateFlow(0f)
-    val smoothedResonance: StateFlow<Float> = _smoothedResonance // Deep Atmosphere
+    val smoothedResonance: StateFlow<Float> = _smoothedResonance 
 
     private var currentEMAValue = 0f
     private var previousFilteredSample = 0f
@@ -127,14 +127,14 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE CINEMATIC BOKEH SHADER (AGSL)
+// 2. THE CINEMATIC UNIFORM BOKEH SHADER
 // ==========================================
 const val BOKEH_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_energy;       // Real-time Peak
-    uniform float u_resonance;    // Smoothed Swell
-    uniform float3 u_artColor;    // Theme Primary
-    uniform float u_posOffset;    // Physics Momentum
+    uniform float u_energy;       
+    uniform float u_resonance;    
+    uniform float3 u_artColor;    
+    uniform float u_posOffset;    
     
     float hash21(float2 p) {
         p = fract(p*float2(234.34, 435.12));
@@ -142,27 +142,28 @@ const val BOKEH_SHADER_SRC = """
         return fract(p.x*p.y);
     }
 
-    // Advanced Layering: Creates the dense, overlapping orb feel from the reference image
-    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase, float brightness) {
+    // Fixed logic to create UNIFORM discs like the reference image
+    float drawBokehLayer(float2 uv, float gridSize, float offset, float blurRadius, float sizeBase, float intensity) {
         float2 st = uv * gridSize;
         float2 gridId = floor(st);
         float2 localUv = fract(st) - 0.5;
         
         float rnd = hash21(gridId);
-        // Randomize initial position within cell for "natural clusters"
-        float2 jitter = float2(hash21(gridId + 0.1), hash21(gridId + 0.2)) * 0.4 - 0.2;
+        float2 jitter = float2(hash21(gridId + 0.1), hash21(gridId + 0.2)) * 0.6 - 0.3;
         
-        float t = offset + rnd * 12.56;
-        float2 p = jitter + float2(sin(t * 0.8), cos(t * 0.5)) * 0.25;
+        float t = offset + rnd * 10.0;
+        float2 p = jitter + float2(sin(t * 0.7), cos(t * 0.4)) * 0.3;
         
         float d = distance(localUv, p);
         
-        // Premium Falloff: Bright core with very soft edges
-        float orb = smoothstep(sizeBase, sizeBase - blur, d);
-        // Subtle shimmer based on time and individual randomness
-        float shimmer = 0.5 + 0.5 * sin(offset * 1.5 + rnd * 20.0);
+        // --- THE UNIFORM FIX ---
+        // Instead of a simple smoothstep from center, we create a solid disc 
+        // with a soft edge (Circle of Confusion)
+        float edge = sizeBase;
+        float mask = 1.0 - smoothstep(edge - blurRadius, edge, d);
         
-        return orb * shimmer * brightness;
+        float shimmer = 0.8 + 0.2 * sin(offset * 2.0 + rnd * 15.0);
+        return mask * shimmer * intensity;
     }
 
     half4 main(float2 fragCoord) {
@@ -171,52 +172,45 @@ const val BOKEH_SHADER_SRC = """
         
         half3 finalColor = half3(0.0);
         
-        // LAYER 1: Deep Background Bokeh (Huge, Soft, High Density)
-        // Parallax speed: 20%
-        float bokehSize = 0.2 + u_resonance * 0.5;
-        float b1 = drawLayer(uv, 4.0, u_posOffset * 0.2, 0.8, bokehSize, 0.4);
-        float b2 = drawLayer(uv + 0.5, 3.5, u_posOffset * 0.15, 0.9, bokehSize * 0.8, 0.3);
-        finalColor += half3(u_artColor) * half(b1 + b2);
+        // LAYER 1: Large Atmospheric Orbs (Very Blurry, Uniform)
+        float bgSize = 0.25 + u_resonance * 0.4;
+        float l1 = drawBokehLayer(uv, 4.5, u_posOffset * 0.25, 0.45, bgSize, 0.35);
+        float l2 = drawBokehLayer(uv + 0.37, 3.8, u_posOffset * 0.18, 0.55, bgSize * 1.1, 0.25);
+        finalColor += half3(u_artColor) * half(l1 + l2);
 
-        // LAYER 2: Mid-ground "Identity" Orbs
-        // Parallax speed: 50%
-        float midSize = 0.1 + u_resonance * 0.2;
-        float m1 = drawLayer(uv, 7.0, u_posOffset * 0.5, 0.4, midSize, 0.5);
+        // LAYER 2: Mid-ground "Clarity" Orbs
+        float mSize = 0.12 + u_resonance * 0.15;
+        float m1 = drawBokehLayer(uv, 8.0, u_posOffset * 0.6, 0.15, mSize, 0.5);
         finalColor += half3(u_artColor) * half(m1);
 
-        // LAYER 3: Foreground "Energy Dust" (Sharp, Fast, Reactive)
-        // Parallax speed: 120%
-        float dustSize = 0.02 + u_energy * 0.08;
-        float d1 = drawLayer(uv, 16.0, u_posOffset * 1.2, 0.05, dustSize, 1.0);
-        finalColor += half3(u_artColor) * half(d1 * (0.3 + u_energy * 1.5));
+        // LAYER 3: Sharp Energy Specs (Rhythm)
+        float dSize = 0.04 + u_energy * 0.06;
+        float d1 = drawBokehLayer(uv, 18.0, u_posOffset * 1.3, 0.05, dSize, 1.0);
+        finalColor += half3(u_artColor) * half(d1 * (0.2 + u_energy * 1.4));
         
-        // Final Color Correction
+        // Final Tone Mapping
         float centerDist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
-        half3 baseGlow = half3(u_artColor) * 0.12; // Atmospheric lift
-        finalColor += baseGlow;
-        finalColor *= smoothstep(1.2, 0.3, centerDist); // Vignette
+        half3 ambient = half3(u_artColor) * 0.1;
+        finalColor += ambient;
+        finalColor *= smoothstep(1.3, 0.3, centerDist);
 
         return half4(finalColor, 1.0);
     }
 """
 
 // ==========================================
-// 3. UI COMPONENTS & TELEMETRY
+// 3. UI COMPONENTS & PROTOTYPE
 // ==========================================
 @Composable
 fun DataBar(label: String, value: Float, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
         Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(150.dp))
         Canvas(modifier = Modifier.height(6.dp).weight(1f).clip(RoundedCornerShape(3.dp))) {
-            drawRect(color = Color.DarkGray)
-            drawRect(color = color, size = size.copy(width = size.width * value))
+            drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
         }
     }
 }
 
-// ==========================================
-// 4. MAIN COMPOSE PROTOTYPE
-// ==========================================
 @OptIn(UnstableApi::class)
 @Composable
 fun FluidMediaPrototype() {
@@ -225,11 +219,10 @@ fun FluidMediaPrototype() {
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var currentFluidColor by remember { mutableStateOf(Color(0xFFE91E63)) } // Default Vibrant
+    var currentFluidColor by remember { mutableStateOf(Color(0xFFE91E63)) }
     var accumulatedFlowOffset by remember { mutableFloatStateOf(0f) }
     var isPresentationMode by remember { mutableStateOf(false) }
 
-    // Control Room States
     var showTelemetry by remember { mutableStateOf(true) }
     var gainState by remember { mutableFloatStateOf(audioEngine.audioGain) }
     var attackState by remember { mutableFloatStateOf(audioEngine.attackAlpha) }
@@ -242,7 +235,10 @@ fun FluidMediaPrototype() {
                     val bitmap = BitmapFactory.decodeByteArray(it, 0, it.size)
                     currentArtBitmap = bitmap
                     Palette.from(bitmap).generate { p ->
-                        currentFluidColor = Color(p?.getVibrantColor(0xFFE91E63) ?: 0xFFE91E63)
+                        // FIX: Explicitly cast hex to Int to avoid Long mismatch
+                        val defaultColor = 0xFFE91E63.toInt()
+                        val vibrant = p?.getVibrantColor(defaultColor) ?: defaultColor
+                        currentFluidColor = Color(vibrant)
                     }
                 }
             }
@@ -264,13 +260,12 @@ fun FluidMediaPrototype() {
         while (true) {
             withFrameMillis { 
                 val target = if (exoPlayer.isPlaying) realTimePeak else 0f
-                accumulatedFlowOffset += 0.003f + (target * 0.02f)
+                accumulatedFlowOffset += 0.003f + (target * 0.022f)
             }
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // RENDER AREA
         Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.55f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 bokehShader.setFloatUniform("u_resolution", size.width, size.height)
@@ -282,38 +277,30 @@ fun FluidMediaPrototype() {
             }
             if (currentArtBitmap != null) {
                 Image(bitmap = currentArtBitmap!!.asImageBitmap(), contentDescription = null, 
-                    modifier = Modifier.size(if (isPresentationMode) 260.dp else 180.dp).clip(RoundedCornerShape(24.dp)))
+                    modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(24.dp)))
             }
         }
 
-        // CONTROL ROOM
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF0A0A0A)).padding(20.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("CONTROL ROOM", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("DYNAMIC PROTOTYPE", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
-                        Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
+                        Text("OPEN AUDIO", style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-                
                 if (showTelemetry) {
                     DataBar("RAW INPUT", rawInput, Color.DarkGray)
-                    DataBar("REAL-TIME PEAK (BEAT)", realTimePeak, Color(0xFFFF5722))
-                    DataBar("RESONANCE (SWELL)", smoothedResonance, Color(0xFF00E5FF))
+                    DataBar("PEAK (REAL-TIME)", realTimePeak, Color(0xFFFF5722))
+                    DataBar("RESONANCE (LPF+EMA)", smoothedResonance, Color(0xFF00E5FF))
                 }
-                
-                Spacer(modifier = Modifier.height(16.dp))
-
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(showTelemetry, { showTelemetry = it }, modifier = Modifier.scale(0.7f))
-                    Text("Show Live Telemetry", color = Color.LightGray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+                    Text("Telemetry Details", color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
                 }
-
-                Text("Bass Gain: ${String.format("%.1fx", gainState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
+                Text("Bass Gain: ${String.format("%.1fx", gainState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                 Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..30f)
-
                 Row(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Attack: ${String.format("%.2f", attackState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
@@ -327,12 +314,10 @@ fun FluidMediaPrototype() {
                 }
             }
         }
-
-        // BOTTOM TOGGLE
         Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
             Button(onClick = { isPresentationMode = !isPresentationMode }, 
                 colors = ButtonDefaults.buttonColors(containerColor = if (isPresentationMode) Color.DarkGray else currentFluidColor.copy(alpha = 0.4f))) {
-                Text(if (isPresentationMode) "EXIT PRESENTATION" else "ENTER PRESENTATION MODE")
+                Text(if (isPresentationMode) "DEBUG VIEW" else "PRESENTATION MODE")
             }
         }
     }
