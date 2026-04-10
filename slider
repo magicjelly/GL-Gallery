@@ -1,4 +1,4 @@
-package com.yourpackagename // IMPORTANT: Replace with your actual package name
+package com.yourpackagename // REPLACE with your actual package name
 
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
@@ -39,7 +41,7 @@ import java.nio.ByteBuffer
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
-    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -53,14 +55,14 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. THE MATH ENGINE (EMA SMOOTHING & GAIN)
+// 1. THE MATH ENGINE (LPF + EMA + GAIN)
 // ==========================================
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var attackAlpha: Float = 0.05f
     var releaseAlpha: Float = 0.005f
     var useRawData: Boolean = false
-    var audioGain: Float = 4.0f 
+    var audioGain: Float = 8.0f // Higher gain because LPF reduces signal amplitude
 
     private val _smoothedEnergy = MutableStateFlow(0f)
     val smoothedEnergy: StateFlow<Float> = _smoothedEnergy
@@ -69,9 +71,14 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     val rawEnergy: StateFlow<Float> = _rawEnergy
 
     private var currentTrend = 0f
+    
+    // Low-Pass Filter State
+    private var previousFilteredSample = 0f
+    private val lpfAlpha = 0.05f // Cutoff for bass/kick drum isolation
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
         currentTrend = 0f
+        previousFilteredSample = 0f
         _smoothedEnergy.value = 0f
         _rawEnergy.value = 0f
     }
@@ -85,8 +92,13 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 
         buffer.position(0)
         while (buffer.position() < limit - 1) {
-            val sample = buffer.short.toFloat() / Short.MAX_VALUE
-            sumSquares += (sample * sample)
+            val rawSample = buffer.short.toFloat() / Short.MAX_VALUE
+            
+            // First-Order IIR Low-Pass Filter
+            val filteredSample = previousFilteredSample + lpfAlpha * (rawSample - previousFilteredSample)
+            previousFilteredSample = filteredSample
+            
+            sumSquares += (filteredSample * filteredSample)
             sampleCount++
         }
 
@@ -107,13 +119,13 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE AGSL SHADER (COLOR EXTRACTED WEATHER)
+// 2. THE AGSL SHADER (CONTINUOUS FLOW)
 // ==========================================
 const val FLUID_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_time;
     uniform float u_energy;
-    uniform float3 u_artColor; // NEW: Receives color from the Palette API
+    uniform float3 u_artColor;
+    uniform float u_flowOffset; 
     
     float random (in float2 _st) {
         return fract(sin(dot(_st.xy, float2(12.9898,78.233))) * 43758.5453123);
@@ -134,8 +146,8 @@ const val FLUID_SHADER_SRC = """
         float2 uv = fragCoord / u_resolution.xy;
         uv.x *= u_resolution.x / u_resolution.y;
         
-        float currentFlow = u_time * (0.2 + (u_energy * 2.5));
-        float2 pos = float2(uv.x * 3.0, uv.y * 3.0 - currentFlow);
+        // Use accumulated flowOffset from CPU to ensure perfect continuity
+        float2 pos = float2(uv.x * 2.5, uv.y * 2.5 - u_flowOffset);
         
         float n = noise(pos);
         n += noise(pos * 2.0) * 0.5;
@@ -144,9 +156,8 @@ const val FLUID_SHADER_SRC = """
         
         n = smoothstep(0.35, 0.65, n);
         
-        // Dynamically apply the album art color
-        half3 baseColor = half3(u_artColor) * 0.15; // Darker atmospheric base
-        half3 energyColor = half3(u_artColor) * (u_energy * 4.0); // Bright energy highlights
+        half3 baseColor = half3(u_artColor) * 0.15; 
+        half3 energyColor = half3(u_artColor) * (u_energy * 3.5); 
         
         half3 finalColor = mix(baseColor, baseColor + energyColor, n);
         
@@ -169,13 +180,10 @@ fun TelemetryMeter(rawEnergy: Float, smoothedEnergy: Float, showLightning: Boole
         AnimatedVisibility(visible = showLightning) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Raw Input (Spikes):   ", color = Color.Gray, modifier = Modifier.width(140.dp))
+                    Text("Bass Input (LPF):    ", color = Color.Gray, modifier = Modifier.width(140.dp))
                     Canvas(modifier = Modifier.height(12.dp).weight(1f).clip(RoundedCornerShape(6.dp))) {
                         drawRect(color = Color.DarkGray)
-                        drawRect(
-                            color = Color(0xFFFF5722),
-                            size = size.copy(width = size.width * rawEnergy)
-                        )
+                        drawRect(color = Color(0xFFFF5722), size = size.copy(width = size.width * rawEnergy))
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
@@ -183,13 +191,10 @@ fun TelemetryMeter(rawEnergy: Float, smoothedEnergy: Float, showLightning: Boole
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Shader Input (Trend): ", color = Color.White, modifier = Modifier.width(140.dp))
+            Text("Shader Input (EMA):  ", color = Color.White, modifier = Modifier.width(140.dp))
             Canvas(modifier = Modifier.height(12.dp).weight(1f).clip(RoundedCornerShape(6.dp))) {
                 drawRect(color = Color.DarkGray)
-                drawRect(
-                    color = Color(0xFF00E5FF),
-                    size = size.copy(width = size.width * smoothedEnergy)
-                )
+                drawRect(color = Color(0xFF00E5FF), size = size.copy(width = size.width * smoothedEnergy))
             }
         }
     }
@@ -198,19 +203,25 @@ fun TelemetryMeter(rawEnergy: Float, smoothedEnergy: Float, showLightning: Boole
 // ==========================================
 // 4. MAIN PROTOTYPE COMPOSE SCREEN
 // ==========================================
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@OptIn(UnstableApi::class)
 @Composable
 fun FluidMediaPrototype() {
     val context = LocalContext.current
-    
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
-
-    // Color and Art States
+    
+    // States
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var currentFluidColor by remember { mutableStateOf(Color.Cyan) }
+    var fluidOffset by remember { mutableFloatStateOf(0f) }
+    var isPresentationMode by remember { mutableStateOf(false) }
+    var attackState by remember { mutableFloatStateOf(audioEngine.attackAlpha) }
+    var releaseState by remember { mutableFloatStateOf(audioEngine.releaseAlpha) }
+    var useRawData by remember { mutableStateOf(audioEngine.useRawData) }
+    var showLightningTelemetry by remember { mutableStateOf(false) }
+    var gainState by remember { mutableFloatStateOf(audioEngine.audioGain) }
 
-    // Listen to ExoPlayer Metadata to extract Artwork and Color
+    // Listen to ExoPlayer Metadata
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
@@ -218,10 +229,7 @@ fun FluidMediaPrototype() {
                 if (artworkBytes != null) {
                     val bitmap = BitmapFactory.decodeByteArray(artworkBytes, 0, artworkBytes.size)
                     currentArtBitmap = bitmap
-                    
-                    // Generate palette off the main thread implicitly
                     Palette.from(bitmap).generate { palette ->
-                        // Fallback to Cyan if a vibrant color can't be extracted
                         val extracted = palette?.getVibrantColor(Color.Cyan.toArgb()) ?: Color.Cyan.toArgb()
                         currentFluidColor = Color(extracted)
                     }
@@ -238,16 +246,10 @@ fun FluidMediaPrototype() {
         }
     }
 
-    var selectedAudioUri by remember { mutableStateOf<Uri?>(null) }
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        selectedAudioUri = uri
-    }
-
-    LaunchedEffect(selectedAudioUri) {
-        selectedAudioUri?.let { uri ->
-            exoPlayer.setMediaItem(MediaItem.fromUri(uri))
+    // File Picker
+    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let {
+            exoPlayer.setMediaItem(MediaItem.fromUri(it))
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
         }
@@ -255,185 +257,78 @@ fun FluidMediaPrototype() {
 
     val audioEnergy by audioEngine.smoothedEnergy.collectAsState()
     val rawEnergy by audioEngine.rawEnergy.collectAsState()
-    
-    var isPresentationMode by remember { mutableStateOf(false) }
-    var attackState by remember { mutableStateOf(audioEngine.attackAlpha) }
-    var releaseState by remember { mutableStateOf(audioEngine.releaseAlpha) }
-    var useRawData by remember { mutableStateOf(audioEngine.useRawData) }
-    var showLightningTelemetry by remember { mutableStateOf(false) }
-    var gainState by remember { mutableStateOf(audioEngine.audioGain) }
-
     val fluidShader = remember { RuntimeShader(FLUID_SHADER_SRC) }
-    var timeMillis by remember { mutableStateOf(0f) }
 
+    // THE ACCUMULATOR LOOP
     LaunchedEffect(Unit) {
         while (true) {
-            withFrameMillis { frameTime ->
-                timeMillis = frameTime / 1000f
+            withFrameMillis { 
+                val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0f
+                // Fixed base speed + audio surge
+                fluidOffset += 0.002f + (targetEnergy * 0.015f)
             }
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        
-        // --- TOP: The Visual Output ---
-        Box(
-            modifier = Modifier
-                .weight(if (isPresentationMode) 1f else 0.5f)
-                .fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
+        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.5f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 fluidShader.setFloatUniform("u_resolution", size.width, size.height)
-                fluidShader.setFloatUniform("u_time", timeMillis)
-                
-                // Pass dynamic color to the shader
+                fluidShader.setFloatUniform("u_flowOffset", fluidOffset)
                 fluidShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
-                
-                val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0.02f
-                fluidShader.setFloatUniform("u_energy", targetEnergy)
-
+                fluidShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) audioEnergy else 0.02f)
                 drawRect(brush = ShaderBrush(fluidShader))
             }
             
-            // Display the extracted Album Art
             if (currentArtBitmap != null) {
                 Image(
-                    bitmap = currentArtBitmap!!.asImageBitmap(),
-                    contentDescription = "Album Art",
-                    modifier = Modifier
-                        .size(if (isPresentationMode) 280.dp else 180.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                    bitmap = currentArtBitmap!!.asImageBitmap(), 
+                    contentDescription = null, 
+                    modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(16.dp))
                 )
             } else {
-                Box(
-                    modifier = Modifier
-                        .size(if (isPresentationMode) 280.dp else 180.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.DarkGray.copy(alpha = 0.8f))
-                )
+                Box(modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(16.dp)).background(Color.DarkGray))
             }
         }
 
-        // --- BOTTOM: The Control Room ---
         AnimatedVisibility(visible = !isPresentationMode) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF121212))
-                    .padding(24.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(), 
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF121212)).padding(24.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Control Room", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                    Button(
-                        onClick = { filePickerLauncher.launch("audio/*") },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
-                    ) {
-                        Text("Select Audio File")
-                    }
+                    Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("Select File") }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
-
-                TelemetryMeter(
-                    rawEnergy = rawEnergy, 
-                    smoothedEnergy = audioEnergy, 
-                    showLightning = showLightningTelemetry
-                )
-                
-                Spacer(modifier = Modifier.height(16.dp))
-
+                TelemetryMeter(rawEnergy, audioEnergy, showLightningTelemetry)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = showLightningTelemetry,
-                        onCheckedChange = { showLightningTelemetry = it }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Show Raw Audio Telemetry (Lightning)", color = Color.LightGray)
+                    Switch(showLightningTelemetry, { showLightningTelemetry = it })
+                    Text(" Show Lightning (Bass Only)", color = Color.LightGray, modifier = Modifier.padding(start = 8.dp))
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = useRawData,
-                        onCheckedChange = { 
-                            useRawData = it; audioEngine.useRawData = it 
-                        }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Bypass Smoothing (Feed spikes to shader)", color = Color.LightGray)
+                    Switch(useRawData, { useRawData = it; audioEngine.useRawData = it })
+                    Text(" Bypass Smoothing (Jitter Test)", color = Color.LightGray, modifier = Modifier.padding(start = 8.dp))
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                Text("Attack (Swell): ${String.format("%.3f", attackState)}", color = Color.Gray)
-                Slider(
-                    value = attackState,
-                    onValueChange = { attackState = it; audioEngine.attackAlpha = it },
-                    valueRange = 0.001f..0.5f
-                )
-
+                Text("Attack (Swell): ${String.format("%.3f", attackState)}", color = Color.Gray, modifier = Modifier.padding(top = 8.dp))
+                Slider(attackState, { attackState = it; audioEngine.attackAlpha = it }, valueRange = 0.001f..0.5f)
                 Text("Release (Fade): ${String.format("%.3f", releaseState)}", color = Color.Gray)
-                Slider(
-                    value = releaseState,
-                    onValueChange = { releaseState = it; audioEngine.releaseAlpha = it },
-                    valueRange = 0.001f..0.1f
-                )
-                
-                Text("Audio Gain (Multiplier): ${String.format("%.1fx", gainState)}", color = Color.Gray)
-                Slider(
-                    value = gainState,
-                    onValueChange = { gainState = it; audioEngine.audioGain = it },
-                    valueRange = 1f..10f
-                )
+                Slider(releaseState, { releaseState = it; audioEngine.releaseAlpha = it }, valueRange = 0.001f..0.1f)
+                Text("Gain (Bass Boost): ${String.format("%.1fx", gainState)}", color = Color.Gray)
+                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..15f)
             }
         }
 
-        // Presentation Toggle Footer
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.Black)
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Button(
-                onClick = { isPresentationMode = !isPresentationMode },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
-            ) {
-                Text(if (isPresentationMode) "Open Control Room" else "Enter Presentation Mode")
+        Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+            Button(onClick = { isPresentationMode = !isPresentationMode }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
+                Text(if (isPresentationMode) "Open Controls" else "Presentation Mode")
             }
         }
     }
 }
 
-// ==========================================
-// 5. EXOPLAYER FACTORY SETUP
-// ==========================================
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@UnstableApi
 fun setupExoPlayer(context: Context, audioEngine: AudioTrendEngine): ExoPlayer {
     val teeProcessor = TeeAudioProcessor(audioEngine)
-
-    val audioSink = DefaultAudioSink.Builder()
-        .setAudioProcessors(arrayOf(teeProcessor))
-        .build()
-
+    val audioSink = DefaultAudioSink.Builder().setAudioProcessors(arrayOf(teeProcessor)).build()
     val renderersFactory = object : DefaultRenderersFactory(context) {
-        override fun buildAudioSink(
-            context: Context,
-            enableFloatOutput: Boolean,
-            enableAudioTrackPlaybackParams: Boolean,
-            enableOffload: Boolean
-        ): androidx.media3.exoplayer.audio.AudioSink {
-            return audioSink
-        }
+        override fun buildAudioSink(c: Context, f: Boolean, a: Boolean, e: Boolean) = audioSink
     }
-
-    return ExoPlayer.Builder(context, renderersFactory).build().apply {
-        repeatMode = ExoPlayer.REPEAT_MODE_ONE
-    }
+    return ExoPlayer.Builder(context, renderersFactory).build().apply { repeatMode = Player.REPEAT_MODE_ONE }
 }
