@@ -21,13 +21,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.palette.graphics.Palette
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -35,12 +32,14 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
+import androidx.palette.graphics.Palette
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -56,6 +55,7 @@ class MainActivity : ComponentActivity() {
 // ==========================================
 // 1. THE MATH ENGINE (EMA SMOOTHING & GAIN)
 // ==========================================
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var attackAlpha: Float = 0.05f
     var releaseAlpha: Float = 0.005f
@@ -107,13 +107,13 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE AGSL SHADER (COLOR AWARE)
+// 2. THE AGSL SHADER (COLOR EXTRACTED WEATHER)
 // ==========================================
 const val FLUID_SHADER_SRC = """
     uniform float2 u_resolution;
     uniform float u_time;
     uniform float u_energy;
-    uniform float3 u_artColor; // NEW: Accepts the dynamic album color
+    uniform float3 u_artColor; // NEW: Receives color from the Palette API
     
     float random (in float2 _st) {
         return fract(sin(dot(_st.xy, float2(12.9898,78.233))) * 43758.5453123);
@@ -144,9 +144,9 @@ const val FLUID_SHADER_SRC = """
         
         n = smoothstep(0.35, 0.65, n);
         
-        // Map the extracted color to the fluid math
-        half3 baseColor = half3(u_artColor) * 0.2; 
-        half3 energyColor = half3(u_artColor) * (u_energy * 4.0); 
+        // Dynamically apply the album art color
+        half3 baseColor = half3(u_artColor) * 0.15; // Darker atmospheric base
+        half3 energyColor = half3(u_artColor) * (u_energy * 4.0); // Bright energy highlights
         
         half3 finalColor = mix(baseColor, baseColor + energyColor, n);
         
@@ -198,6 +198,7 @@ fun TelemetryMeter(rawEnergy: Float, smoothedEnergy: Float, showLightning: Boole
 // ==========================================
 // 4. MAIN PROTOTYPE COMPOSE SCREEN
 // ==========================================
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun FluidMediaPrototype() {
     val context = LocalContext.current
@@ -205,29 +206,28 @@ fun FluidMediaPrototype() {
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
 
-    // State for Album Art and Extracted Color
-    var currentArtBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    var currentFluidColor by remember { mutableStateOf(Color(0xFF00E5FF)) } // Default Cyan
+    // Color and Art States
+    var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var currentFluidColor by remember { mutableStateOf(Color.Cyan) }
 
-    // Extract Metadata when track changes
+    // Listen to ExoPlayer Metadata to extract Artwork and Color
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val artworkBytes = mediaMetadata.artworkData
                 if (artworkBytes != null) {
-                    // Convert byte array to Bitmap
                     val bitmap = BitmapFactory.decodeByteArray(artworkBytes, 0, artworkBytes.size)
-                    currentArtBitmap = bitmap.asImageBitmap()
+                    currentArtBitmap = bitmap
                     
-                    // Extract Palette Color
+                    // Generate palette off the main thread implicitly
                     Palette.from(bitmap).generate { palette ->
-                        val vibrant = palette?.getVibrantColor(Color.Cyan.toArgb()) ?: Color.Cyan.toArgb()
-                        currentFluidColor = Color(vibrant)
+                        // Fallback to Cyan if a vibrant color can't be extracted
+                        val extracted = palette?.getVibrantColor(Color.Cyan.toArgb()) ?: Color.Cyan.toArgb()
+                        currentFluidColor = Color(extracted)
                     }
                 } else {
-                    // Reset if no artwork found
                     currentArtBitmap = null
-                    currentFluidColor = Color(0xFF00E5FF)
+                    currentFluidColor = Color.Cyan
                 }
             }
         }
@@ -286,33 +286,32 @@ fun FluidMediaPrototype() {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 fluidShader.setFloatUniform("u_resolution", size.width, size.height)
                 fluidShader.setFloatUniform("u_time", timeMillis)
+                
+                // Pass dynamic color to the shader
+                fluidShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
+                
                 val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0.02f
                 fluidShader.setFloatUniform("u_energy", targetEnergy)
-                
-                // NEW: Feed the dynamically extracted color into the shader
-                fluidShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
 
                 drawRect(brush = ShaderBrush(fluidShader))
             }
             
-            // Render the Album Art
-            Box(
-                modifier = Modifier
-                    .size(if (isPresentationMode) 280.dp else 180.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color.DarkGray.copy(alpha = 0.5f)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (currentArtBitmap != null) {
-                    Image(
-                        bitmap = currentArtBitmap!!,
-                        contentDescription = "Album Art",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Text("No Artwork", color = Color.Gray)
-                }
+            // Display the extracted Album Art
+            if (currentArtBitmap != null) {
+                Image(
+                    bitmap = currentArtBitmap!!.asImageBitmap(),
+                    contentDescription = "Album Art",
+                    modifier = Modifier
+                        .size(if (isPresentationMode) 280.dp else 180.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(if (isPresentationMode) 280.dp else 180.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.DarkGray.copy(alpha = 0.8f))
+                )
             }
         }
 
@@ -415,6 +414,7 @@ fun FluidMediaPrototype() {
 // ==========================================
 // 5. EXOPLAYER FACTORY SETUP
 // ==========================================
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 fun setupExoPlayer(context: Context, audioEngine: AudioTrendEngine): ExoPlayer {
     val teeProcessor = TeeAudioProcessor(audioEngine)
 
