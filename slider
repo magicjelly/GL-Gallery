@@ -14,10 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,32 +34,42 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
 import androidx.palette.graphics.Palette
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
 import kotlin.math.sqrt
 
+class MainActivity : ComponentActivity() {
+    @OptIn(UnstableApi::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+                    FluidMediaPrototype()
+                }
+            }
+        }
+    }
+}
+
 // ==========================================
-// 1. ENGINE: TEMPORAL GLOW DAMPING (No Flicker)
+// 1. ENGINE: MOMENTUM & INERTIA LOGIC
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
-    var audioGain: Float = 35.0f 
-    
-    private val _visualGlow = MutableStateFlow(0f)
-    val visualGlow: StateFlow<Float> = _visualGlow // For Intensity/Flicker Prevention
-
+    var audioGain: Float = 30.0f 
+    private val _realTimePeak = MutableStateFlow(0f)
+    val realTimePeak: StateFlow<Float> = _realTimePeak 
     private val _momentum = MutableStateFlow(0f)
-    val momentum: StateFlow<Float> = _momentum // For Swell/Movement
+    val momentum: StateFlow<Float> = _momentum 
 
-    private var currentGlow = 0f
     private var currentMomentum = 0f
     private var prevFiltered = 0f
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
-        currentGlow = 0f; currentMomentum = 0f; prevFiltered = 0f
-        _visualGlow.value = 0f; _momentum.value = 0f
+        currentMomentum = 0f; prevFiltered = 0f
+        _realTimePeak.value = 0f; _momentum.value = 0f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
@@ -77,78 +84,77 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
             sumSq += (filtered * filtered)
         }
         val rms = (sqrt(sumSq / (limit / 2)).toFloat() * audioGain).coerceIn(0f, 1f)
+        _realTimePeak.value = rms
         
-        // FIX: Temporal Slew-Rate Limiting
-        // Glow (0.08) is faster for rhythm, Momentum (0.03) is slower for breath
-        currentGlow = (0.08f * rms) + (0.92f * currentGlow)
-        currentMomentum = (0.03f * rms) + (0.97f * currentMomentum)
-        
-        _visualGlow.value = currentGlow.coerceIn(0f, 1f)
+        // MOMENTUM LOGIC: The "Beat" accelerates the motion
+        // Damping (0.96) ensures the motion "coasts" smoothly after the beat.
+        currentMomentum = (currentMomentum * 0.96f) + (rms * 0.04f)
         _momentum.value = currentMomentum.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 2. THE PREMIUM AGSL SHADER (MAX-BLEND)
+// 2. THE MOMENTUM BOKEH SHADER (AGSL)
 // ==========================================
 const val BOKEH_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_glow;         // Smoothed Intensity (No Flicker)
-    uniform float u_momentum;     // Heavy Swell (Size)
+    uniform float u_energy;       // Peak
+    uniform float u_momentum;     // Damped Momentum
     uniform float3 u_artColor;    
     uniform float u_time;    
     
-    uniform float u_smallDensity; 
-    uniform float u_largeDensity;
-    uniform float u_blurIntensity;
-    uniform float u_turbulence;
-
     float hash21(float2 p) {
         p = fract(p*float2(234.34, 435.12));
         p += dot(p, p+34.23);
         return fract(p.x*p.y);
     }
 
-    float2 getFloatingOffset(float2 id, float time, float turb) {
-        float speed = (0.12 + hash21(id) * 0.15) * turb;
+    float2 getFloatingOffset(float2 id, float time) {
+        float speed = 0.15 + hash21(id) * 0.25;
         return float2(
-            sin(time * speed + id.x * 10.0),
-            cos(time * speed * 0.8 + id.y * 15.0)
-        ) * 0.4;
+            sin(time * speed + id.x * 12.0),
+            cos(time * speed * 0.9 + id.y * 18.0)
+        ) * 0.5;
     }
 
-    float drawLensOrb(float2 localUv, float rnd, float time, float glow, float momentum, float blurMult) {
+    // UPDATED: ADDITIVE BLOOM DISC
+    float drawLensOrb(float2 localUv, float rnd, float time, float energy, float momentum) {
+        // Z-Depth cycling
         float zDepth = fract(rnd + time * 0.04);
         float focusDist = abs(zDepth - 0.5);
         
-        // Swell is tied to Momentum (Slow), Glow is tied to Flicker-free u_glow
-        float size = 0.15 + (focusDist * 0.7) + (momentum * 0.1);
-        float blur = (0.05 + (focusDist * 0.9)) * blurMult;
+        // ENLARGED SIZE: Higher base size for density/overlap
+        float size = 0.12 + (focusDist * 0.75) + (momentum * 0.15);
+        float blur = 0.02 + (focusDist * 0.95);
         
-        float alpha = smoothstep(0.0, 0.25, zDepth) * smoothstep(1.0, 0.75, zDepth);
+        float alpha = smoothstep(0.0, 0.2, zDepth) * smoothstep(1.0, 0.7, zDepth);
         float d = distance(localUv, float2(0.0));
+        
+        // UNIFORM DISC: Strong flat center, very soft edge
         float mask = smoothstep(size, size - blur, d);
         
-        // Shimmer is governed by a slow sine + smoothed glow
-        float shimmer = (0.5 + 0.3 * sin(time * 1.5 + rnd * 20.0)) + (glow * 0.2);
+        // SHIMMER: Decoupled from erratic spikes, tied to momentum for smoothness
+        float shimmer = (0.7 + 0.3 * sin(time * 2.5 + rnd * 30.0)) * (0.6 + momentum * 1.5);
+        
         return mask * shimmer * alpha;
     }
 
-    float getLayer(float2 uv, float gridSize, float time, float glow, float momentum, float blurM, float turb) {
+    float getLayer(float2 uv, float gridSize, float time, float energy, float momentum) {
         float2 st = uv * gridSize;
         float2 i_st = floor(st);
         float2 f_st = fract(st) - 0.5;
         float layer = 0.0;
         
+        // 3x3 Neighbor sampling is essential for the dense overlap look
         for(float y=-1.0; y<=1.0; y++) {
             for(float x=-1.0; x<=1.0; x++) {
                 float2 neighbor = float2(x, y);
                 float2 id = i_st + neighbor;
                 float rnd = hash21(id);
-                float2 p = neighbor + getFloatingOffset(id, time, turb);
+                float2 p = neighbor + getFloatingOffset(id, time);
                 
-                // Use MAX-blend to prevent additive white-out
-                layer = max(layer, drawLensOrb(f_st - p, rnd, time, glow, momentum, blurM));
+                // Additive accumulation: Overlapping orbs brighten the scene
+                layer += drawLensOrb(f_st - p, rnd, time, energy, momentum);
             }
         }
         return layer;
@@ -160,25 +166,24 @@ const val BOKEH_SHADER_SRC = """
         
         half3 finalColor = half3(0.0);
         
-        float l1 = getLayer(uv, u_largeDensity, u_time, u_glow, u_momentum, u_blurIntensity, u_turbulence);
+        // Atmosphere Orbs (Low density, very large for overlap)
+        float l1 = getLayer(uv, 3.8, u_time, u_energy, u_momentum);
         finalColor += half3(u_artColor) * half(l1 * 0.45);
 
-        float l2 = getLayer(uv, u_smallDensity, u_time * 1.3, u_glow, u_momentum, 0.1, u_turbulence);
-        finalColor += half3(u_artColor) * half(l2 * (0.5 + u_glow * 0.5));
-        
-        // Final tone compression
-        finalColor = finalColor / (1.0 + finalColor * 0.1);
+        // Foreground Specs (Higher density, crisp focus)
+        float l2 = getLayer(uv, 10.0, u_time * 1.3, u_energy, u_momentum);
+        finalColor += half3(u_artColor) * half(l2 * 0.7);
         
         float centerDist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
-        finalColor += half3(u_artColor) * 0.05; 
-        finalColor *= smoothstep(1.5, 0.35, centerDist);
+        finalColor += half3(u_artColor) * 0.12; 
+        finalColor *= smoothstep(1.4, 0.3, centerDist);
 
         return half4(finalColor, 1.0);
     }
 """
 
 // ==========================================
-// 3. MAIN UI PROTOTYPE
+// 3. UI & PROTOTYPE SCREEN
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
@@ -192,74 +197,51 @@ fun FluidMediaPrototype() {
     var engineTime by remember { mutableFloatStateOf(0f) }
     var isPresentationMode by remember { mutableStateOf(false) }
 
-    var isPlaying by remember { mutableStateOf(false) }
-    var playbackPosition by remember { mutableLongStateOf(0L) }
-    var playbackDuration by remember { mutableLongStateOf(0L) }
-
-    // Tunable States
-    var smallDensity by remember { mutableFloatStateOf(10f) }
-    var largeDensity by remember { mutableFloatStateOf(4.0f) }
-    var blurIntensity by remember { mutableFloatStateOf(1.0f) }
-    var turbulence by remember { mutableFloatStateOf(0.7f) }
-    var activeStateAlpha by remember { mutableFloatStateOf(1f) }
-
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(p: Boolean) { isPlaying = p }
-            override fun onMediaMetadataChanged(m: MediaMetadata) {
-                m.artworkData?.let { data ->
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                mediaMetadata.artworkData?.let { data ->
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
                     Palette.from(bitmap).generate { p ->
                         val fallback = 0xFF607D8B.toInt()
-                        currentFluidColor = Color(p?.getVibrantColor(p.getMutedColor(fallback)) ?: fallback)
+                        currentFluidColor = Color(p?.getVibrantColor(p.getMutedColor(p.getDominantColor(fallback))) ?: fallback)
                     }
                 }
             }
-            override fun onPlaybackStateChanged(s: Int) { if (s == Player.STATE_READY) playbackDuration = exoPlayer.duration }
         }
         exoPlayer.addListener(listener)
         onDispose { exoPlayer.release() }
     }
 
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            playbackPosition = exoPlayer.currentPosition
-            delay(500)
-        }
-    }
-
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { exoPlayer.setMediaItem(MediaItem.fromUri(it)); exoPlayer.prepare(); exoPlayer.play() }
+        uri?.let { exoPlayer.setMediaItem(MediaItem.fromUri(it)); exoPlayer.prepare(); exoPlayer.playWhenReady = true }
     }
 
-    val visualGlow by audioEngine.visualGlow.collectAsState()
+    val peak by audioEngine.realTimePeak.collectAsState()
     val momentum by audioEngine.momentum.collectAsState()
     val bokehShader = remember { RuntimeShader(BOKEH_SHADER_SRC) }
 
+    // PHYSICS-BASED TIME LOOP
     LaunchedEffect(Unit) {
         while (true) {
             withFrameMillis { 
-                val targetMult = if (isPlaying) 1f else 0.1f
-                activeStateAlpha = (0.04f * targetMult) + (0.96f * activeStateAlpha)
-                val driftSpeed = (0.005f + (momentum * 0.05f)) * activeStateAlpha
+                // Speed doesn't snap. It relies on the COASTING momentum.
+                // 0.008f is the baseline "drift" speed.
+                val driftSpeed = if (exoPlayer.isPlaying) (0.008f + momentum * 0.06f) else 0.004f
                 engineTime += driftSpeed
             }
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.58f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.62f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 bokehShader.setFloatUniform("u_resolution", size.width, size.height)
                 bokehShader.setFloatUniform("u_time", engineTime)
                 bokehShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
-                bokehShader.setFloatUniform("u_glow", visualGlow * activeStateAlpha)
-                bokehShader.setFloatUniform("u_momentum", momentum * activeStateAlpha)
-                bokehShader.setFloatUniform("u_smallDensity", smallDensity)
-                bokehShader.setFloatUniform("u_largeDensity", largeDensity)
-                bokehShader.setFloatUniform("u_blurIntensity", blurIntensity)
-                bokehShader.setFloatUniform("u_turbulence", turbulence)
+                bokehShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) peak else 0.02f)
+                bokehShader.setFloatUniform("u_momentum", if (exoPlayer.isPlaying) momentum else 0.02f)
                 drawRect(brush = ShaderBrush(bokehShader))
             }
             if (currentArtBitmap != null) {
@@ -268,41 +250,40 @@ fun FluidMediaPrototype() {
             }
         }
 
-        // --- MEDIA CONTROLS ---
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Slider(value = playbackPosition.toFloat(), onValueChange = { exoPlayer.seekTo(it.toLong()) },
-                valueRange = 0f..(playbackDuration.toFloat().coerceAtLeast(1f)),
-                colors = SliderDefaults.colors(thumbColor = currentFluidColor, activeTrackColor = currentFluidColor))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                IconButton(onClick = { exoPlayer.seekTo(0); exoPlayer.play() }) { Icon(Icons.Default.Refresh, null, tint = Color.White) }
-                FloatingActionButton(onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, containerColor = currentFluidColor, shape = CircleShape) {
-                    Icon(if (isPlaying) Icons.Default.Close else Icons.Default.PlayArrow, null)
-                }
-                IconButton(onClick = { filePicker.launch("audio/*") }) { Icon(Icons.Default.Add, null, tint = Color.White) }
-            }
-        }
-
         AnimatedVisibility(visible = !isPresentationMode) {
-            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(20.dp)) {
-                ControlRow("Density", smallDensity, 6f..18f) { smallDensity = it }
-                ControlRow("Softness", blurIntensity, 0.5f..2.0f) { blurIntensity = it }
-                ControlRow("Floating", turbulence, 0.2f..1.5f) { turbulence = it }
+            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("FLUID MOMENTUM ENGINE", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
+                        Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+                TelemetryBar("INSTANT BEAT", peak, Color(0xFFFF5722))
+                TelemetryBar("COASTING MOMENTUM", momentum, Color(0xFF00E5FF))
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Damping Gain: ${String.format("%.1fx", audioEngine.audioGain)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                Slider(audioEngine.audioGain, { audioEngine.audioGain = it }, valueRange = 1f..60f)
             }
         }
         
-        Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
-            TextButton(onClick = { isPresentationMode = !isPresentationMode }) {
-                Text(if (isPresentationMode) "VIEW TUNER" else "EXIT TUNER", color = Color.Gray)
+        Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+            Button(onClick = { isPresentationMode = !isPresentationMode }, 
+                colors = ButtonDefaults.buttonColors(containerColor = if (isPresentationMode) Color.DarkGray else currentFluidColor.copy(alpha = 0.5f))) {
+                Text(if (isPresentationMode) "VIEW PHYSICS" else "PRESENTATION MODE")
             }
         }
     }
 }
 
 @Composable
-fun ControlRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onValueChange: (Float) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().height(36.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(80.dp))
-        Slider(value = value, onValueChange = onValueChange, valueRange = range, modifier = Modifier.weight(1f))
+fun TelemetryBar(label: String, value: Float, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(140.dp))
+        Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
+            drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
+        }
     }
 }
 
