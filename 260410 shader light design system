@@ -19,9 +19,7 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
 // The Viscoelastic Photonic Glass Shader - Complete System
@@ -63,29 +61,26 @@ const val PHOTONIC_GLASS_SHADER = """
             // 1: PRIORITY NOTIFICATION (Heavy breathing pill at top)
             float topEdge = p.y;
             float pillCenter = resolution.x * 0.5;
-            float pillWidth = 100.0;
+            float pillP_x = clamp(p.x, pillCenter - 100.0, pillCenter + 100.0);
             
             // Subconscious "breathing" animation
             float pillRadius = 45.0 + sin(time * 3.0) * 3.0; 
-            float pillY = 60.0;
+            float dropDist = length(float2(p.x, p.y) - float2(pillP_x, 60.0)) - pillRadius;
             
-            // Pill/Rounded Box Math
-            float2 pillP = p;
-            pillP.x = clamp(pillP.x, pillCenter - pillWidth, pillCenter + pillWidth);
-            float dropDist = length(pillP - float2(pillP.x, pillY)) - pillRadius;
-            
-            // High viscosity (60.0) ensures it looks like it melted out of the bezel
+            // High viscosity ensures it looks like it melted out of the bezel
             return smin(topEdge, dropDist, 60.0);
             
         } else if (scenario == 2) { 
-            // 2: AI VESSEL (Bottom screen morphing waveform)
-            float bottomEdge = resolution.y - p.y;
-            // Simulated voice waveform reacting to time
-            float wave = sin(p.x * 0.015 + time * 6.0) * 15.0 * sin(time * 2.0);
-            float turbulence = noise(p / resolution * 15.0 - time * 3.0) * 20.0;
+            // 2: TACTILE VOLUME EXTRUSION (Right Edge Hardware Button Sync)
+            float rightEdge = resolution.x - p.x;
+            float buttonY = resolution.y * 0.35; // Simulated position of volume rocker
             
-            float core = length(p - float2(resolution.x * 0.5, resolution.y)) - 120.0;
-            return smin(bottomEdge + wave, core + turbulence, 80.0);
+            // Drag offset maps user thumb to blister shape
+            float dragOffset = clamp(touchPos.y - buttonY, -150.0, 150.0);
+            float blisterY = clamp(p.y, buttonY - 60.0 + min(0.0, dragOffset), buttonY + 60.0 + max(0.0, dragOffset));
+            float blisterDist = length(float2(p.x, p.y) - float2(resolution.x, blisterY)) - 40.0;
+            
+            return smin(rightEdge, blisterDist, 50.0);
             
         } else if (scenario == 3) { 
             // 3: CANVAS PULL (Non-Newtonian top stretch)
@@ -93,6 +88,8 @@ const val PHOTONIC_GLASS_SHADER = """
             float dropDist = length(p - touchPos);
             float stretch = max(0.0, touchPos.y);
             float kineticForce = clamp(length(touchVelocity) * 0.2, 0.0, 100.0);
+            
+            // Dynamic Viscosity (Shear-thickening simulation)
             float viscosity = 40.0 + (stretch * 0.2) + kineticForce;
             return smin(topEdge, dropDist - 70.0, viscosity);
         }
@@ -112,7 +109,7 @@ const val PHOTONIC_GLASS_SHADER = """
 
         float boundary = 45.0;
         if (d > boundary) {
-            return background.eval(fragCoord);
+            return background.eval(fragCoord); // Render normal UI if outside fluid bounds
         }
 
         float2 normal = getNormal(fragCoord);
@@ -121,7 +118,7 @@ const val PHOTONIC_GLASS_SHADER = """
         float frost = noise(fragCoord * 0.8) * 0.03;
         float2 frostedNormal = normalize(normal + float2(frost, -frost));
 
-        // INDEX OF REFRACTION
+        // INDEX OF REFRACTION (IOR 1.85)
         float depthCurve = smoothstep(boundary, 0.0, max(d, 0.0));
         float thickness = 80.0; 
         float2 refractedCoord = fragCoord - frostedNormal * thickness * depthCurve;
@@ -144,20 +141,21 @@ const val PHOTONIC_GLASS_SHADER = """
             materialColor.rgb += half3(0.0, 0.1, 0.2); 
             
         } else if (scenario == 1) { // NOTIFICATION (Amber Priority Glow)
-            materialColor.rgb *= 0.9; // Darken UI beneath slightly
-            materialColor.rgb += half3(0.15, 0.05, 0.0) * depthCurve; // Warm Amber tint inside glass
+            materialColor.rgb *= 0.9; 
+            materialColor.rgb += half3(0.15, 0.05, 0.0) * depthCurve; 
             
-        } else if (scenario == 2) { // AI VESSEL (Purple Cognitive Glow)
-            materialColor.rgb += half3(0.1, 0.0, 0.15) * depthCurve; 
+        } else if (scenario == 2) { // TACTILE VOLUME EXTRUSION
+            materialColor.rgb *= 0.85; // Deep clear glass, pure refraction
+            specular *= 1.5; // Boost the edge highlight to sell the hardware connection
             
-        } else if (scenario == 3) { // CANVAS PULL (Dark frosted)
+        } else if (scenario == 3) { // CANVAS PULL (Dark frosted UI)
             materialColor.rgb *= 0.8; 
         }
 
         // Apply edge specular highlight
         materialColor.rgb += half3(specular * depthCurve);
 
-        // Blend with raw UI
+        // Blend with raw UI perfectly at the edges
         float edgeAlpha = smoothstep(boundary, boundary - 3.0, d);
         return mix(background.eval(fragCoord), materialColor, edgeAlpha);
     }
@@ -166,10 +164,9 @@ const val PHOTONIC_GLASS_SHADER = """
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
 fun PerimeterPrototypeApp() {
-    var selectedScenario by remember { mutableIntStateOf(1) } // Default to Notification
+    var selectedScenario by remember { mutableIntStateOf(1) } // Default to Notify
     var touchPosition by remember { mutableStateOf(Offset(0f, 0f)) }
     var touchVelocity by remember { mutableStateOf(Offset(0f, 0f)) }
-    var screenSize by remember { mutableStateOf(IntSize.Zero) }
 
     val runtimeShader = remember { RuntimeShader(PHOTONIC_GLASS_SHADER) }
     val time by rememberInfiniteTransition(label = "time").animateFloat(
@@ -178,15 +175,9 @@ fun PerimeterPrototypeApp() {
         animationSpec = infiniteRepeatable(tween(100000, easing = LinearEasing)),
         label = "time"
     )
-
-    // Update Uniforms
-    runtimeShader.setFloatUniform("resolution", screenSize.width.toFloat(), screenSize.height.toFloat())
-    runtimeShader.setFloatUniform("time", time)
-    runtimeShader.setIntUniform("scenario", selectedScenario)
     
     val animatedVelX by animateFloatAsState(targetValue = touchVelocity.x, label = "vx")
     val animatedVelY by animateFloatAsState(targetValue = touchVelocity.y, label = "vy")
-    runtimeShader.setFloatUniform("touchVelocity", animatedVelX, animatedVelY)
 
     val animatedTouchX by animateFloatAsState(
         targetValue = touchPosition.x,
@@ -196,25 +187,24 @@ fun PerimeterPrototypeApp() {
         targetValue = if (touchPosition.y > 0f) touchPosition.y else -150f,
         animationSpec = spring(dampingRatio = 0.6f, stiffness = 200f), label = "ty"
     )
-    runtimeShader.setFloatUniform("touchPos", animatedTouchX, animatedTouchY)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .onSizeChanged { screenSize = it }
             .pointerInput(selectedScenario) {
-                if (selectedScenario == 3) { // Only allow pulling in Canvas scenario
+                // Enable touch physics for Volume (2) and Canvas Pull (3)
+                if (selectedScenario == 2 || selectedScenario == 3) { 
                     detectDragGestures(
                         onDragStart = { 
                             touchPosition = it
                             touchVelocity = Offset.Zero
                         },
                         onDragEnd = { 
-                            touchPosition = Offset(screenSize.width / 2f, -150f)
+                            touchPosition = Offset(size.width / 2f, -150f)
                             touchVelocity = Offset.Zero
                         },
                         onDragCancel = { 
-                            touchPosition = Offset(screenSize.width / 2f, -150f)
+                            touchPosition = Offset(size.width / 2f, -150f)
                             touchVelocity = Offset.Zero
                         }
                     ) { change, dragAmount ->
@@ -225,19 +215,28 @@ fun PerimeterPrototypeApp() {
                 }
             }
     ) {
-        // The RenderEffect Layer
+        // The RenderEffect Layer: Bends the Image beneath it using the AGSL math
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    renderEffect = RenderEffect.createRuntimeShaderEffect(
-                        runtimeShader,
-                        "background" 
-                    ).asComposeRenderEffect()
+                    // Updating Uniforms inside graphicsLayer forces frame-by-frame redraws in Compose
+                    if (size.width > 0f && size.height > 0f) {
+                        runtimeShader.setFloatUniform("resolution", size.width, size.height)
+                        runtimeShader.setFloatUniform("time", time)
+                        runtimeShader.setIntUniform("scenario", selectedScenario)
+                        runtimeShader.setFloatUniform("touchVelocity", animatedVelX, animatedVelY)
+                        runtimeShader.setFloatUniform("touchPos", animatedTouchX, animatedTouchY)
+                        
+                        renderEffect = RenderEffect.createRuntimeShaderEffect(
+                            runtimeShader,
+                            "background" 
+                        ).asComposeRenderEffect()
+                    }
                 }
         ) {
             Image(
-                painter = painterResource(id = android.R.drawable.sym_def_app_icon), // REPLACE WITH WALLPAPER
+                painter = painterResource(id = android.R.drawable.sym_def_app_icon), // REPLACE WITH WALLPAPER PLACEHOLDER
                 contentDescription = "Wallpaper",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -246,7 +245,11 @@ fun PerimeterPrototypeApp() {
 
         ControlPanel(
             selectedScenario = selectedScenario,
-            onScenarioSelected = { selectedScenario = it },
+            onScenarioSelected = { 
+                selectedScenario = it
+                // Reset touch position when swapping scenarios to prevent visual jumps
+                touchPosition = Offset(0f, -150f)
+            },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
@@ -258,7 +261,7 @@ fun ControlPanel(
     onScenarioSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val scenarios = listOf("Share", "Notify", "AI Voice", "Pull")
+    val scenarios = listOf("Share", "Notify", "Volume", "Pull")
     
     Surface(
         modifier = modifier
