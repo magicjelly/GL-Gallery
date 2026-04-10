@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 // 1. THE AGSL SHADER: Viscoelastic Photonic Glass
 // ---------------------------------------------------------------------------
 @org.intellij.lang.annotations.Language("AGSL")
+@org.intellij.lang.annotations.Language("AGSL")
 const val PHOTONIC_GLASS_SHADER = """
     uniform shader background;
     uniform float2 resolution;
@@ -37,13 +38,11 @@ const val PHOTONIC_GLASS_SHADER = """
     uniform float2 touchPos;
     uniform float2 touchVelocity; 
 
-    // Viscoelastic Smooth Minimum (Creates the liquid surface tension)
     float smin(float a, float b, float k) {
         float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
         return mix(b, a, h) - k * h * (1.0 - h);
     }
     
-    // Procedural Noise for Micro-Frosting & Internal Turbulence
     float hash(float2 p) { return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }
     float noise(float2 p) {
         float2 i = floor(p); float2 f = fract(p);
@@ -52,56 +51,38 @@ const val PHOTONIC_GLASS_SHADER = """
                    mix(hash(i + float2(0.0,1.0)), hash(i + float2(1.0,1.0)), u.x), u.y);
     }
 
-    // SDF (Signed Distance Field) of the Glass Material
     float getGlassSDF(float2 p) {
         if (scenario == 0) { 
-            // 0: HERO SHARE (High energy right edge data transfer)
             float rightEdge = resolution.x - p.x;
             float energy = length(touchVelocity) * 0.05;
             float turbulence = noise(p / resolution * 12.0 + time * (2.0 + energy)) * (20.0 + energy * 5.0);
             float baseShape = length(p - float2(resolution.x, resolution.y*0.5)) - 150.0;
             return smin(rightEdge + turbulence, baseShape, 60.0);
-            
         } else if (scenario == 1) { 
-            // 1: PRIORITY NOTIFICATION (Heavy breathing pill extruding from top bezel)
             float topEdge = p.y;
             float pillCenter = resolution.x * 0.5;
             float pillP_x = clamp(p.x, pillCenter - 100.0, pillCenter + 100.0);
-            
-            // Subconscious "breathing" oscillation
             float pillRadius = 45.0 + sin(time * 3.0) * 3.0; 
             float dropDist = length(float2(p.x, p.y) - float2(pillP_x, 60.0)) - pillRadius;
-            
-            // High viscosity ensures it looks like it melted directly out of the hardware bezel
             return smin(topEdge, dropDist, 60.0);
-            
         } else if (scenario == 2) { 
-            // 2: TACTILE VOLUME EXTRUSION (Hardware button sync on right edge)
             float rightEdge = resolution.x - p.x;
-            float buttonY = resolution.y * 0.35; // Simulated physical volume rocker position
-            
-            // Drag offset maps the user's thumb to the blister shape
+            float buttonY = resolution.y * 0.35; 
             float dragOffset = clamp(touchPos.y - buttonY, -150.0, 150.0);
             float blisterY = clamp(p.y, buttonY - 60.0 + min(0.0, dragOffset), buttonY + 60.0 + max(0.0, dragOffset));
             float blisterDist = length(float2(p.x, p.y) - float2(resolution.x, blisterY)) - 40.0;
-            
             return smin(rightEdge, blisterDist, 50.0);
-            
         } else if (scenario == 3) { 
-            // 3: CANVAS PULL (Non-Newtonian top edge stretch for Quick Panel)
             float topEdge = p.y;
             float dropDist = length(p - touchPos);
             float stretch = max(0.0, touchPos.y);
             float kineticForce = clamp(length(touchVelocity) * 0.2, 0.0, 100.0);
-            
-            // Dynamic Viscosity (Shear-thickening simulation based on pull speed)
             float viscosity = 40.0 + (stretch * 0.2) + kineticForce;
             return smin(topEdge, dropDist - 70.0, viscosity);
         }
         return p.y; 
     }
 
-    // Calculates the 3D surface angle for light refraction
     float2 getNormal(float2 p) {
         float e = 1.0; 
         float d = getGlassSDF(p);
@@ -112,7 +93,7 @@ const val PHOTONIC_GLASS_SHADER = """
 
     half4 main(float2 fragCoord) {
         float d = getGlassSDF(fragCoord);
-        float boundary = 45.0;
+        float boundary = 40.0;
         
         // Render normal un-warped UI if outside the fluid bounds
         if (d > boundary) {
@@ -125,12 +106,24 @@ const val PHOTONIC_GLASS_SHADER = """
         float frost = noise(fragCoord * 0.8) * 0.03;
         float2 frostedNormal = normalize(normal + float2(frost, -frost));
 
-        // INDEX OF REFRACTION (IOR 1.85) - Bends the wallpaper beneath
+        // THE FIX 1: Tighter refraction thickness (25.0 instead of 80.0)
         float depthCurve = smoothstep(boundary, 0.0, max(d, 0.0));
-        float thickness = 80.0; 
+        float thickness = 25.0; 
         float2 refractedCoord = fragCoord - frostedNormal * thickness * depthCurve;
+        
+        // THE FIX 2: Clamp coordinates to prevent sampling off-screen (the torn canvas look)
+        refractedCoord = clamp(refractedCoord, float2(0.0), resolution);
 
-        half4 materialColor = background.eval(refractedCoord);
+        // Get the warped background pixels
+        half4 warpedBg = background.eval(refractedCoord);
+        
+        // THE FIX 3: Material Albedo (Base Color). 
+        // We give the acrylic its own physical color so it doesn't just look like a stretched image.
+        half3 glassBaseTint = half3(0.05, 0.05, 0.08); // Dark, premium acrylic tint
+        float glassOpacity = 0.45; // 45% solid, 55% transparent
+        
+        // Mix the warped background with the solid glass tint
+        half3 materialColor = mix(warpedBg.rgb, glassBaseTint, glassOpacity * depthCurve);
 
         // SPECULAR LIGHTING (Crisp glass bevel reflection)
         float2 lightDir = normalize(float2(-1.0, -1.0)); 
@@ -140,33 +133,23 @@ const val PHOTONIC_GLASS_SHADER = """
         // SCENARIO SPECIFIC TINTING & PHYSICS
         float stress = length(touchVelocity) * 0.02 + (scenario == 0 ? 1.5 : 0.0);
         
-        if (scenario == 0 && stress > 1.0) { // SHARE (Data Chromatic Dispersion)
-            float dispAmount = min(stress * 4.0, 20.0) * depthCurve;
-            half4 rSample = background.eval(refractedCoord + frostedNormal * dispAmount);
-            half4 bSample = background.eval(refractedCoord - frostedNormal * dispAmount);
-            materialColor.r = rSample.r; materialColor.b = bSample.b;
-            materialColor.rgb += half3(0.0, 0.1, 0.2); 
-            
-        } else if (scenario == 1) { // NOTIFICATION (Amber Priority Glow)
-            materialColor.rgb *= 0.9; 
-            materialColor.rgb += half3(0.15, 0.05, 0.0) * depthCurve; 
-            
+        if (scenario == 0 && stress > 1.0) { // SHARE 
+            materialColor.rgb += half3(0.0, 0.15, 0.3) * depthCurve; // Blue energy
+        } else if (scenario == 1) { // NOTIFICATION 
+            materialColor.rgb += half3(0.2, 0.05, 0.0) * depthCurve; // Amber glow
         } else if (scenario == 2) { // TACTILE VOLUME EXTRUSION
-            materialColor.rgb *= 0.85; // Deep clear glass, pure refraction
-            specular *= 1.5; // Boost the edge highlight to sell the hardware connection
-            
-        } else if (scenario == 3) { // CANVAS PULL (Dark frosted UI)
-            materialColor.rgb *= 0.8; 
+            specular *= 1.8; // Harsher hardware reflection
         }
 
         // Apply edge specular highlight
         materialColor.rgb += half3(specular * depthCurve);
 
         // Blend with raw UI perfectly at the edges
-        float edgeAlpha = smoothstep(boundary, boundary - 3.0, d);
-        return mix(background.eval(fragCoord), materialColor, edgeAlpha);
+        float edgeAlpha = smoothstep(boundary, boundary - 2.0, d);
+        return half4(mix(background.eval(fragCoord).rgb, materialColor, edgeAlpha), 1.0);
     }
 """
+
 
 // ---------------------------------------------------------------------------
 // 2. THE MAIN ACTIVITY & COMPOSE APP
