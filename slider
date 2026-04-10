@@ -1,9 +1,8 @@
-package com.yourpackagename // 실제 패키지 명으로 변경
+package com.samsung.oneui.motion.prototype // Adjust as needed
 
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.RuntimeShader
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
@@ -54,17 +54,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ==========================================
+// 1. AUDIO ENGINE: LPF + EMA + REAL-TIME DATA
+// ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var attackAlpha: Float = 0.05f
     var releaseAlpha: Float = 0.005f
-    var audioGain: Float = 10.0f 
+    var audioGain: Float = 12.0f 
+    var isLpfEnabled: Boolean = true
+    var isSmoothingEnabled: Boolean = true
+
+    private val _rawInput = MutableStateFlow(0f)
+    val rawInput: StateFlow<Float> = _rawInput 
+
+    private val _realTimePeak = MutableStateFlow(0f)
+    val realTimePeak: StateFlow<Float> = _realTimePeak // Reactive Energy
 
     private val _smoothedResonance = MutableStateFlow(0f)
-    val smoothedResonance: StateFlow<Float> = _smoothedResonance 
-
-    private val _immediateEnergy = MutableStateFlow(0f)
-    val immediateEnergy: StateFlow<Float> = _immediateEnergy 
+    val smoothedResonance: StateFlow<Float> = _smoothedResonance // Deep Atmosphere
 
     private var currentEMAValue = 0f
     private var previousFilteredSample = 0f
@@ -73,41 +81,60 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
         currentEMAValue = 0f
         previousFilteredSample = 0f
+        _rawInput.value = 0f
+        _realTimePeak.value = 0f
         _smoothedResonance.value = 0f
-        _immediateEnergy.value = 0f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
         val limit = buffer.limit()
         if (limit == 0) return
-        var sumSquares = 0.0
+        var sumSquaresRaw = 0.0
+        var sumSquaresFiltered = 0.0
         var sampleCount = 0
+        
         buffer.position(0)
         while (buffer.position() < limit - 1) {
             val rawSample = buffer.short.toFloat() / Short.MAX_VALUE
-            val filteredSample = previousFilteredSample + lpfAlpha * (rawSample - previousFilteredSample)
+            sumSquaresRaw += (rawSample * rawSample)
+            
+            val filteredSample = if (isLpfEnabled) {
+                previousFilteredSample + lpfAlpha * (rawSample - previousFilteredSample)
+            } else {
+                rawSample
+            }
             previousFilteredSample = filteredSample
-            sumSquares += (filteredSample * filteredSample)
+            sumSquaresFiltered += (filteredSample * filteredSample)
             sampleCount++
         }
-        val rawRms = if (sampleCount > 0) sqrt(sumSquares / sampleCount).toFloat() else 0f
-        val boostedRms = (rawRms * audioGain).coerceIn(0f, 1f)
-        _immediateEnergy.value = boostedRms
-        val alpha = if (boostedRms > currentEMAValue) attackAlpha else releaseAlpha
-        currentEMAValue = (alpha * boostedRms) + ((1f - alpha) * currentEMAValue)
+
+        val rawRms = if (sampleCount > 0) sqrt(sumSquaresRaw / sampleCount).toFloat() else 0f
+        val filteredRms = if (sampleCount > 0) sqrt(sumSquaresFiltered / sampleCount).toFloat() else 0f
+        val boostedRms = (filteredRms * audioGain).coerceIn(0f, 1f)
+
+        _rawInput.value = rawRms.coerceIn(0f, 1f)
+        _realTimePeak.value = boostedRms
+
+        if (isSmoothingEnabled) {
+            val alpha = if (boostedRms > currentEMAValue) attackAlpha else releaseAlpha
+            currentEMAValue = (alpha * boostedRms) + ((1f - alpha) * currentEMAValue)
+        } else {
+            currentEMAValue = boostedRms
+        }
+        
         _smoothedResonance.value = currentEMAValue.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 프리미엄 쉐이더: 시차(Parallax)와 고대비 보케 적용
+// 2. THE CINEMATIC BOKEH SHADER (AGSL)
 // ==========================================
 const val BOKEH_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_energy;
-    uniform float u_resonance;
-    uniform float3 u_artColor;
-    uniform float u_posOffset;
+    uniform float u_energy;       // Real-time Peak
+    uniform float u_resonance;    // Smoothed Swell
+    uniform float3 u_artColor;    // Theme Primary
+    uniform float u_posOffset;    // Physics Momentum
     
     float hash21(float2 p) {
         p = fract(p*float2(234.34, 435.12));
@@ -115,22 +142,27 @@ const val BOKEH_SHADER_SRC = """
         return fract(p.x*p.y);
     }
 
-    // 레이어 드로잉: 시차와 부드러움을 위한 파라미터 추가
-    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase, float flickerSeed) {
+    // Advanced Layering: Creates the dense, overlapping orb feel from the reference image
+    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase, float brightness) {
         float2 st = uv * gridSize;
         float2 gridId = floor(st);
         float2 localUv = fract(st) - 0.5;
         
         float rnd = hash21(gridId);
-        float t = offset + rnd * 6.28;
-        float2 p = float2(sin(t), cos(t)) * 0.35;
+        // Randomize initial position within cell for "natural clusters"
+        float2 jitter = float2(hash21(gridId + 0.1), hash21(gridId + 0.2)) * 0.4 - 0.2;
+        
+        float t = offset + rnd * 12.56;
+        float2 p = jitter + float2(sin(t * 0.8), cos(t * 0.5)) * 0.25;
         
         float d = distance(localUv, p);
         
-        // 유기적인 빛남(Shimmer)을 위한 사인파 적용
-        float shimmer = 0.6 + 0.4 * sin(offset * 2.0 + rnd * 10.0);
+        // Premium Falloff: Bright core with very soft edges
+        float orb = smoothstep(sizeBase, sizeBase - blur, d);
+        // Subtle shimmer based on time and individual randomness
+        float shimmer = 0.5 + 0.5 * sin(offset * 1.5 + rnd * 20.0);
         
-        return smoothstep(sizeBase, sizeBase - blur, d) * shimmer;
+        return orb * shimmer * brightness;
     }
 
     half4 main(float2 fragCoord) {
@@ -139,32 +171,52 @@ const val BOKEH_SHADER_SRC = """
         
         half3 finalColor = half3(0.0);
         
-        // --- LAYER 1: 웅장한 백그라운드 보케 (Z-Plane Deep) ---
-        // 크기를 3배로 키우고, 이동 속도를 전경의 30%로 제한하여 깊이감 형성
-        float bokehSize = 0.15 + u_resonance * 0.45;
-        float bokehBlur = 0.7; 
-        float bokehLayer = drawLayer(uv, 5.0, u_posOffset * 0.3, bokehBlur, bokehSize, 1.0);
-        finalColor += half3(u_artColor) * half(bokehLayer * 0.35);
+        // LAYER 1: Deep Background Bokeh (Huge, Soft, High Density)
+        // Parallax speed: 20%
+        float bokehSize = 0.2 + u_resonance * 0.5;
+        float b1 = drawLayer(uv, 4.0, u_posOffset * 0.2, 0.8, bokehSize, 0.4);
+        float b2 = drawLayer(uv + 0.5, 3.5, u_posOffset * 0.15, 0.9, bokehSize * 0.8, 0.3);
+        finalColor += half3(u_artColor) * half(b1 + b2);
 
-        // --- LAYER 2: 선명한 전경 입자 (Energy Dust) ---
-        // 미세하고 선명하며, 에너지에 반응하여 빠르게 움직임
-        float dustSize = 0.03 + u_energy * 0.08;
-        float dustBlur = 0.05; 
-        float dustLayer = drawLayer(uv, 15.0, u_posOffset * 1.2, dustBlur, dustSize, 2.0);
-        finalColor += half3(u_artColor) * half(dustLayer * (0.5 + u_energy * 1.0));
+        // LAYER 2: Mid-ground "Identity" Orbs
+        // Parallax speed: 50%
+        float midSize = 0.1 + u_resonance * 0.2;
+        float m1 = drawLayer(uv, 7.0, u_posOffset * 0.5, 0.4, midSize, 0.5);
+        finalColor += half3(u_artColor) * half(m1);
+
+        // LAYER 3: Foreground "Energy Dust" (Sharp, Fast, Reactive)
+        // Parallax speed: 120%
+        float dustSize = 0.02 + u_energy * 0.08;
+        float d1 = drawLayer(uv, 16.0, u_posOffset * 1.2, 0.05, dustSize, 1.0);
+        finalColor += half3(u_artColor) * half(d1 * (0.3 + u_energy * 1.5));
         
-        // 배경 베이스 조명
-        float dist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
-        half3 baseBg = half3(u_artColor) * 0.08;
-        finalColor += baseBg;
-        
-        // 비네팅 (중앙 앨범 아트 집중)
-        finalColor *= smoothstep(1.2, 0.2, dist);
+        // Final Color Correction
+        float centerDist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
+        half3 baseGlow = half3(u_artColor) * 0.12; // Atmospheric lift
+        finalColor += baseGlow;
+        finalColor *= smoothstep(1.2, 0.3, centerDist); // Vignette
 
         return half4(finalColor, 1.0);
     }
 """
 
+// ==========================================
+// 3. UI COMPONENTS & TELEMETRY
+// ==========================================
+@Composable
+fun DataBar(label: String, value: Float, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(150.dp))
+        Canvas(modifier = Modifier.height(6.dp).weight(1f).clip(RoundedCornerShape(3.dp))) {
+            drawRect(color = Color.DarkGray)
+            drawRect(color = color, size = size.copy(width = size.width * value))
+        }
+    }
+}
+
+// ==========================================
+// 4. MAIN COMPOSE PROTOTYPE
+// ==========================================
 @OptIn(UnstableApi::class)
 @Composable
 fun FluidMediaPrototype() {
@@ -173,11 +225,12 @@ fun FluidMediaPrototype() {
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var currentFluidColor by remember { mutableStateOf(Color.Cyan) }
+    var currentFluidColor by remember { mutableStateOf(Color(0xFFE91E63)) } // Default Vibrant
     var accumulatedFlowOffset by remember { mutableFloatStateOf(0f) }
     var isPresentationMode by remember { mutableStateOf(false) }
-    
-    // 복원된 컨트롤 룸 상태
+
+    // Control Room States
+    var showTelemetry by remember { mutableStateOf(true) }
     var gainState by remember { mutableFloatStateOf(audioEngine.audioGain) }
     var attackState by remember { mutableFloatStateOf(audioEngine.attackAlpha) }
     var releaseState by remember { mutableFloatStateOf(audioEngine.releaseAlpha) }
@@ -185,13 +238,11 @@ fun FluidMediaPrototype() {
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                val artworkBytes = mediaMetadata.artworkData
-                if (artworkBytes != null) {
-                    val bitmap = BitmapFactory.decodeByteArray(artworkBytes, 0, artworkBytes.size)
+                mediaMetadata.artworkData?.let {
+                    val bitmap = BitmapFactory.decodeByteArray(it, 0, it.size)
                     currentArtBitmap = bitmap
-                    Palette.from(bitmap).generate { palette ->
-                        val extracted = palette?.getVibrantColor(Color.Cyan.toArgb()) ?: Color.Cyan.toArgb()
-                        currentFluidColor = Color(extracted)
+                    Palette.from(bitmap).generate { p ->
+                        currentFluidColor = Color(p?.getVibrantColor(0xFFE91E63) ?: 0xFFE91E63)
                     }
                 }
             }
@@ -200,75 +251,88 @@ fun FluidMediaPrototype() {
         onDispose { exoPlayer.release() }
     }
 
-    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
-            exoPlayer.setMediaItem(MediaItem.fromUri(it))
-            exoPlayer.prepare()
-            exoPlayer.playWhenReady = true
-        }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { exoPlayer.setMediaItem(MediaItem.fromUri(it)); exoPlayer.prepare(); exoPlayer.playWhenReady = true }
     }
 
-    val audioResonance by audioEngine.smoothedResonance.collectAsState()
-    val audioEnergy by audioEngine.immediateEnergy.collectAsState()
+    val rawInput by audioEngine.rawInput.collectAsState()
+    val realTimePeak by audioEngine.realTimePeak.collectAsState()
+    val smoothedResonance by audioEngine.smoothedResonance.collectAsState()
     val bokehShader = remember { RuntimeShader(BOKEH_SHADER_SRC) }
 
     LaunchedEffect(Unit) {
         while (true) {
             withFrameMillis { 
-                val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0f
-                // 부드러운 가속/감속 로직
-                accumulatedFlowOffset += 0.003f + (targetEnergy * 0.018f)
+                val target = if (exoPlayer.isPlaying) realTimePeak else 0f
+                accumulatedFlowOffset += 0.003f + (target * 0.02f)
             }
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.5f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        // RENDER AREA
+        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.55f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 bokehShader.setFloatUniform("u_resolution", size.width, size.height)
                 bokehShader.setFloatUniform("u_posOffset", accumulatedFlowOffset)
                 bokehShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
-                bokehShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) audioEnergy else 0.02f)
-                bokehShader.setFloatUniform("u_resonance", if (exoPlayer.isPlaying) audioResonance else 0.02f)
+                bokehShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) realTimePeak else 0.02f)
+                bokehShader.setFloatUniform("u_resonance", if (exoPlayer.isPlaying) smoothedResonance else 0.02f)
                 drawRect(brush = ShaderBrush(bokehShader))
             }
-            
             if (currentArtBitmap != null) {
-                Image(
-                    bitmap = currentArtBitmap!!.asImageBitmap(), 
-                    contentDescription = null, 
-                    modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(16.dp))
-                )
+                Image(bitmap = currentArtBitmap!!.asImageBitmap(), contentDescription = null, 
+                    modifier = Modifier.size(if (isPresentationMode) 260.dp else 180.dp).clip(RoundedCornerShape(24.dp)))
             }
         }
 
-        // --- 복원된 컨트롤 룸 UI ---
+        // CONTROL ROOM
         AnimatedVisibility(visible = !isPresentationMode) {
-            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF121212)).padding(24.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Control Room", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                    Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("Pick MP3") }
+            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF0A0A0A)).padding(20.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("CONTROL ROOM", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
+                        Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                Text("Bass Boost (Gain): ${String.format("%.1fx", gainState)}", color = Color.Gray)
-                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..20f)
-
-                Text("Attack (Swell): ${String.format("%.3f", attackState)}", color = Color.Gray)
-                Slider(attackState, { attackState = it; audioEngine.attackAlpha = it }, valueRange = 0.001f..0.5f)
-
-                Text("Release (Fade): ${String.format("%.3f", releaseState)}", color = Color.Gray)
-                Slider(releaseState, { releaseState = it; audioEngine.releaseAlpha = it }, valueRange = 0.001f..0.1f)
+                if (showTelemetry) {
+                    DataBar("RAW INPUT", rawInput, Color.DarkGray)
+                    DataBar("REAL-TIME PEAK (BEAT)", realTimePeak, Color(0xFFFF5722))
+                    DataBar("RESONANCE (SWELL)", smoothedResonance, Color(0xFF00E5FF))
+                }
                 
-                Text("Design Note: Background bokeh moves at 30% speed of foreground dust for Z-depth parallax.", 
-                    color = Color.DarkGray, style = MaterialTheme.typography.bodySmall)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(showTelemetry, { showTelemetry = it }, modifier = Modifier.scale(0.7f))
+                    Text("Show Live Telemetry", color = Color.LightGray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 8.dp))
+                }
+
+                Text("Bass Gain: ${String.format("%.1fx", gainState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 8.dp))
+                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..30f)
+
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Attack: ${String.format("%.2f", attackState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Slider(attackState, { attackState = it; audioEngine.attackAlpha = it }, valueRange = 0.01f..0.5f)
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Release: ${String.format("%.3f", releaseState)}", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Slider(releaseState, { releaseState = it; audioEngine.releaseAlpha = it }, valueRange = 0.001f..0.1f)
+                    }
+                }
             }
         }
 
+        // BOTTOM TOGGLE
         Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-            Button(onClick = { isPresentationMode = !isPresentationMode }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
-                Text(if (isPresentationMode) "Open Controls" else "Presentation Mode")
+            Button(onClick = { isPresentationMode = !isPresentationMode }, 
+                colors = ButtonDefaults.buttonColors(containerColor = if (isPresentationMode) Color.DarkGray else currentFluidColor.copy(alpha = 0.4f))) {
+                Text(if (isPresentationMode) "EXIT PRESENTATION" else "ENTER PRESENTATION MODE")
             }
         }
     }
