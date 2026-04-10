@@ -1,4 +1,4 @@
-package com.yourpackagename // REPLACE with your actual package name
+package com.yourpackagename // 실제 패키지 명으로 변경
 
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -54,9 +54,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ==========================================
-// 1. THE MATH ENGINE (LPF + EMA + GAIN)
-// ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var attackAlpha: Float = 0.05f
@@ -83,10 +80,8 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     override fun handleBuffer(buffer: ByteBuffer) {
         val limit = buffer.limit()
         if (limit == 0) return
-
         var sumSquares = 0.0
         var sampleCount = 0
-
         buffer.position(0)
         while (buffer.position() < limit - 1) {
             val rawSample = buffer.short.toFloat() / Short.MAX_VALUE
@@ -95,10 +90,8 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
             sumSquares += (filteredSample * filteredSample)
             sampleCount++
         }
-
         val rawRms = if (sampleCount > 0) sqrt(sumSquares / sampleCount).toFloat() else 0f
         val boostedRms = (rawRms * audioGain).coerceIn(0f, 1f)
-        
         _immediateEnergy.value = boostedRms
         val alpha = if (boostedRms > currentEMAValue) attackAlpha else releaseAlpha
         currentEMAValue = (alpha * boostedRms) + ((1f - alpha) * currentEMAValue)
@@ -107,14 +100,14 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE AGSL SHADER (DYNAMIC DEPTH-OF-FIELD)
+// 프리미엄 쉐이더: 시차(Parallax)와 고대비 보케 적용
 // ==========================================
 const val BOKEH_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_energy;       // Driven by: Sharp Particles (The Beat)
-    uniform float u_resonance;    // Driven by: Bokeh Swell (The Flow)
-    uniform float3 u_artColor;    // Driven by: Album Art
-    uniform float u_posOffset;    // Continuity
+    uniform float u_energy;
+    uniform float u_resonance;
+    uniform float3 u_artColor;
+    uniform float u_posOffset;
     
     float hash21(float2 p) {
         p = fract(p*float2(234.34, 435.12));
@@ -122,19 +115,22 @@ const val BOKEH_SHADER_SRC = """
         return fract(p.x*p.y);
     }
 
-    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase) {
+    // 레이어 드로잉: 시차와 부드러움을 위한 파라미터 추가
+    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase, float flickerSeed) {
         float2 st = uv * gridSize;
         float2 gridId = floor(st);
         float2 localUv = fract(st) - 0.5;
         
         float rnd = hash21(gridId);
-        // Animate based on unique cell ID + offset
         float t = offset + rnd * 6.28;
-        float2 p = float2(sin(t), cos(t)) * 0.3;
+        float2 p = float2(sin(t), cos(t)) * 0.35;
         
         float d = distance(localUv, p);
-        // smoothstep handles the 'blur' (bokeh vs sharp)
-        return smoothstep(sizeBase, sizeBase - blur, d);
+        
+        // 유기적인 빛남(Shimmer)을 위한 사인파 적용
+        float shimmer = 0.6 + 0.4 * sin(offset * 2.0 + rnd * 10.0);
+        
+        return smoothstep(sizeBase, sizeBase - blur, d) * shimmer;
     }
 
     half4 main(float2 fragCoord) {
@@ -143,33 +139,32 @@ const val BOKEH_SHADER_SRC = """
         
         half3 finalColor = half3(0.0);
         
-        // --- LAYER 1: LARGE BOKEH ORBS (Background Resonance) ---
-        // These are large, blurry, and swell with resonance
-        float bokehSize = 0.05 + u_resonance * 0.4;
-        float bokehBlur = 0.4; // High blur for background
-        float bokehLayer = drawLayer(uv, 8.0, u_posOffset * 0.5, bokehBlur, bokehSize);
-        finalColor += half3(u_artColor) * half(bokehLayer * 0.4);
+        // --- LAYER 1: 웅장한 백그라운드 보케 (Z-Plane Deep) ---
+        // 크기를 3배로 키우고, 이동 속도를 전경의 30%로 제한하여 깊이감 형성
+        float bokehSize = 0.15 + u_resonance * 0.45;
+        float bokehBlur = 0.7; 
+        float bokehLayer = drawLayer(uv, 5.0, u_posOffset * 0.3, bokehBlur, bokehSize, 1.0);
+        finalColor += half3(u_artColor) * half(bokehLayer * 0.35);
 
-        // --- LAYER 2: SHARP ENERGY DUST (Foreground Energy) ---
-        // These are tiny, crisp, and flicker with energy
-        float dustSize = 0.02 + u_energy * 0.05;
-        float dustBlur = 0.02; // Sharp edges
-        float dustLayer = drawLayer(uv, 20.0, u_posOffset * 1.5, dustBlur, dustSize);
-        finalColor += half3(u_artColor) * half(dustLayer * u_energy * 1.2);
+        // --- LAYER 2: 선명한 전경 입자 (Energy Dust) ---
+        // 미세하고 선명하며, 에너지에 반응하여 빠르게 움직임
+        float dustSize = 0.03 + u_energy * 0.08;
+        float dustBlur = 0.05; 
+        float dustLayer = drawLayer(uv, 15.0, u_posOffset * 1.2, dustBlur, dustSize, 2.0);
+        finalColor += half3(u_artColor) * half(dustLayer * (0.5 + u_energy * 1.0));
         
-        // Atmospheric glow and vignette
+        // 배경 베이스 조명
         float dist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
-        half3 baseBg = half3(u_artColor) * 0.05;
+        half3 baseBg = half3(u_artColor) * 0.08;
         finalColor += baseBg;
+        
+        // 비네팅 (중앙 앨범 아트 집중)
         finalColor *= smoothstep(1.2, 0.2, dist);
 
         return half4(finalColor, 1.0);
     }
 """
 
-// ==========================================
-// 3. MAIN PROTOTYPE COMPOSE SCREEN
-// ==========================================
 @OptIn(UnstableApi::class)
 @Composable
 fun FluidMediaPrototype() {
@@ -181,7 +176,11 @@ fun FluidMediaPrototype() {
     var currentFluidColor by remember { mutableStateOf(Color.Cyan) }
     var accumulatedFlowOffset by remember { mutableFloatStateOf(0f) }
     var isPresentationMode by remember { mutableStateOf(false) }
+    
+    // 복원된 컨트롤 룸 상태
     var gainState by remember { mutableFloatStateOf(audioEngine.audioGain) }
+    var attackState by remember { mutableFloatStateOf(audioEngine.attackAlpha) }
+    var releaseState by remember { mutableFloatStateOf(audioEngine.releaseAlpha) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -217,7 +216,8 @@ fun FluidMediaPrototype() {
         while (true) {
             withFrameMillis { 
                 val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0f
-                accumulatedFlowOffset += 0.002f + (targetEnergy * 0.015f)
+                // 부드러운 가속/감속 로직
+                accumulatedFlowOffset += 0.003f + (targetEnergy * 0.018f)
             }
         }
     }
@@ -242,6 +242,7 @@ fun FluidMediaPrototype() {
             }
         }
 
+        // --- 복원된 컨트롤 룸 UI ---
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF121212)).padding(24.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -249,18 +250,25 @@ fun FluidMediaPrototype() {
                     Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("Pick MP3") }
                 }
                 
-                Spacer(modifier = Modifier.height(24.dp))
-                Text("Bass LPF Boost (Gain): ${String.format("%.1fx", gainState)}", color = Color.Gray)
-                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..20f)
+                Spacer(modifier = Modifier.height(16.dp))
                 
-                Text("Why this works: Large blurry particles (Resonance) create depth, while tiny sharp particles (Energy) create rhythm.", 
+                Text("Bass Boost (Gain): ${String.format("%.1fx", gainState)}", color = Color.Gray)
+                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..20f)
+
+                Text("Attack (Swell): ${String.format("%.3f", attackState)}", color = Color.Gray)
+                Slider(attackState, { attackState = it; audioEngine.attackAlpha = it }, valueRange = 0.001f..0.5f)
+
+                Text("Release (Fade): ${String.format("%.3f", releaseState)}", color = Color.Gray)
+                Slider(releaseState, { releaseState = it; audioEngine.releaseAlpha = it }, valueRange = 0.001f..0.1f)
+                
+                Text("Design Note: Background bokeh moves at 30% speed of foreground dust for Z-depth parallax.", 
                     color = Color.DarkGray, style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
             Button(onClick = { isPresentationMode = !isPresentationMode }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
-                Text(if (isPresentationMode) "Debug Off" else "Presentation Mode")
+                Text(if (isPresentationMode) "Open Controls" else "Presentation Mode")
             }
         }
     }
