@@ -61,26 +61,23 @@ class MainActivity : ComponentActivity() {
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var attackAlpha: Float = 0.05f
     var releaseAlpha: Float = 0.005f
-    var useRawData: Boolean = false
-    var audioGain: Float = 8.0f // Higher gain because LPF reduces signal amplitude
+    var audioGain: Float = 10.0f 
 
-    private val _smoothedEnergy = MutableStateFlow(0f)
-    val smoothedEnergy: StateFlow<Float> = _smoothedEnergy
+    private val _smoothedResonance = MutableStateFlow(0f)
+    val smoothedResonance: StateFlow<Float> = _smoothedResonance 
 
-    private val _rawEnergy = MutableStateFlow(0f)
-    val rawEnergy: StateFlow<Float> = _rawEnergy
+    private val _immediateEnergy = MutableStateFlow(0f)
+    val immediateEnergy: StateFlow<Float> = _immediateEnergy 
 
-    private var currentTrend = 0f
-    
-    // Low-Pass Filter State
+    private var currentEMAValue = 0f
     private var previousFilteredSample = 0f
-    private val lpfAlpha = 0.05f // Cutoff for bass/kick drum isolation
+    private val lpfAlpha = 0.05f 
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
-        currentTrend = 0f
+        currentEMAValue = 0f
         previousFilteredSample = 0f
-        _smoothedEnergy.value = 0f
-        _rawEnergy.value = 0f
+        _smoothedResonance.value = 0f
+        _immediateEnergy.value = 0f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
@@ -93,11 +90,8 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         buffer.position(0)
         while (buffer.position() < limit - 1) {
             val rawSample = buffer.short.toFloat() / Short.MAX_VALUE
-            
-            // First-Order IIR Low-Pass Filter
             val filteredSample = previousFilteredSample + lpfAlpha * (rawSample - previousFilteredSample)
             previousFilteredSample = filteredSample
-            
             sumSquares += (filteredSample * filteredSample)
             sampleCount++
         }
@@ -105,103 +99,76 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         val rawRms = if (sampleCount > 0) sqrt(sumSquares / sampleCount).toFloat() else 0f
         val boostedRms = (rawRms * audioGain).coerceIn(0f, 1f)
         
-        _rawEnergy.value = boostedRms
-
-        if (useRawData) {
-            currentTrend = boostedRms
-        } else {
-            val alpha = if (boostedRms > currentTrend) attackAlpha else releaseAlpha
-            currentTrend = (alpha * boostedRms) + ((1f - alpha) * currentTrend)
-        }
-
-        _smoothedEnergy.value = currentTrend.coerceIn(0f, 1f)
+        _immediateEnergy.value = boostedRms
+        val alpha = if (boostedRms > currentEMAValue) attackAlpha else releaseAlpha
+        currentEMAValue = (alpha * boostedRms) + ((1f - alpha) * currentEMAValue)
+        _smoothedResonance.value = currentEMAValue.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 2. THE AGSL SHADER (CONTINUOUS FLOW)
+// 2. THE AGSL SHADER (DYNAMIC DEPTH-OF-FIELD)
 // ==========================================
-const val FLUID_SHADER_SRC = """
+const val BOKEH_SHADER_SRC = """
     uniform float2 u_resolution;
-    uniform float u_energy;
-    uniform float3 u_artColor;
-    uniform float u_flowOffset; 
+    uniform float u_energy;       // Driven by: Sharp Particles (The Beat)
+    uniform float u_resonance;    // Driven by: Bokeh Swell (The Flow)
+    uniform float3 u_artColor;    // Driven by: Album Art
+    uniform float u_posOffset;    // Continuity
     
-    float random (in float2 _st) {
-        return fract(sin(dot(_st.xy, float2(12.9898,78.233))) * 43758.5453123);
+    float hash21(float2 p) {
+        p = fract(p*float2(234.34, 435.12));
+        p += dot(p, p+34.23);
+        return fract(p.x*p.y);
     }
-    
-    float noise (in float2 _st) {
-        float2 i = floor(_st);
-        float2 f = fract(_st);
-        float a = random(i);
-        float b = random(i + float2(1.0, 0.0));
-        float c = random(i + float2(0.0, 1.0));
-        float d = random(i + float2(1.0, 1.0));
-        float2 u = f * f * (3.0 - 2.0 * f);
-        return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+
+    float drawLayer(float2 uv, float gridSize, float offset, float blur, float sizeBase) {
+        float2 st = uv * gridSize;
+        float2 gridId = floor(st);
+        float2 localUv = fract(st) - 0.5;
+        
+        float rnd = hash21(gridId);
+        // Animate based on unique cell ID + offset
+        float t = offset + rnd * 6.28;
+        float2 p = float2(sin(t), cos(t)) * 0.3;
+        
+        float d = distance(localUv, p);
+        // smoothstep handles the 'blur' (bokeh vs sharp)
+        return smoothstep(sizeBase, sizeBase - blur, d);
     }
 
     half4 main(float2 fragCoord) {
-        float2 uv = fragCoord / u_resolution.xy;
+        float2 uv = fragCoord / u_resolution;
         uv.x *= u_resolution.x / u_resolution.y;
         
-        // Use accumulated flowOffset from CPU to ensure perfect continuity
-        float2 pos = float2(uv.x * 2.5, uv.y * 2.5 - u_flowOffset);
+        half3 finalColor = half3(0.0);
         
-        float n = noise(pos);
-        n += noise(pos * 2.0) * 0.5;
-        n += noise(pos * 4.0) * 0.25;
-        n /= 1.75; 
+        // --- LAYER 1: LARGE BOKEH ORBS (Background Resonance) ---
+        // These are large, blurry, and swell with resonance
+        float bokehSize = 0.05 + u_resonance * 0.4;
+        float bokehBlur = 0.4; // High blur for background
+        float bokehLayer = drawLayer(uv, 8.0, u_posOffset * 0.5, bokehBlur, bokehSize);
+        finalColor += half3(u_artColor) * half(bokehLayer * 0.4);
+
+        // --- LAYER 2: SHARP ENERGY DUST (Foreground Energy) ---
+        // These are tiny, crisp, and flicker with energy
+        float dustSize = 0.02 + u_energy * 0.05;
+        float dustBlur = 0.02; // Sharp edges
+        float dustLayer = drawLayer(uv, 20.0, u_posOffset * 1.5, dustBlur, dustSize);
+        finalColor += half3(u_artColor) * half(dustLayer * u_energy * 1.2);
         
-        n = smoothstep(0.35, 0.65, n);
-        
-        half3 baseColor = half3(u_artColor) * 0.15; 
-        half3 energyColor = half3(u_artColor) * (u_energy * 3.5); 
-        
-        half3 finalColor = mix(baseColor, baseColor + energyColor, n);
-        
+        // Atmospheric glow and vignette
         float dist = distance(fragCoord / u_resolution.xy, float2(0.5, 0.5));
-        finalColor *= smoothstep(1.0, 0.2, dist);
+        half3 baseBg = half3(u_artColor) * 0.05;
+        finalColor += baseBg;
+        finalColor *= smoothstep(1.2, 0.2, dist);
 
         return half4(finalColor, 1.0);
     }
 """
 
 // ==========================================
-// 3. TELEMETRY UI COMPONENT
-// ==========================================
-@Composable
-fun TelemetryMeter(rawEnergy: Float, smoothedEnergy: Float, showLightning: Boolean) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text("LIVE DSP TELEMETRY", color = Color.Cyan, style = MaterialTheme.typography.labelMedium)
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        AnimatedVisibility(visible = showLightning) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Bass Input (LPF):    ", color = Color.Gray, modifier = Modifier.width(140.dp))
-                    Canvas(modifier = Modifier.height(12.dp).weight(1f).clip(RoundedCornerShape(6.dp))) {
-                        drawRect(color = Color.DarkGray)
-                        drawRect(color = Color(0xFFFF5722), size = size.copy(width = size.width * rawEnergy))
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Shader Input (EMA):  ", color = Color.White, modifier = Modifier.width(140.dp))
-            Canvas(modifier = Modifier.height(12.dp).weight(1f).clip(RoundedCornerShape(6.dp))) {
-                drawRect(color = Color.DarkGray)
-                drawRect(color = Color(0xFF00E5FF), size = size.copy(width = size.width * smoothedEnergy))
-            }
-        }
-    }
-}
-
-// ==========================================
-// 4. MAIN PROTOTYPE COMPOSE SCREEN
+// 3. MAIN PROTOTYPE COMPOSE SCREEN
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
@@ -210,18 +177,12 @@ fun FluidMediaPrototype() {
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
-    // States
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var currentFluidColor by remember { mutableStateOf(Color.Cyan) }
-    var fluidOffset by remember { mutableFloatStateOf(0f) }
+    var accumulatedFlowOffset by remember { mutableFloatStateOf(0f) }
     var isPresentationMode by remember { mutableStateOf(false) }
-    var attackState by remember { mutableFloatStateOf(audioEngine.attackAlpha) }
-    var releaseState by remember { mutableFloatStateOf(audioEngine.releaseAlpha) }
-    var useRawData by remember { mutableStateOf(audioEngine.useRawData) }
-    var showLightningTelemetry by remember { mutableStateOf(false) }
     var gainState by remember { mutableFloatStateOf(audioEngine.audioGain) }
 
-    // Listen to ExoPlayer Metadata
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
@@ -233,20 +194,13 @@ fun FluidMediaPrototype() {
                         val extracted = palette?.getVibrantColor(Color.Cyan.toArgb()) ?: Color.Cyan.toArgb()
                         currentFluidColor = Color(extracted)
                     }
-                } else {
-                    currentArtBitmap = null
-                    currentFluidColor = Color.Cyan
                 }
             }
         }
         exoPlayer.addListener(listener)
-        onDispose {
-            exoPlayer.removeListener(listener)
-            exoPlayer.release()
-        }
+        onDispose { exoPlayer.release() }
     }
 
-    // File Picker
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
             exoPlayer.setMediaItem(MediaItem.fromUri(it))
@@ -255,17 +209,15 @@ fun FluidMediaPrototype() {
         }
     }
 
-    val audioEnergy by audioEngine.smoothedEnergy.collectAsState()
-    val rawEnergy by audioEngine.rawEnergy.collectAsState()
-    val fluidShader = remember { RuntimeShader(FLUID_SHADER_SRC) }
+    val audioResonance by audioEngine.smoothedResonance.collectAsState()
+    val audioEnergy by audioEngine.immediateEnergy.collectAsState()
+    val bokehShader = remember { RuntimeShader(BOKEH_SHADER_SRC) }
 
-    // THE ACCUMULATOR LOOP
     LaunchedEffect(Unit) {
         while (true) {
             withFrameMillis { 
                 val targetEnergy = if (exoPlayer.isPlaying) audioEnergy else 0f
-                // Fixed base speed + audio surge
-                fluidOffset += 0.002f + (targetEnergy * 0.015f)
+                accumulatedFlowOffset += 0.002f + (targetEnergy * 0.015f)
             }
         }
     }
@@ -273,11 +225,12 @@ fun FluidMediaPrototype() {
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.5f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                fluidShader.setFloatUniform("u_resolution", size.width, size.height)
-                fluidShader.setFloatUniform("u_flowOffset", fluidOffset)
-                fluidShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
-                fluidShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) audioEnergy else 0.02f)
-                drawRect(brush = ShaderBrush(fluidShader))
+                bokehShader.setFloatUniform("u_resolution", size.width, size.height)
+                bokehShader.setFloatUniform("u_posOffset", accumulatedFlowOffset)
+                bokehShader.setFloatUniform("u_artColor", currentFluidColor.red, currentFluidColor.green, currentFluidColor.blue)
+                bokehShader.setFloatUniform("u_energy", if (exoPlayer.isPlaying) audioEnergy else 0.02f)
+                bokehShader.setFloatUniform("u_resonance", if (exoPlayer.isPlaying) audioResonance else 0.02f)
+                drawRect(brush = ShaderBrush(bokehShader))
             }
             
             if (currentArtBitmap != null) {
@@ -286,8 +239,6 @@ fun FluidMediaPrototype() {
                     contentDescription = null, 
                     modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(16.dp))
                 )
-            } else {
-                Box(modifier = Modifier.size(if (isPresentationMode) 280.dp else 180.dp).clip(RoundedCornerShape(16.dp)).background(Color.DarkGray))
             }
         }
 
@@ -295,29 +246,21 @@ fun FluidMediaPrototype() {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF121212)).padding(24.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Control Room", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                    Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("Select File") }
+                    Button(onClick = { filePickerLauncher.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("Pick MP3") }
                 }
-                TelemetryMeter(rawEnergy, audioEnergy, showLightningTelemetry)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(showLightningTelemetry, { showLightningTelemetry = it })
-                    Text(" Show Lightning (Bass Only)", color = Color.LightGray, modifier = Modifier.padding(start = 8.dp))
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(useRawData, { useRawData = it; audioEngine.useRawData = it })
-                    Text(" Bypass Smoothing (Jitter Test)", color = Color.LightGray, modifier = Modifier.padding(start = 8.dp))
-                }
-                Text("Attack (Swell): ${String.format("%.3f", attackState)}", color = Color.Gray, modifier = Modifier.padding(top = 8.dp))
-                Slider(attackState, { attackState = it; audioEngine.attackAlpha = it }, valueRange = 0.001f..0.5f)
-                Text("Release (Fade): ${String.format("%.3f", releaseState)}", color = Color.Gray)
-                Slider(releaseState, { releaseState = it; audioEngine.releaseAlpha = it }, valueRange = 0.001f..0.1f)
-                Text("Gain (Bass Boost): ${String.format("%.1fx", gainState)}", color = Color.Gray)
-                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..15f)
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                Text("Bass LPF Boost (Gain): ${String.format("%.1fx", gainState)}", color = Color.Gray)
+                Slider(gainState, { gainState = it; audioEngine.audioGain = it }, valueRange = 1f..20f)
+                
+                Text("Why this works: Large blurry particles (Resonance) create depth, while tiny sharp particles (Energy) create rhythm.", 
+                    color = Color.DarkGray, style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
             Button(onClick = { isPresentationMode = !isPresentationMode }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
-                Text(if (isPresentationMode) "Open Controls" else "Presentation Mode")
+                Text(if (isPresentationMode) "Debug Off" else "Presentation Mode")
             }
         }
     }
