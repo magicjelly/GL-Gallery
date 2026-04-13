@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. ENGINE: DUAL-SIGNAL DAMPING
+// 1. ENGINE: DUAL-SIGNAL ENVELOPE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -98,18 +98,18 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         
         _realTimePeak.value = compressedEnergy
         
-        // Slow structural breathing (0.985 retention)
+        // 98.5% damping: Slow, physical lens breathing
         currentAfterglow = (currentAfterglow * 0.985f) + (compressedEnergy * 0.015f)
         _macroBreath.value = currentAfterglow.coerceIn(0f, 1f)
         
-        // Snappy localized optical flare (0.80 retention)
+        // 80% damping: Snappy localized optical flare
         currentPulse = (currentPulse * 0.8f) + (compressedEnergy * 0.2f)
         _microPulse.value = currentPulse.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 2. THE ZERO-VELOCITY APERTURE SHADER
+// 2. THE ZERO-RIPPLE APERTURE SHADER
 // ==========================================
 const val OPTICAL_FIELD_SHADER_SRC = """
     uniform float2 u_resolution;
@@ -140,24 +140,26 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float2 cellId = i_st + neighbor;
                 float2 h = hash22(cellId);
                 
-                // PURE SUSPENSION: No global linear drift.
-                // Particles wander organically in elliptical patterns but always stay anchored to their general area.
+                // Suspended Brownian drift
                 float driftSpeed = 0.3 + h.x * 0.3;
                 float2 drift = float2(sin(time * driftSpeed + h.y * 6.28), cos(time * driftSpeed * 0.85 + h.x * 6.28)) * parallaxAmp;
                 float2 p = neighbor + 0.5 + drift;
                 
-                // CONTINUOUS FOCUS RACKING (Z-Depth)
+                float2 r = f_st - p;
+                float d = length(r);
+                
+                // Continuous Focus Racking
                 float z = sin(h.y * 6.28 + time * 0.12) * 0.5 + 0.5;
                 float focusDist = abs(z - 0.5) * 2.0; 
                 
-                float d = distance(f_st, p);
-                
-                // DOMAIN WARPING
-                // Gently distorts the shape of the bokeh disc, preventing perfect vector circles
-                float warp = sin(d * 10.0 - time * 1.5 + h.x * 6.28) * 0.03 * focusDist;
+                // --- THE FIX: ANGLE WARPING ---
+                // Warps the circumference, NOT the radius. This guarantees a perfectly smooth gradient
+                // with absolutely zero dark ripples or borders when orbs overlap.
+                float angle = atan(r.y, r.x);
+                float warp = sin(angle * 2.0 - time * 1.5 + h.x * 6.28) * 0.04 * focusDist;
                 d += warp;
                 
-                // SOLID APERTURE DISCS
+                // Solid Aperture Math
                 float baseSize = 0.15 + (h.x * 0.08);
                 float size = baseSize + (focusDist * 0.6) + (breath * 0.12);
                 float blur = 0.02 + (focusDist * 0.8) + (breath * 0.1);
@@ -165,15 +167,12 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float safeBlur = min(blur, size * 0.99); 
                 float orbLight = smoothstep(size, size - safeBlur, d);
                 
-                // STOCHASTIC REACTIVITY (Randomized beat response)
+                // Stochastic Pulse & Energy Conservation
                 float reactivity = smoothstep(0.7, 1.0, h.y); 
                 float localFlare = pulse * reactivity * 2.5; 
-                
-                // ENERGY CONSERVATION
                 float intensity = (1.0 / (1.0 + focusDist * 4.0)) * (1.0 + localFlare);
                 float shimmer = 0.6 + 0.4 * sin(time * 1.2 + h.x * 12.0);
                 
-                // ADDITIVE BLENDING (No black intersections)
                 totalLight += orbLight * intensity * shimmer;
             }
         }
@@ -195,19 +194,15 @@ const val OPTICAL_FIELD_SHADER_SRC = """
         float washNoise = sin(uv.x * 2.5 + u_time * 0.1) * cos(uv.y * 2.5 + u_time * 0.08);
         color += half3(u_mutedColor) * half((0.3 + 0.7 * washNoise) * (0.6 + 0.4 * u_macroBreath));
         
-        // --- THE FIX: ZERO GLOBAL VELOCITY ---
-        // Notice `uv` is passed directly, with NO `float2(u_time...)` additions.
-        // The grids are permanently locked to the screen space.
-        
-        // LAYER B: Structural Dominant Field (Large background forms)
+        // LAYER B: Structural Dominant Field
         float field1 = getSuspendedApertureField(uv, 4.2, u_time, u_macroBreath, u_microPulse, 0.35);
         color += half3(u_dominantColor) * half(field1 * (0.4 + 0.6 * centerProtect));
         
-        // LAYER C: Detailed Vibrant Field (Sharper foreground forms)
+        // LAYER C: Detailed Vibrant Field
         float field2 = getSuspendedApertureField(uv + float2(0.5, 0.5), 8.0, u_time * 1.3, u_macroBreath, u_microPulse, 0.45);
         color += half3(u_vibrantColor) * half(field2 * centerProtect);
         
-        // LINEAR OPTICAL CURVE
+        // Linear Optical Curve (Preserves Additive Light flawlessly)
         color = color / (1.0 + color * 0.25); 
         color *= smoothstep(1.4, 0.35, distFromCenter); 
         
@@ -272,8 +267,6 @@ fun FluidMediaPrototype() {
             withFrameMillis { 
                 val targetMult = if (isPlaying) 1f else 0.2f
                 activeStateAlpha = (0.02f * targetMult) + (0.98f * activeStateAlpha)
-                
-                // Feeds into the trigonometric oscillation, NOT linear velocity
                 engineTime += 0.005f * activeStateAlpha
             }
         }
@@ -302,7 +295,7 @@ fun FluidMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("SUSPENDED OPTICS ENGINE", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("FLAWLESS SUSPENSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
