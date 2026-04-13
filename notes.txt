@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. ENGINE: DUAL-SIGNAL DAMPING
+// 1. ENGINE: DUAL-SIGNAL ENVELOPE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -109,7 +109,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE DEPTH-GATED APERTURE SHADER
+// 2. THE REFINED APERTURE SHADER
 // ==========================================
 const val OPTICAL_FIELD_SHADER_SRC = """
     uniform float2 u_resolution;
@@ -140,7 +140,6 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float2 cellId = i_st + neighbor;
                 float2 h = hash22(cellId);
                 
-                // Brownian drift (strictly suspended, zero velocity)
                 float driftSpeed = 0.3 + h.x * 0.3;
                 float2 drift = float2(sin(time * driftSpeed + h.y * 6.28), cos(time * driftSpeed * 0.85 + h.x * 6.28)) * parallaxAmp;
                 float2 p = neighbor + 0.5 + drift;
@@ -148,37 +147,41 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float2 r = f_st - p;
                 float d = length(r);
                 
-                // Continuous Focus Racking
+                // --- 1. WIDENED FOCAL PLANE ---
+                // The sine wave is remapped through a smoothstep so it "hangs" near 0.0 (in focus) longer.
                 float z = sin(h.y * 6.28 + time * 0.12) * 0.5 + 0.5;
-                float focusDist = abs(z - 0.5) * 2.0; 
+                float rawFocus = abs(z - 0.5) * 2.0; 
+                float focusDist = smoothstep(0.1, 0.9, rawFocus); 
                 
-                // Domain Warping: Warps the angle so the gradient stays flawless
                 float angle = atan(r.y, r.x);
                 float warp = sin(angle * 2.0 - time * 1.5 + h.x * 6.28) * 0.04 * focusDist;
                 d += warp;
                 
-                // Sizing and Blur Math
-                float baseSize = 0.15 + (h.x * 0.08);
-                float size = baseSize + (focusDist * 0.6) + (breath * 0.12);
-                float blur = 0.02 + (focusDist * 0.8) + (breath * 0.1);
+                // --- 2. TRUE SHARPNESS ---
+                // Breath only blurs out-of-focus orbs. In-focus orbs remain razor sharp.
+                float baseSize = 0.12 + (h.x * 0.08);
+                float size = baseSize + (focusDist * 0.6) + (breath * focusDist * 0.15);
+                float blur = 0.005 + (focusDist * 0.8) + (breath * focusDist * 0.15);
                 
-                // THE FIX: GPU-SAFE MATH
-                // 1.0 - smoothstep(min, max, value) guarantees mathematically safe gradient rendering.
-                // Zero black borders. Zero grid lines.
-                float safeBlur = clamp(blur, 0.001, size * 0.99); 
-                float orbLight = 1.0 - smoothstep(size - safeBlur, size, d);
+                float safeBlur = min(blur, size * 0.99); 
+                float orbLight = smoothstep(size, size - safeBlur, d);
                 
-                // THE FIX: DEPTH-GATED ILLUMINATION
-                // The pulse only affects orbs that are sharp and in the foreground (focusDist ~ 0.0).
-                // Blurry background orbs completely ignore the beat, fixing the global-flash issue.
-                float depthReactivity = smoothstep(0.8, 0.0, focusDist) * smoothstep(0.5, 1.0, h.y); 
-                float localFlare = pulse * depthReactivity * 3.5; 
+                // --- 3. APERTURE RING BIAS ---
+                // The edge is slightly brighter than the center. 
+                // When two orbs overlap, the bright edges intersect visibly, proving it is additive glass.
+                float ring = smoothstep(0.0, size, d); 
+                orbLight *= (0.75 + 0.25 * ring); 
                 
-                // Light dims physically as it blurs out
-                float intensity = (1.0 / (1.0 + focusDist * 4.0)) * (1.0 + localFlare);
+                // --- 4. DEPTH-GATED FLARE ---
+                // Blurry background orbs (focusDist > 0.6) will absolutely never flash.
+                float depthGate = smoothstep(0.6, 0.0, focusDist); 
+                float reactivity = smoothstep(0.7, 1.0, h.y) * depthGate; 
+                
+                float localFlare = pulse * reactivity * 3.5; 
+                float intensity = (1.0 / (1.0 + focusDist * 5.0)) * (1.0 + localFlare);
+                
                 float shimmer = 0.6 + 0.4 * sin(time * 1.2 + h.x * 12.0);
                 
-                // Flawless pure additive blending
                 totalLight += orbLight * intensity * shimmer;
             }
         }
@@ -186,7 +189,6 @@ const val OPTICAL_FIELD_SHADER_SRC = """
     }
 
     half4 main(float2 fragCoord) {
-        // FLAT CANVAS
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
         uv.x *= aspect;
@@ -209,7 +211,6 @@ const val OPTICAL_FIELD_SHADER_SRC = """
         float field2 = getSuspendedApertureField(uv + float2(0.5, 0.5), 8.0, u_time * 1.3, u_macroBreath, u_microPulse, 0.45);
         color += half3(u_vibrantColor) * half(field2 * centerProtect);
         
-        // Linear Tone Mapping
         color = color / (1.0 + color * 0.25); 
         color *= smoothstep(1.4, 0.35, distFromCenter); 
         
@@ -302,7 +303,7 @@ fun FluidMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("DIAMOND-LEVEL SUSPENSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("TRUE OPTICS ENGINE", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
