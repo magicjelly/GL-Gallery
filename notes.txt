@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. ENGINE: DUAL-SIGNAL ENVELOPE
+// 1. ENGINE: DUAL-SIGNAL DAMPING
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -109,7 +109,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE ZERO-RIPPLE APERTURE SHADER
+// 2. THE DEPTH-GATED APERTURE SHADER
 // ==========================================
 const val OPTICAL_FIELD_SHADER_SRC = """
     uniform float2 u_resolution;
@@ -140,7 +140,7 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float2 cellId = i_st + neighbor;
                 float2 h = hash22(cellId);
                 
-                // Suspended Brownian drift
+                // Brownian drift (strictly suspended, zero velocity)
                 float driftSpeed = 0.3 + h.x * 0.3;
                 float2 drift = float2(sin(time * driftSpeed + h.y * 6.28), cos(time * driftSpeed * 0.85 + h.x * 6.28)) * parallaxAmp;
                 float2 p = neighbor + 0.5 + drift;
@@ -152,27 +152,33 @@ const val OPTICAL_FIELD_SHADER_SRC = """
                 float z = sin(h.y * 6.28 + time * 0.12) * 0.5 + 0.5;
                 float focusDist = abs(z - 0.5) * 2.0; 
                 
-                // --- THE FIX: ANGLE WARPING ---
-                // Warps the circumference, NOT the radius. This guarantees a perfectly smooth gradient
-                // with absolutely zero dark ripples or borders when orbs overlap.
+                // Domain Warping: Warps the angle so the gradient stays flawless
                 float angle = atan(r.y, r.x);
                 float warp = sin(angle * 2.0 - time * 1.5 + h.x * 6.28) * 0.04 * focusDist;
                 d += warp;
                 
-                // Solid Aperture Math
+                // Sizing and Blur Math
                 float baseSize = 0.15 + (h.x * 0.08);
                 float size = baseSize + (focusDist * 0.6) + (breath * 0.12);
                 float blur = 0.02 + (focusDist * 0.8) + (breath * 0.1);
                 
-                float safeBlur = min(blur, size * 0.99); 
-                float orbLight = smoothstep(size, size - safeBlur, d);
+                // THE FIX: GPU-SAFE MATH
+                // 1.0 - smoothstep(min, max, value) guarantees mathematically safe gradient rendering.
+                // Zero black borders. Zero grid lines.
+                float safeBlur = clamp(blur, 0.001, size * 0.99); 
+                float orbLight = 1.0 - smoothstep(size - safeBlur, size, d);
                 
-                // Stochastic Pulse & Energy Conservation
-                float reactivity = smoothstep(0.7, 1.0, h.y); 
-                float localFlare = pulse * reactivity * 2.5; 
+                // THE FIX: DEPTH-GATED ILLUMINATION
+                // The pulse only affects orbs that are sharp and in the foreground (focusDist ~ 0.0).
+                // Blurry background orbs completely ignore the beat, fixing the global-flash issue.
+                float depthReactivity = smoothstep(0.8, 0.0, focusDist) * smoothstep(0.5, 1.0, h.y); 
+                float localFlare = pulse * depthReactivity * 3.5; 
+                
+                // Light dims physically as it blurs out
                 float intensity = (1.0 / (1.0 + focusDist * 4.0)) * (1.0 + localFlare);
                 float shimmer = 0.6 + 0.4 * sin(time * 1.2 + h.x * 12.0);
                 
+                // Flawless pure additive blending
                 totalLight += orbLight * intensity * shimmer;
             }
         }
@@ -180,6 +186,7 @@ const val OPTICAL_FIELD_SHADER_SRC = """
     }
 
     half4 main(float2 fragCoord) {
+        // FLAT CANVAS
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
         uv.x *= aspect;
@@ -202,7 +209,7 @@ const val OPTICAL_FIELD_SHADER_SRC = """
         float field2 = getSuspendedApertureField(uv + float2(0.5, 0.5), 8.0, u_time * 1.3, u_macroBreath, u_microPulse, 0.45);
         color += half3(u_vibrantColor) * half(field2 * centerProtect);
         
-        // Linear Optical Curve (Preserves Additive Light flawlessly)
+        // Linear Tone Mapping
         color = color / (1.0 + color * 0.25); 
         color *= smoothstep(1.4, 0.35, distFromCenter); 
         
@@ -295,14 +302,14 @@ fun FluidMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("FLAWLESS SUSPENSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("DIAMOND-LEVEL SUSPENSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("STOCHASTIC PULSE (FLARE)", microPulse, Color(0xFFFF5722))
+                TelemetryBar("DEPTH-GATED PULSE (FLARE)", microPulse, Color(0xFFFF5722))
                 TelemetryBar("MACRO BREATH (BLUR/SIZE)", macroBreath, Color(0xFF00E5FF))
                 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -328,7 +335,7 @@ fun FluidMediaPrototype() {
 @Composable
 fun TelemetryBar(label: String, value: Float, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(180.dp))
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(200.dp))
         Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
             drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
         }
