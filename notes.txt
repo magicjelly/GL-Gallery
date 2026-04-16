@@ -107,7 +107,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE TACTILE VOLUME EXTRUSION SHADER
+// 2. SHARP TACTILE EXTRUSION SHADER
 // ==========================================
 const val TACTILE_VOLUME_SHADER_SRC = """
     uniform float2 u_resolution;
@@ -119,26 +119,38 @@ const val TACTILE_VOLUME_SHADER_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Generates the Z-axis physical extrusion (Height Map)
-    // Uses metabolic distance fields to create smooth, heavy, interconnected masses
+    // Polynomial Smooth Maximum: Melts hard objects together fluidly but prevents foggy gradients
+    float smax(float a, float b, float k) {
+        float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0);
+        return mix(b, a, h) + k * h * (1.0 - h);
+    }
+
+    // Creates a sharp, dome-like mass rather than a soft blurry bell curve
+    float getSharpMass(float2 uv, float2 pos, float radius) {
+        float d = distance(uv, pos);
+        // Using a smoothstep with a tight falloff creates crisp, physical boundaries
+        return smoothstep(radius, radius * 0.3, d);
+    }
+
     float getMembraneExtrusion(float2 uv, float time, float pulse, float breath) {
-        // Acoustic Mass 1 (Central Heavy)
+        // Acoustic Mass 1 
         float2 p1 = float2(0.5 + sin(time * 0.4) * 0.15, 0.5 + cos(time * 0.3) * 0.15);
-        float h1 = exp(-pow(distance(uv, p1) / 0.35, 2.5));
+        float h1 = getSharpMass(uv, p1, 0.4);
         
-        // Acoustic Mass 2 (Orbiting Mid)
+        // Acoustic Mass 2
         float2 p2 = float2(0.5 - cos(time * 0.5) * 0.2, 0.5 + sin(time * 0.6) * 0.2);
-        float h2 = exp(-pow(distance(uv, p2) / 0.25, 2.5));
+        float h2 = getSharpMass(uv, p2, 0.35);
         
-        // Acoustic Mass 3 (Orbiting Fast)
+        // Acoustic Mass 3
         float2 p3 = float2(0.5 + sin(time * 0.7) * 0.25, 0.5 - cos(time * 0.4) * 0.2);
-        float h3 = exp(-pow(distance(uv, p3) / 0.2, 2.5));
+        float h3 = getSharpMass(uv, p3, 0.3);
         
-        // Combine masses smoothly
-        float totalHeight = h1 + h2 * 0.8 + h3 * 0.6;
+        // Merge the masses smoothly using smax (k = 0.2 dictates the tension of the liquid)
+        float totalHeight = smax(h1, h2, 0.2);
+        totalHeight = smax(totalHeight, h3, 0.2);
         
-        // The audio pulse physically pushes the membrane upward (Z-axis extrusion)
-        float dynamicTension = 0.4 + (breath * 0.2) + (pulse * 0.8);
+        // Acoustic pressure extrudes the membrane outward
+        float dynamicTension = 0.5 + (breath * 0.3) + (pulse * 0.9);
         return totalHeight * dynamicTension;
     }
 
@@ -151,37 +163,44 @@ const val TACTILE_VOLUME_SHADER_SRC = """
         float distFromCenter = distance(uv, screenCenter);
         float centerProtect = smoothstep(0.15, 0.65, distFromCenter); 
         
-        // 1. CALCULATE EXTRUSION HEIGHT
+        // 1. SHARP EXTRUSION
         float h = getMembraneExtrusion(uv, u_time, u_microPulse * centerProtect, u_macroBreath);
         
-        // 2. CALCULATE 3D SURFACE NORMAL (The angle of the silicone membrane)
+        // 2. SURFACE NORMAL (Sharpened depth parameter for crisper lighting)
         float2 e = float2(0.01, 0.0);
         float hx = getMembraneExtrusion(uv + e.xy, u_time, u_microPulse * centerProtect, u_macroBreath) - 
                    getMembraneExtrusion(uv - e.xy, u_time, u_microPulse * centerProtect, u_macroBreath);
         float hy = getMembraneExtrusion(uv + e.yx, u_time, u_microPulse * centerProtect, u_macroBreath) - 
                    getMembraneExtrusion(uv - e.yx, u_time, u_microPulse * centerProtect, u_macroBreath);
         
-        // The Z-component (0.08) defines the "stiffness" of the material
-        float3 normal = normalize(float3(hx, hy, 0.08));
+        // Z-value of 0.04 makes the material look taut and highly reflective
+        float3 normal = normalize(float3(hx, hy, 0.04));
         
-        // 3. PHYSICAL LIGHTING MODEL (Lambertian Diffuse)
-        // A virtual hardware light source anchored at the top-left of the display
-        float3 lightDir = normalize(float3(-0.8, -0.8, 1.2));
+        // 3. HARDWARE LIGHTING MODEL (Glossy Silicone)
+        float3 lightDir = normalize(float3(-0.6, -0.8, 1.0));
+        float3 viewDir = float3(0.0, 0.0, 1.0);
+        float3 halfDir = normalize(lightDir + viewDir);
+        
+        // Diffuse (Base matte lighting)
         float diffuse = max(dot(normal, lightDir), 0.0);
         
-        // Self-shadowing: the base of the membrane falls into soft shadow
-        float ambient = 0.3;
-        float lightIntensity = ambient + (0.7 * diffuse);
+        // Specular (Glossy sheen on the peaks)
+        float specular = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.6;
         
-        // 4. TOPOLOGICAL COLOR MAPPING
-        // Color is bonded to the physical height of the extrusion
-        half3 baseColor = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.0, 0.4, h));
-        baseColor = mix(baseColor, half3(u_vibrantColor), smoothstep(0.3, 1.0, h));
+        // Fresnel (Edge lighting to completely eradicate "foggy" silhouettes)
+        float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0) * 0.5;
         
-        // Apply the 3D lighting to the colored membrane
-        half3 finalColor = baseColor * lightIntensity;
+        float ambient = 0.15;
         
-        // Edge vignette
+        // 4. HIGH-CONTRAST COLOR MAPPING
+        // Steeper thresholds completely separate the colors, avoiding muddy fog
+        half3 baseColor = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.1, 0.4, h));
+        baseColor = mix(baseColor, half3(u_vibrantColor), smoothstep(0.4, 0.8, h));
+        
+        // Combine Light, Specular Sheen, and Fresnel Rims
+        half3 finalColor = (baseColor * (ambient + diffuse)) + half3(specular) + half3(u_vibrantColor) * fresnel;
+        
+        // Protect the UI with an edge vignette
         finalColor *= smoothstep(1.3, 0.4, distFromCenter); 
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
@@ -273,7 +292,7 @@ fun TactileVolumeMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("TACTILE EXTRUSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("SHARP TACTILE EXTRUSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
