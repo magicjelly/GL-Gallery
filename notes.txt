@@ -1,4 +1,4 @@
- package com.samsung.oneui.motion.prototype
+package com.samsung.oneui.motion.prototype
 
 import android.content.Context
 import android.graphics.BitmapFactory
@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    TopologicalVolumeMediaPrototype()
+                    TactileVolumeMediaPrototype()
                 }
             }
         }
@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. HARDWARE-ALIGNED ACOUSTIC ENVELOPE
+// 1. ENGINE: HARDWARE-ALIGNED AUDIO DAMPING
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -98,20 +98,18 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         
         _realTimePeak.value = compressedEnergy
         
-        // Massive inertia for heavy fluid rotation (0.985 damping)
         currentAfterglow = (currentAfterglow * 0.985f) + (compressedEnergy * 0.015f)
         _macroBreath.value = currentAfterglow.coerceIn(0f, 1f)
         
-        // Reactive acoustic pressure for volumetric extrusion (0.80 damping)
         currentPulse = (currentPulse * 0.8f) + (compressedEnergy * 0.2f)
         _microPulse.value = currentPulse.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 2. KINETIC TOPOLOGICAL VOLUME SHADER
+// 2. THE TACTILE VOLUME EXTRUSION SHADER
 // ==========================================
-const val TOPOLOGICAL_VOLUME_SHADER_SRC = """
+const val TACTILE_VOLUME_SHADER_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -121,49 +119,27 @@ const val TOPOLOGICAL_VOLUME_SHADER_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Sub-pixel stochastic dither seed
-    float2 hash22(float2 p) {
-        float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
-        p3 += dot(p3, p3.yzx + 33.33);
-        return fract((p3.xx+p3.yz)*p3.zy);
-    }
-
-    // Smooth volumetric noise
-    float noise(float2 x) {
-        float2 i = floor(x);
-        float2 f = fract(x);
-        f = f * f * (3.0 - 2.0 * f);
-        float res = mix(
-            mix(dot(hash22(i + float2(0.0, 0.0)), f - float2(0.0, 0.0)),
-                dot(hash22(i + float2(1.0, 0.0)), f - float2(1.0, 0.0)), f.x),
-            mix(dot(hash22(i + float2(0.0, 1.0)), f - float2(0.0, 1.0)),
-                dot(hash22(i + float2(1.0, 1.0)), f - float2(1.0, 1.0)), f.x), f.y);
-        return res * 0.5 + 0.5;
-    }
-
-    // Perceptual color mixing proxy (prevents muddy desaturation in transitions)
-    half3 perceptualMix(half3 c1, half3 c2, float t) {
-        // Squaring the inputs roughly approximates a linear working space
-        half3 l1 = c1 * c1;
-        half3 l2 = c2 * c2;
-        return sqrt(mix(l1, l2, t));
-    }
-
-    float getTopologicalDensity(float2 uv, float time, float breath) {
-        // Multi-octave domain warping creates the uncountable fluid forms
-        float2 q = float2(
-            noise(uv * 1.5 + time * 0.12),
-            noise(uv * 1.8 - time * 0.15)
-        );
+    // Generates the Z-axis physical extrusion (Height Map)
+    // Uses metabolic distance fields to create smooth, heavy, interconnected masses
+    float getMembraneExtrusion(float2 uv, float time, float pulse, float breath) {
+        // Acoustic Mass 1 (Central Heavy)
+        float2 p1 = float2(0.5 + sin(time * 0.4) * 0.15, 0.5 + cos(time * 0.3) * 0.15);
+        float h1 = exp(-pow(distance(uv, p1) / 0.35, 2.5));
         
-        float2 r = float2(
-            noise(uv * 3.0 + q * 1.5 + time * 0.2),
-            noise(uv * 3.2 + q * 2.0 - time * 0.18)
-        );
+        // Acoustic Mass 2 (Orbiting Mid)
+        float2 p2 = float2(0.5 - cos(time * 0.5) * 0.2, 0.5 + sin(time * 0.6) * 0.2);
+        float h2 = exp(-pow(distance(uv, p2) / 0.25, 2.5));
         
-        // Fluid rotation driven by macro acoustic breath
-        float density = noise(uv * 2.5 + r * (1.5 + breath * 0.8) - time * 0.1);
-        return density;
+        // Acoustic Mass 3 (Orbiting Fast)
+        float2 p3 = float2(0.5 + sin(time * 0.7) * 0.25, 0.5 - cos(time * 0.4) * 0.2);
+        float h3 = exp(-pow(distance(uv, p3) / 0.2, 2.5));
+        
+        // Combine masses smoothly
+        float totalHeight = h1 + h2 * 0.8 + h3 * 0.6;
+        
+        // The audio pulse physically pushes the membrane upward (Z-axis extrusion)
+        float dynamicTension = 0.4 + (breath * 0.2) + (pulse * 0.8);
+        return totalHeight * dynamicTension;
     }
 
     half4 main(float2 fragCoord) {
@@ -173,51 +149,51 @@ const val TOPOLOGICAL_VOLUME_SHADER_SRC = """
         
         float2 screenCenter = float2(0.5 * aspect, 0.5);
         float distFromCenter = distance(uv, screenCenter);
-        
-        // Central exclusion zone guarantees absolute UI legibility
         float centerProtect = smoothstep(0.15, 0.65, distFromCenter); 
         
-        // --- 1. THE VOLUMETRIC DOMAIN ---
-        float baseDensity = getTopologicalDensity(uv, u_time, u_macroBreath);
+        // 1. CALCULATE EXTRUSION HEIGHT
+        float h = getMembraneExtrusion(uv, u_time, u_microPulse * centerProtect, u_macroBreath);
         
-        // --- 2. KINETIC EXTRUSION (Depth Contrast) ---
-        // The acoustic micro pulse physically extrudes the dense areas of the fluid forward.
-        // It acts as a multiplier, pulling peaks out of the background void.
-        float extrusionForce = 1.0 + (u_microPulse * 1.8 * centerProtect);
-        float activeDensity = baseDensity * extrusionForce;
+        // 2. CALCULATE 3D SURFACE NORMAL (The angle of the silicone membrane)
+        float2 e = float2(0.01, 0.0);
+        float hx = getMembraneExtrusion(uv + e.xy, u_time, u_microPulse * centerProtect, u_macroBreath) - 
+                   getMembraneExtrusion(uv - e.xy, u_time, u_microPulse * centerProtect, u_macroBreath);
+        float hy = getMembraneExtrusion(uv + e.yx, u_time, u_microPulse * centerProtect, u_macroBreath) - 
+                   getMembraneExtrusion(uv - e.yx, u_time, u_microPulse * centerProtect, u_macroBreath);
         
-        // --- 3. PERCEPTUAL COLOR MAPPING ---
-        half3 color = half3(u_mutedColor);
+        // The Z-component (0.08) defines the "stiffness" of the material
+        float3 normal = normalize(float3(hx, hy, 0.08));
         
-        // Deep background transitions to dominant mid-volume
-        float t1 = smoothstep(0.3, 0.7, activeDensity);
-        color = perceptualMix(color, half3(u_dominantColor), t1);
+        // 3. PHYSICAL LIGHTING MODEL (Lambertian Diffuse)
+        // A virtual hardware light source anchored at the top-left of the display
+        float3 lightDir = normalize(float3(-0.8, -0.8, 1.2));
+        float diffuse = max(dot(normal, lightDir), 0.0);
         
-        // Mid-volume extrudes into vibrant peaks based on acoustic pressure
-        float t2 = smoothstep(0.6, 1.2, activeDensity);
-        color = perceptualMix(color, half3(u_vibrantColor), t2);
+        // Self-shadowing: the base of the membrane falls into soft shadow
+        float ambient = 0.3;
+        float lightIntensity = ambient + (0.7 * diffuse);
         
-        // Deepen the shadows to establish massive 3D depth without requiring reflections
-        color *= smoothstep(0.0, 0.5, activeDensity);
+        // 4. TOPOLOGICAL COLOR MAPPING
+        // Color is bonded to the physical height of the extrusion
+        half3 baseColor = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.0, 0.4, h));
+        baseColor = mix(baseColor, half3(u_vibrantColor), smoothstep(0.3, 1.0, h));
+        
+        // Apply the 3D lighting to the colored membrane
+        half3 finalColor = baseColor * lightIntensity;
         
         // Edge vignette
-        color *= smoothstep(1.3, 0.4, distFromCenter); 
+        finalColor *= smoothstep(1.3, 0.4, distFromCenter); 
         
-        // --- 4. HARDWARE DITHERING ---
-        // Extremely subtle high-frequency noise physically breaks OLED color banding.
-        float dither = (hash22(fragCoord).x - 0.5) * 0.015;
-        color += half3(dither);
-        
-        return half4(clamp(color, 0.0, 1.0), 1.0);
+        return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. ONE UI ALIGNED ARCHITECTURE
+// 3. UI & STATE MANAGEMENT
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun TopologicalVolumeMediaPrototype() {
+fun TactileVolumeMediaPrototype() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
@@ -239,7 +215,6 @@ fun TopologicalVolumeMediaPrototype() {
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
                     Palette.from(bitmap).generate { p ->
-                        // Fallbacks ensure the volume maintains deep contrast
                         val fallbackDark = 0xFF121212.toInt()
                         val fallbackMid = 0xFF37474F.toInt()
                         val fallbackLight = 0xFF78909C.toInt()
@@ -261,7 +236,7 @@ fun TopologicalVolumeMediaPrototype() {
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
     val microPulse by audioEngine.microPulse.collectAsState()
-    val opticalShader = remember { RuntimeShader(TOPOLOGICAL_VOLUME_SHADER_SRC) }
+    val opticalShader = remember { RuntimeShader(TACTILE_VOLUME_SHADER_SRC) }
 
     var activeStateAlpha by remember { mutableFloatStateOf(1f) }
 
@@ -298,15 +273,15 @@ fun TopologicalVolumeMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("TOPOLOGICAL VOLUME", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("TACTILE EXTRUSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("VOLUMETRIC SWELL (PULSE)", microPulse, Color(0xFFFF5722))
-                TelemetryBar("FLUID INERTIA (BREATH)", macroBreath, Color(0xFF00E5FF))
+                TelemetryBar("Z-AXIS DISPLACEMENT (PULSE)", microPulse, Color(0xFFFF5722))
+                TelemetryBar("MEMBRANE TENSION (BREATH)", macroBreath, Color(0xFF00E5FF))
                 
                 Spacer(modifier = Modifier.height(24.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
