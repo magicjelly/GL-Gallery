@@ -98,23 +98,25 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         
         _realTimePeak.value = compressedEnergy
         
+        // Massive inertia for the thick liquid rotation
         currentAfterglow = (currentAfterglow * 0.985f) + (compressedEnergy * 0.015f)
         _macroBreath.value = currentAfterglow.coerceIn(0f, 1f)
         
+        // Fast acoustic force
         currentPulse = (currentPulse * 0.8f) + (compressedEnergy * 0.2f)
         _microPulse.value = currentPulse.coerceIn(0f, 1f)
     }
 }
 
 // ==========================================
-// 2. THE CONTINUOUS OPAQUE SILK SHADER
+// 2. THE OPAQUE SILK SHADER
 // ==========================================
 const val OPAQUE_SILK_SHADER_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
     uniform float u_time;        
-    uniform float u_kineticTime; // THE FIX: Smoothly accumulated time
+    uniform float u_kineticTime; 
     
     uniform float3 u_mutedColor;
     uniform float3 u_dominantColor;
@@ -156,19 +158,22 @@ const val OPAQUE_SILK_SHADER_SRC = """
         
         float2 center = float2(0.5 * aspect, 0.5);
         float distFromCenter = distance(uv, center);
+        float centerProtect = smoothstep(0.1, 0.8, distFromCenter + 0.1);
         
-        // Fluid pressure driven by macro bass
-        float pressure = 1.0 + (u_macroBreath * 0.5);
+        float pressure = 1.0 + (u_macroBreath * 0.4);
         
-        // --- DOMAIN WARPING (Using smooth kinetic time to prevent stuttering) ---
+        // --- MULTI-STAGE DOMAIN WARPING ---
+        // THE FIX: Reduced kineticTime multiplier to 0.4 to ensure incredibly heavy, smooth folding
+        float kTime = u_kineticTime * 0.4;
+        
         float2 q = float2(
-            fbm(uv * 1.5 + u_kineticTime),
-            fbm(uv * 1.5 - u_kineticTime * 0.8)
+            fbm(uv * 1.5 + kTime),
+            fbm(uv * 1.5 - kTime * 0.8)
         );
         
         float2 r = float2(
-            fbm(uv * 2.5 + q * 3.0 * pressure + u_kineticTime * 1.2),
-            fbm(uv * 2.5 + q * 3.0 * pressure - u_kineticTime * 1.1)
+            fbm(uv * 2.5 + q * 3.0 * pressure + kTime * 1.1),
+            fbm(uv * 2.5 + q * 3.0 * pressure - kTime * 0.9)
         );
         
         float fluid = fbm(uv * 2.0 + r * 2.5);
@@ -178,10 +183,7 @@ const val OPAQUE_SILK_SHADER_SRC = """
         color = mix(color, half3(u_vibrantColor), smoothstep(0.45, 0.9, fluid));
         
         // --- ANTI-ALIASED STRIATIONS ---
-        // Reduced frequency from 45.0 to 30.0 to prevent sub-pixel moiré flickering
         float striations = cos(fluid * 30.0) * 0.5 + 0.5;
-        
-        // Smoothly blend the threads to make them look like soft silk, not hard lines
         color *= (0.85 + 0.15 * smoothstep(0.2, 0.8, striations));
         
         // UI Protection Vignette
@@ -213,7 +215,8 @@ fun OpaqueSilkMediaPrototype() {
     var vibrantColor by remember { mutableStateOf(Color(0xFFFF1744)) }
     
     var engineTime by remember { mutableFloatStateOf(0f) }
-    var kineticTime by remember { mutableFloatStateOf(0f) } // THE FIX: Smooth accumulator
+    var kineticTime by remember { mutableFloatStateOf(0f) } 
+    var smoothedPulse by remember { mutableFloatStateOf(0f) } // THE FIX: Frame-level 2nd order smoothing
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
     
     var isPresentationMode by remember { mutableStateOf(false) }
@@ -247,7 +250,6 @@ fun OpaqueSilkMediaPrototype() {
     }
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
-    val microPulse by audioEngine.microPulse.collectAsState()
     val opticalShader = remember { RuntimeShader(OPAQUE_SILK_SHADER_SRC) }
 
     var activeStateAlpha by remember { mutableFloatStateOf(1f) }
@@ -255,21 +257,28 @@ fun OpaqueSilkMediaPrototype() {
     LaunchedEffect(Unit) {
         while (true) {
             withFrameNanos { frameNanos ->
-                // THE FIX: True Delta Time calculation guarantees frame-perfect smoothness
                 if (lastFrameNanos == 0L) lastFrameNanos = frameNanos
-                val dt = (frameNanos - lastFrameNanos) / 1_000_000_000f
+                
+                // THE FIX 1: GAME-ENGINE DELTA CLAMPING
+                // Calculate time passed, but never allow it to exceed 32ms (roughly 30fps drop)
+                // If the OS lags and delivers a 100ms frame, we cap it. No teleporting.
+                var dt = (frameNanos - lastFrameNanos) / 1_000_000_000f
+                if (dt > 0.032f) dt = 0.016f 
                 lastFrameNanos = frameNanos
 
                 val targetMult = if (isPlaying) 1f else 0.2f
                 activeStateAlpha = (0.02f * targetMult) + (0.98f * activeStateAlpha)
                 
-                // Slow baseline engine time
                 engineTime += dt * 0.5f * activeStateAlpha
                 
-                // The audio pulse acts as an accelerator, smoothly advancing the fluid
-                // It NEVER teleports backwards, completely eradicating the "sharp increments"
-                val currentPulse = audioEngine.microPulse.value
-                val kineticVelocity = 0.15f + (currentPulse * 1.5f)
+                // THE FIX 2: 2ND ORDER FRAME DAMPING (SPRING PHYSICS)
+                // Instead of using the audio thread's pulse directly, we make the render thread
+                // 'chase' the audio target using a mathematical spring. It smooths any rough edges.
+                val targetPulse = audioEngine.microPulse.value
+                smoothedPulse += (targetPulse - smoothedPulse) * 8.0f * dt
+                
+                // Acceleration curve: Base speed + (Smoothed pulse * multiplier)
+                val kineticVelocity = 0.15f + (smoothedPulse * 1.2f)
                 kineticTime += dt * kineticVelocity * activeStateAlpha
             }
         }
@@ -280,9 +289,9 @@ fun OpaqueSilkMediaPrototype() {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 opticalShader.setFloatUniform("u_resolution", size.width, size.height)
                 opticalShader.setFloatUniform("u_time", engineTime)
-                opticalShader.setFloatUniform("u_kineticTime", kineticTime) // Pass continuous time
+                opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
                 opticalShader.setFloatUniform("u_macroBreath", macroBreath * activeStateAlpha)
-                opticalShader.setFloatUniform("u_microPulse", microPulse * activeStateAlpha)
+                opticalShader.setFloatUniform("u_microPulse", smoothedPulse * activeStateAlpha) // Pass smoothed pulse
                 
                 opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
                 opticalShader.setFloatUniform("u_dominantColor", dominantColor.red, dominantColor.green, dominantColor.blue)
@@ -299,14 +308,14 @@ fun OpaqueSilkMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("CONTINUOUS SILK ADVECTION", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("FLAWLESS SILK ADVECTION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("KINETIC VELOCITY (PULSE)", microPulse, Color(0xFFFF5722))
+                TelemetryBar("SMOOTHED VELOCITY (PULSE)", smoothedPulse, Color(0xFFFF5722))
                 TelemetryBar("FLUID PRESSURE (BREATH)", macroBreath, Color(0xFF00E5FF))
                 
                 Spacer(modifier = Modifier.height(24.dp))
