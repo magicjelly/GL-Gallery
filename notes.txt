@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    TactileVolumeMediaPrototype()
+                    OpaqueSilkMediaPrototype()
                 }
             }
         }
@@ -107,51 +107,46 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. SHARP TACTILE EXTRUSION SHADER
+// 2. THE CONTINUOUS OPAQUE SILK SHADER
 // ==========================================
-const val TACTILE_VOLUME_SHADER_SRC = """
+const val OPAQUE_SILK_SHADER_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
-    uniform float u_time;    
+    uniform float u_time;        
+    uniform float u_kineticTime; // THE FIX: Smoothly accumulated time
     
     uniform float3 u_mutedColor;
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Polynomial Smooth Maximum: Melts hard objects together fluidly but prevents foggy gradients
-    float smax(float a, float b, float k) {
-        float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0);
-        return mix(b, a, h) + k * h * (1.0 - h);
+    float2 hash22(float2 p) {
+        float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.xx+p3.yz)*p3.zy);
     }
 
-    // Creates a sharp, dome-like mass rather than a soft blurry bell curve
-    float getSharpMass(float2 uv, float2 pos, float radius) {
-        float d = distance(uv, pos);
-        // Using a smoothstep with a tight falloff creates crisp, physical boundaries
-        return smoothstep(radius, radius * 0.3, d);
+    float noise(float2 x) {
+        float2 i = floor(x);
+        float2 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        float res = mix(
+            mix(dot(hash22(i + float2(0.0, 0.0)), f - float2(0.0, 0.0)),
+                dot(hash22(i + float2(1.0, 0.0)), f - float2(1.0, 0.0)), f.x),
+            mix(dot(hash22(i + float2(0.0, 1.0)), f - float2(0.0, 1.0)),
+                dot(hash22(i + float2(1.0, 1.0)), f - float2(1.0, 1.0)), f.x), f.y);
+        return res * 0.5 + 0.5;
     }
 
-    float getMembraneExtrusion(float2 uv, float time, float pulse, float breath) {
-        // Acoustic Mass 1 
-        float2 p1 = float2(0.5 + sin(time * 0.4) * 0.15, 0.5 + cos(time * 0.3) * 0.15);
-        float h1 = getSharpMass(uv, p1, 0.4);
-        
-        // Acoustic Mass 2
-        float2 p2 = float2(0.5 - cos(time * 0.5) * 0.2, 0.5 + sin(time * 0.6) * 0.2);
-        float h2 = getSharpMass(uv, p2, 0.35);
-        
-        // Acoustic Mass 3
-        float2 p3 = float2(0.5 + sin(time * 0.7) * 0.25, 0.5 - cos(time * 0.4) * 0.2);
-        float h3 = getSharpMass(uv, p3, 0.3);
-        
-        // Merge the masses smoothly using smax (k = 0.2 dictates the tension of the liquid)
-        float totalHeight = smax(h1, h2, 0.2);
-        totalHeight = smax(totalHeight, h3, 0.2);
-        
-        // Acoustic pressure extrudes the membrane outward
-        float dynamicTension = 0.5 + (breath * 0.3) + (pulse * 0.9);
-        return totalHeight * dynamicTension;
+    float fbm(float2 p) {
+        float value = 0.0;
+        float amplitude = 0.5;
+        for (int i = 0; i < 4; i++) {
+            value += amplitude * noise(p);
+            p *= 2.0;
+            amplitude *= 0.5;
+        }
+        return value;
     }
 
     half4 main(float2 fragCoord) {
@@ -159,51 +154,46 @@ const val TACTILE_VOLUME_SHADER_SRC = """
         float aspect = u_resolution.x / u_resolution.y;
         uv.x *= aspect;
         
-        float2 screenCenter = float2(0.5 * aspect, 0.5);
-        float distFromCenter = distance(uv, screenCenter);
-        float centerProtect = smoothstep(0.15, 0.65, distFromCenter); 
+        float2 center = float2(0.5 * aspect, 0.5);
+        float distFromCenter = distance(uv, center);
         
-        // 1. SHARP EXTRUSION
-        float h = getMembraneExtrusion(uv, u_time, u_microPulse * centerProtect, u_macroBreath);
+        // Fluid pressure driven by macro bass
+        float pressure = 1.0 + (u_macroBreath * 0.5);
         
-        // 2. SURFACE NORMAL (Sharpened depth parameter for crisper lighting)
-        float2 e = float2(0.01, 0.0);
-        float hx = getMembraneExtrusion(uv + e.xy, u_time, u_microPulse * centerProtect, u_macroBreath) - 
-                   getMembraneExtrusion(uv - e.xy, u_time, u_microPulse * centerProtect, u_macroBreath);
-        float hy = getMembraneExtrusion(uv + e.yx, u_time, u_microPulse * centerProtect, u_macroBreath) - 
-                   getMembraneExtrusion(uv - e.yx, u_time, u_microPulse * centerProtect, u_macroBreath);
+        // --- DOMAIN WARPING (Using smooth kinetic time to prevent stuttering) ---
+        float2 q = float2(
+            fbm(uv * 1.5 + u_kineticTime),
+            fbm(uv * 1.5 - u_kineticTime * 0.8)
+        );
         
-        // Z-value of 0.04 makes the material look taut and highly reflective
-        float3 normal = normalize(float3(hx, hy, 0.04));
+        float2 r = float2(
+            fbm(uv * 2.5 + q * 3.0 * pressure + u_kineticTime * 1.2),
+            fbm(uv * 2.5 + q * 3.0 * pressure - u_kineticTime * 1.1)
+        );
         
-        // 3. HARDWARE LIGHTING MODEL (Glossy Silicone)
-        float3 lightDir = normalize(float3(-0.6, -0.8, 1.0));
-        float3 viewDir = float3(0.0, 0.0, 1.0);
-        float3 halfDir = normalize(lightDir + viewDir);
+        float fluid = fbm(uv * 2.0 + r * 2.5);
         
-        // Diffuse (Base matte lighting)
-        float diffuse = max(dot(normal, lightDir), 0.0);
+        // --- OPAQUE COLOR MAPPING ---
+        half3 color = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.1, 0.55, fluid));
+        color = mix(color, half3(u_vibrantColor), smoothstep(0.45, 0.9, fluid));
         
-        // Specular (Glossy sheen on the peaks)
-        float specular = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.6;
+        // --- ANTI-ALIASED STRIATIONS ---
+        // Reduced frequency from 45.0 to 30.0 to prevent sub-pixel moiré flickering
+        float striations = cos(fluid * 30.0) * 0.5 + 0.5;
         
-        // Fresnel (Edge lighting to completely eradicate "foggy" silhouettes)
-        float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0) * 0.5;
+        // Smoothly blend the threads to make them look like soft silk, not hard lines
+        color *= (0.85 + 0.15 * smoothstep(0.2, 0.8, striations));
         
-        float ambient = 0.15;
+        // UI Protection Vignette
+        color *= smoothstep(0.0, 0.9, distFromCenter + 0.2);
         
-        // 4. HIGH-CONTRAST COLOR MAPPING
-        // Steeper thresholds completely separate the colors, avoiding muddy fog
-        half3 baseColor = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.1, 0.4, h));
-        baseColor = mix(baseColor, half3(u_vibrantColor), smoothstep(0.4, 0.8, h));
+        // Filmic Tonemapping
+        color = color / (1.0 + color * 0.1);
         
-        // Combine Light, Specular Sheen, and Fresnel Rims
-        half3 finalColor = (baseColor * (ambient + diffuse)) + half3(specular) + half3(u_vibrantColor) * fresnel;
+        // OLED Banding Protection
+        color += half3((hash22(fragCoord).x - 0.5) * 0.005);
         
-        // Protect the UI with an edge vignette
-        finalColor *= smoothstep(1.3, 0.4, distFromCenter); 
-        
-        return half4(clamp(finalColor, 0.0, 1.0), 1.0);
+        return half4(clamp(color, 0.0, 1.0), 1.0);
     }
 """
 
@@ -212,17 +202,20 @@ const val TACTILE_VOLUME_SHADER_SRC = """
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun TactileVolumeMediaPrototype() {
+fun OpaqueSilkMediaPrototype() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF1A1A1A)) }
-    var dominantColor by remember { mutableStateOf(Color(0xFF424242)) }
-    var vibrantColor by remember { mutableStateOf(Color(0xFF9E9E9E)) }
+    var mutedColor by remember { mutableStateOf(Color(0xFF020202)) }
+    var dominantColor by remember { mutableStateOf(Color(0xFF1A237E)) }
+    var vibrantColor by remember { mutableStateOf(Color(0xFFFF1744)) }
     
     var engineTime by remember { mutableFloatStateOf(0f) }
+    var kineticTime by remember { mutableFloatStateOf(0f) } // THE FIX: Smooth accumulator
+    var lastFrameNanos by remember { mutableLongStateOf(0L) }
+    
     var isPresentationMode by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
 
@@ -234,9 +227,9 @@ fun TactileVolumeMediaPrototype() {
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
                     Palette.from(bitmap).generate { p ->
-                        val fallbackDark = 0xFF121212.toInt()
-                        val fallbackMid = 0xFF37474F.toInt()
-                        val fallbackLight = 0xFF78909C.toInt()
+                        val fallbackDark = 0xFF0A0A0A.toInt()
+                        val fallbackMid = 0xFF283593.toInt()
+                        val fallbackLight = 0xFF00E5FF.toInt() 
                         
                         mutedColor = Color(p?.getDarkMutedColor(fallbackDark) ?: fallbackDark)
                         dominantColor = Color(p?.getDominantColor(fallbackMid) ?: fallbackMid)
@@ -255,16 +248,29 @@ fun TactileVolumeMediaPrototype() {
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
     val microPulse by audioEngine.microPulse.collectAsState()
-    val opticalShader = remember { RuntimeShader(TACTILE_VOLUME_SHADER_SRC) }
+    val opticalShader = remember { RuntimeShader(OPAQUE_SILK_SHADER_SRC) }
 
     var activeStateAlpha by remember { mutableFloatStateOf(1f) }
 
     LaunchedEffect(Unit) {
         while (true) {
-            withFrameMillis { 
+            withFrameNanos { frameNanos ->
+                // THE FIX: True Delta Time calculation guarantees frame-perfect smoothness
+                if (lastFrameNanos == 0L) lastFrameNanos = frameNanos
+                val dt = (frameNanos - lastFrameNanos) / 1_000_000_000f
+                lastFrameNanos = frameNanos
+
                 val targetMult = if (isPlaying) 1f else 0.2f
                 activeStateAlpha = (0.02f * targetMult) + (0.98f * activeStateAlpha)
-                engineTime += 0.003f * activeStateAlpha
+                
+                // Slow baseline engine time
+                engineTime += dt * 0.5f * activeStateAlpha
+                
+                // The audio pulse acts as an accelerator, smoothly advancing the fluid
+                // It NEVER teleports backwards, completely eradicating the "sharp increments"
+                val currentPulse = audioEngine.microPulse.value
+                val kineticVelocity = 0.15f + (currentPulse * 1.5f)
+                kineticTime += dt * kineticVelocity * activeStateAlpha
             }
         }
     }
@@ -274,6 +280,7 @@ fun TactileVolumeMediaPrototype() {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 opticalShader.setFloatUniform("u_resolution", size.width, size.height)
                 opticalShader.setFloatUniform("u_time", engineTime)
+                opticalShader.setFloatUniform("u_kineticTime", kineticTime) // Pass continuous time
                 opticalShader.setFloatUniform("u_macroBreath", macroBreath * activeStateAlpha)
                 opticalShader.setFloatUniform("u_microPulse", microPulse * activeStateAlpha)
                 
@@ -292,15 +299,15 @@ fun TactileVolumeMediaPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("SHARP TACTILE EXTRUSION", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("CONTINUOUS SILK ADVECTION", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("Z-AXIS DISPLACEMENT (PULSE)", microPulse, Color(0xFFFF5722))
-                TelemetryBar("MEMBRANE TENSION (BREATH)", macroBreath, Color(0xFF00E5FF))
+                TelemetryBar("KINETIC VELOCITY (PULSE)", microPulse, Color(0xFFFF5722))
+                TelemetryBar("FLUID PRESSURE (BREATH)", macroBreath, Color(0xFF00E5FF))
                 
                 Spacer(modifier = Modifier.height(24.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -325,7 +332,7 @@ fun TactileVolumeMediaPrototype() {
 @Composable
 fun TelemetryBar(label: String, value: Float, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(220.dp))
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(240.dp))
         Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
             drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
         }
