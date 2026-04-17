@@ -1,8 +1,12 @@
 package com.samsung.oneui.motion.prototype
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
+import android.graphics.Matrix
 import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,7 +30,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -36,7 +42,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
-import androidx.palette.graphics.Palette
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
@@ -44,13 +49,13 @@ import kotlin.math.exp
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
-    @OptIn(UnstableApi::class)
+    @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    ViscoelasticPaintPrototype()
+                    AnisotropicRefractionPrototype()
                 }
             }
         }
@@ -64,9 +69,6 @@ class MainActivity : ComponentActivity() {
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var audioGain: Float = 25.0f 
     
-    private val _realTimePeak = MutableStateFlow(0f)
-    val realTimePeak: StateFlow<Float> = _realTimePeak 
-
     private val _macroBreath = MutableStateFlow(0f)
     val macroBreath: StateFlow<Float> = _macroBreath 
 
@@ -79,7 +81,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
         currentAfterglow = 0f; currentPulse = 0f; prevFiltered = 0f
-        _realTimePeak.value = 0f; _macroBreath.value = 0f; _microPulse.value = 0f
+        _macroBreath.value = 0f; _microPulse.value = 0f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
@@ -96,8 +98,6 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         val rawRms = sqrt(sumSq / (limit / 2)).toFloat()
         val compressedEnergy = (1.0f - exp(-rawRms * audioGain)).coerceIn(0f, 1f)
         
-        _realTimePeak.value = compressedEnergy
-        
         currentAfterglow = (currentAfterglow * 0.985f) + (compressedEnergy * 0.015f)
         _macroBreath.value = currentAfterglow.coerceIn(0f, 1f)
         
@@ -107,18 +107,15 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE PERFECTED VISCOELASTIC SHADER
+// 2. THE ANISOTROPIC REFRACTION SHADER
 // ==========================================
-const val VISCOELASTIC_PAINT_SHADER = """
+const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
-    uniform float u_time;        
-    uniform float u_kineticTime; 
+    uniform float u_time;
     
-    uniform float3 u_mutedColor;
-    uniform float3 u_dominantColor;
-    uniform float3 u_vibrantColor;
+    uniform shader u_albumArt; 
 
     float2 hash22(float2 p) {
         float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
@@ -126,155 +123,87 @@ const val VISCOELASTIC_PAINT_SHADER = """
         return fract((p3.xx+p3.yz)*p3.zy);
     }
 
-    float3 srgb_to_oklab(float3 c) {
-        float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
-        float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
-        float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
-        float l_ = pow(max(l, 0.0), 1.0/3.0);
-        float m_ = pow(max(m, 0.0), 1.0/3.0);
-        float s_ = pow(max(s, 0.0), 1.0/3.0);
-        return float3(
-            0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
-            1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
-            0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
-        );
-    }
-
-    float3 oklab_to_srgb(float3 c) {
-        float l_ = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
-        float m_ = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
-        float s_ = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
-        float l = l_*l_*l_;
-        float m = m_*m_*m_;
-        float s = s_*s_*s_;
-        return float3(
-            4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-           -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-           -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
-        );
-    }
-
-    float3 perceptualMix(float3 colA, float3 colB, float t) {
-        float3 oklabA = srgb_to_oklab(colA);
-        float3 oklabB = srgb_to_oklab(colB);
-        return oklab_to_srgb(mix(oklabA, oklabB, t));
-    }
-
-    float noise(float2 x) {
-        float2 i = floor(x);
-        float2 f = fract(x);
-        f = f * f * (3.0 - 2.0 * f);
-        float res = mix(
-            mix(dot(hash22(i + float2(0.0, 0.0)), f - float2(0.0, 0.0)),
-                dot(hash22(i + float2(1.0, 0.0)), f - float2(1.0, 0.0)), f.x),
-            mix(dot(hash22(i + float2(0.0, 1.0)), f - float2(0.0, 1.0)),
-                dot(hash22(i + float2(1.0, 1.0)), f - float2(1.0, 1.0)), f.x), f.y);
-        return res * 0.5 + 0.5;
-    }
-
-    float fbm(float2 p) {
-        float value = 0.0;
-        float amplitude = 0.5;
-        for (int i = 0; i < 4; i++) {
-            value += amplitude * noise(p);
-            p *= 2.0;
-            amplitude *= 0.5;
-        }
-        return value;
-    }
-
-    float getPaintHeight(float2 uv, float kTime, float pressure) {
-        float2 timeOffset = float2(sin(kTime * 0.7), cos(kTime * 0.8)) * 0.5;
-        
-        float2 q = float2(
-            fbm(uv * 1.5 + timeOffset),
-            fbm(uv * 1.5 - timeOffset.yx)
-        );
-        
-        float2 r = float2(
-            fbm(uv * 2.0 + q * 2.5 * pressure + timeOffset * 1.2),
-            fbm(uv * 2.0 + q * 2.5 * pressure - timeOffset * 1.1)
-        );
-        
-        float macroVolume = fbm(uv * 1.8 + r * 2.5);
-        
-        // THE FIX 1: Removed audio shiver from the phase. 
-        // The ridges now flow continuously forward using kTime, absolutely preventing the accordion effect.
-        float microRidges = abs(sin((macroVolume * 30.0) - (kTime * 2.5)));
-        
-        return macroVolume * 0.8 + microRidges * 0.2;
+    // Perceptual mix in linear space to prevent foggy srgb blending
+    float3 mixLinear(float3 colA, float3 colB, float t) {
+        return sqrt(mix(colA * colA, colB * colB, t));
     }
 
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
-        uv.x *= aspect;
+        float2 aspectUv = float2(uv.x * aspect, uv.y);
         
         float2 center = float2(0.5 * aspect, 0.5);
-        float distFromCenter = distance(uv, center);
-        float centerProtect = smoothstep(0.1, 0.8, distFromCenter + 0.1);
+        float2 toPixel = aspectUv - center;
+        float radius = length(toPixel);
+        float angle = atan(toPixel.y, toPixel.x);
         
-        float pressure = 1.0 + (u_macroBreath * 0.4); 
-        float shiver = u_microPulse * centerProtect; 
-        float kTime = u_kineticTime * 0.3;
+        // --- 1. HARDWARE ANCHORING ---
+        // Anchor strictly to the physical boundary of the album art element in the UI
+        float artRadius = 0.28; 
         
-        // --- 1. FLOW-ALIGNED SURFACE NORMALS ---
-        float2 e = float2(0.01, 0.0);
-        float h = getPaintHeight(uv, kTime, pressure);
-        float hx = getPaintHeight(uv + e.xy, kTime, pressure) - getPaintHeight(uv - e.xy, kTime, pressure);
-        float hy = getPaintHeight(uv + e.yx, kTime, pressure) - getPaintHeight(uv - e.yx, kTime, pressure);
+        // Target the precise edge
+        float2 sampleDir = normalize(toPixel);
+        float2 sampleUv = center + sampleDir * artRadius;
         
-        float3 normal = normalize(float3(hx, hy, 0.04));
+        sampleUv.x /= aspect;
         
-        // THE FIX 2: MICRO-AMBIENT OCCLUSION
-        // Calculates how deep the current pixel is in a ridge valley.
-        // Crushes the ambient light in the valleys to create dense, physical self-shadowing.
-        float macroVolume = fbm(uv * 1.8 + float2(kTime)); // Approximation for AO depth
-        float microRidges = abs(sin((macroVolume * 30.0) - (kTime * 2.5)));
-        float ambientOcclusion = smoothstep(0.0, 0.8, microRidges + 0.2); 
+        // Extract the physical texture color from the UI
+        half4 edgeColor = u_albumArt.eval(sampleUv * u_resolution);
         
-        // --- 2. DUAL-LOBE STUDIO LIGHTING ---
-        float3 lightDir = normalize(float3(-0.5, -0.7, 1.0));
+        // --- 2. ANISOTROPIC REFRACTION (The Missing Texture) ---
+        // Instead of smooth gradients, we introduce high-frequency, parallel metallic threads.
+        // This is a complex, structured interference pattern applied to the angle.
+        float complexRefraction = sin(angle * 300.0) * (sin(angle * 120.0 - u_time * 0.5) * 0.5 + 0.5);
+        
+        // --- 3. DUAL-LOBE METALLIC LIGHTING (The Missing Focused Glint) ---
+        // Virtual clearcoat light anchored top-left.
+        float3 lightDir = normalize(float3(-0.6, -0.8, 1.0));
         float3 viewDir = float3(0.0, 0.0, 1.0);
         float3 halfDir = normalize(lightDir + viewDir);
         
-        float diffuse = max(dot(normal, lightDir), 0.0);
-        float ambient = 0.25 * ambientOcclusion; // Apply physical shadowing
+        // We use the complex refraction pattern as a replacement for surface normals.
+        // It makes the beams look uncountable.
+        float glint = max(fract(complexRefraction * 10.0), 0.0);
+        float3 fakeNormal = normalize(float3(glint * sampleDir.x, glint * sampleDir.y, 0.15));
         
-        // Lobe 1: Base Metallic Flake
-        float baseSpec = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.5;
+        float dotH = max(dot(fakeNormal, halfDir), 0.0);
         
-        // THE FIX 3: ACOUSTIC SPECULAR SHARPENING
-        // The audio pulse tightens the clearcoat gloss, creating diamond-sharp flashes without moving the geometry.
-        float dynamicGloss = 256.0 + (shiver * 800.0);
-        float clearcoatSpec = pow(max(dot(normal, halfDir), 0.0), dynamicGloss) * (2.0 + shiver * 2.0);
+        // Extreme, focused automotive specular gleam
+        float focusedSheen = pow(dotH, 200.0) * 1.5; 
+        // Base metallic sheen spread
+        float baseSheen = pow(dotH, 20.0) * 0.3;
         
-        float totalSheen = (baseSpec + clearcoatSpec);
+        float audioLuminanceMult = 1.0 + u_microPulse * 6.0;
+        float totalGlint = (focusedSheen + baseSheen) * glint * audioLuminanceMult;
         
-        // THE FIX 4: DICHROIC THIN-FILM IRIDESCENCE
-        // As the liquid curves away, the specular highlight physically shifts hue.
-        float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);
-        float3 iridescentTint = perceptualMix(float3(1.0), u_vibrantColor, fresnel * 0.8);
+        // --- 4. DICHROIC IRIDESCENCE ---
+        // Beams traveling at steep angles curve subtly through the spectrum.
+        float iridescence = pow(1.0 - max(dot(fakeNormal, viewDir), 0.0), 3.0);
+        float3 dichroicTint = mixLinear(float3(1.0), edgeColor.rgb, 0.3 + iridescence * 0.7);
         
-        // --- 3. OKLAB MARBLING ---
-        float rawFluid = getPaintHeight(uv, kTime, pressure); 
-        float3 colorMix1 = perceptualMix(u_mutedColor, u_dominantColor, smoothstep(0.1, 0.6, rawFluid));
-        float3 baseColor = perceptualMix(colorMix1, u_vibrantColor, smoothstep(0.5, 0.9, rawFluid));
+        // --- 5. COMPOSITING & HARDWARE PROTECTION ---
+        // The straight beam logic is kept, but its distance is anchored to the audio bass.
+        float bleedDistance = 0.05 + (u_macroBreath * 0.6);
+        float falloff = smoothstep(artRadius + bleedDistance, artRadius, radius);
         
-        // --- 4. COMPOSITING ---
-        float3 litColor = baseColor * (ambient + diffuse * 0.75);
+        // Apply shadows in the crevices of the threads.
+        float selfShadowing = mix(1.0, complexRefraction, 0.4);
         
-        // Apply the iridescent dichroic tint to the clearcoat reflection
-        litColor += iridescentTint * totalSheen;
+        half3 finalColor = edgeColor.rgb * falloff * selfShadowing;
+        finalColor += dichroicTint * totalGlint * falloff;
         
-        litColor *= smoothstep(0.0, 0.9, distFromCenter + 0.2);
-        litColor = litColor / (1.0 + litColor * 0.15);
+        // Primed OLED void guarantees perfect 120Hz response time
+        finalColor = max(finalColor, half3(0.005));
+        finalColor += half3((hash22(fragCoord).x - 0.5) * 0.005);
         
-        // OLED Primed Void
-        litColor = max(litColor, float3(0.005)); 
-        litColor += float3((hash22(fragCoord).x - 0.5) * 0.005);
+        // Vignette
+        finalColor *= smoothstep(0.0, 1.0, distFromCenter + 0.3);
         
-        return half4(clamp(litColor, 0.0, 1.0), 1.0);
+        // HDR Tonemapping
+        finalColor = finalColor / (1.0 + finalColor * 0.2);
+        
+        return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
@@ -283,23 +212,31 @@ const val VISCOELASTIC_PAINT_SHADER = """
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun ViscoelasticPaintPrototype() {
+fun AnisotropicRefractionPrototype() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
-    var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF030303)) }
-    var dominantColor by remember { mutableStateOf(Color(0xFF283593)) }
-    var vibrantColor by remember { mutableStateOf(Color(0xFF00E5FF)) }
+    var currentArtBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     
     var engineTime by remember { mutableFloatStateOf(0f) }
-    var kineticTime by remember { mutableFloatStateOf(0f) } 
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
     
     var isPresentationMode by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+
+    val opticalShader = remember { RuntimeShader(ANISOTROPIC_REFRACTION_SHADER_SRC) }
+
+    LaunchedEffect(canvasSize) {
+        if (canvasSize != IntSize.Zero && currentArtBitmap == null) {
+            val emptyBitmap = Bitmap.createBitmap(canvasSize.width, canvasSize.height, Bitmap.Config.ARGB_8888)
+            emptyBitmap.eraseColor(android.graphics.Color.rgb(10, 10, 10))
+            val bmpShader = BitmapShader(emptyBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            opticalShader.setInputShader("u_albumArt", bmpShader)
+        }
+    }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -308,14 +245,21 @@ fun ViscoelasticPaintPrototype() {
                 m.artworkData?.let { data ->
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
-                    Palette.from(bitmap).generate { p ->
-                        val fallbackDark = 0xFF030303.toInt()
-                        val fallbackMid = 0xFF1A237E.toInt()
-                        val fallbackLight = 0xFF00B0FF.toInt() 
+                    
+                    if (canvasSize != IntSize.Zero) {
+                        val bmpShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                        val matrix = Matrix()
+                        val density = context.resources.displayMetrics.density
+                        val artPx = 280f * density
                         
-                        mutedColor = Color(p?.getDarkMutedColor(fallbackDark) ?: fallbackDark)
-                        dominantColor = Color(p?.getDominantColor(fallbackMid) ?: fallbackMid)
-                        vibrantColor = Color(p?.getLightVibrantColor(p.getVibrantColor(fallbackLight)) ?: fallbackLight)
+                        val scale = artPx / Math.max(bitmap.width, bitmap.height)
+                        matrix.postScale(scale, scale)
+                        matrix.postTranslate(
+                            (canvasSize.width - (bitmap.width * scale)) / 2f,
+                            (canvasSize.height - (bitmap.height * scale)) / 2f
+                        )
+                        bmpShader.setLocalMatrix(matrix)
+                        opticalShader.setInputShader("u_albumArt", bmpShader)
                     }
                 }
             }
@@ -329,7 +273,6 @@ fun ViscoelasticPaintPrototype() {
     }
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
-    val opticalShader = remember { RuntimeShader(VISCOELASTIC_PAINT_SHADER) }
 
     var activeStateAlpha by remember { mutableFloatStateOf(1f) }
 
@@ -341,32 +284,24 @@ fun ViscoelasticPaintPrototype() {
                 if (dt > 0.032f) dt = 0.016f 
                 lastFrameNanos = frameNanos
 
-                val targetMult = if (isPlaying) 1f else 0.2f
-                activeStateAlpha = (0.02f * targetMult) + (0.98f * activeStateAlpha)
+                val targetMult = if (isPlaying) 1f else 0.0f
+                activeStateAlpha = (0.05f * targetMult) + (0.95f * activeStateAlpha)
                 
                 engineTime += dt * 0.5f * activeStateAlpha
                 
                 val targetPulse = audioEngine.microPulse.value
-                smoothedPulse += (targetPulse - smoothedPulse) * 8.0f * dt
-                
-                val kineticVelocity = 0.1f + (smoothedPulse * 1.5f)
-                kineticTime += dt * kineticVelocity * activeStateAlpha
+                smoothedPulse += (targetPulse - smoothedPulse) * 12.0f * dt
             }
         }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.55f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
+            Canvas(modifier = Modifier.fillMaxSize().onSizeChanged { canvasSize = it }) {
                 opticalShader.setFloatUniform("u_resolution", size.width, size.height)
                 opticalShader.setFloatUniform("u_time", engineTime)
-                opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
                 opticalShader.setFloatUniform("u_macroBreath", macroBreath * activeStateAlpha)
                 opticalShader.setFloatUniform("u_microPulse", smoothedPulse * activeStateAlpha)
-                
-                opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
-                opticalShader.setFloatUniform("u_dominantColor", dominantColor.red, dominantColor.green, dominantColor.blue)
-                opticalShader.setFloatUniform("u_vibrantColor", vibrantColor.red, vibrantColor.green, vibrantColor.blue)
                 
                 drawRect(brush = ShaderBrush(opticalShader))
             }
@@ -379,15 +314,25 @@ fun ViscoelasticPaintPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("PHYSICAL DICHROIC PAINT", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("ANISOTROPIC REFRACTION AURA", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("SPECULAR TENSION (PULSE)", smoothedPulse, Color(0xFFFF5722))
-                TelemetryBar("FLUID VISCOSITY (BREATH)", macroBreath, Color(0xFF00E5FF))
+                TelemetryBar("METALLIC GLEAM (PULSE)", smoothedPulse, Color(0xFFFF5722))
+                TelemetryBar("EXTRUSION BREATHE (BREATH)", macroBreath, Color(0xFF00E5FF))
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    FloatingActionButton(onClick = { exoPlayer.seekTo(0); exoPlayer.play() }, containerColor = Color.DarkGray, shape = CircleShape, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Refresh, null, tint = Color.White)
+                    }
+                    FloatingActionButton(onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, containerColor = Color.White, shape = CircleShape) {
+                        Icon(if (isPlaying) Icons.Default.Close else Icons.Default.PlayArrow, null, tint = Color.Black)
+                    }
+                }
             }
         }
         
@@ -402,7 +347,7 @@ fun ViscoelasticPaintPrototype() {
 @Composable
 fun TelemetryBar(label: String, value: Float, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(240.dp))
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(260.dp))
         Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
             drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
         }
