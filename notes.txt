@@ -135,7 +135,9 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         
         float2 center = float2(0.5 * aspect, 0.5);
         float2 toPixel = aspectUv - center;
-        float radius = length(toPixel);
+        
+        // THE FIX: The distance from the center is stored in 'radius' here
+        float radius = length(toPixel); 
         float angle = atan(toPixel.y, toPixel.x);
         
         // --- 1. HARDWARE ANCHORING ---
@@ -152,8 +154,7 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         half4 edgeColor = u_albumArt.eval(sampleUv * u_resolution);
         
         // --- 2. ANISOTROPIC REFRACTION (The Missing Texture) ---
-        // Instead of smooth gradients, we introduce high-frequency, parallel metallic threads.
-        // This is a complex, structured interference pattern applied to the angle.
+        // High-frequency, parallel metallic threads replacing smooth gradients.
         float complexRefraction = sin(angle * 300.0) * (sin(angle * 120.0 - u_time * 0.5) * 0.5 + 0.5);
         
         // --- 3. DUAL-LOBE METALLIC LIGHTING (The Missing Focused Glint) ---
@@ -163,7 +164,6 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         float3 halfDir = normalize(lightDir + viewDir);
         
         // We use the complex refraction pattern as a replacement for surface normals.
-        // It makes the beams look uncountable.
         float glint = max(fract(complexRefraction * 10.0), 0.0);
         float3 fakeNormal = normalize(float3(glint * sampleDir.x, glint * sampleDir.y, 0.15));
         
@@ -197,8 +197,8 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         finalColor = max(finalColor, half3(0.005));
         finalColor += half3((hash22(fragCoord).x - 0.5) * 0.005);
         
-        // Vignette
-        finalColor *= smoothstep(0.0, 1.0, distFromCenter + 0.3);
+        // THE FIX APPLIED: Using 'radius' to protect the center from bleeding behind the UI
+        finalColor *= smoothstep(0.0, 1.0, radius + 0.3);
         
         // HDR Tonemapping
         finalColor = finalColor / (1.0 + finalColor * 0.2);
@@ -206,6 +206,7 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
+
 
 // ==========================================
 // 3. UI & STATE MANAGEMENT
