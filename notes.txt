@@ -107,7 +107,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. THE VISCOELASTIC PAINT SHADER
+// 2. THE PERFECTED VISCOELASTIC SHADER
 // ==========================================
 const val VISCOELASTIC_PAINT_SHADER = """
     uniform float2 u_resolution;
@@ -124,6 +124,40 @@ const val VISCOELASTIC_PAINT_SHADER = """
         float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
         p3 += dot(p3, p3.yzx + 33.33);
         return fract((p3.xx+p3.yz)*p3.zy);
+    }
+
+    float3 srgb_to_oklab(float3 c) {
+        float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+        float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+        float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+        float l_ = pow(max(l, 0.0), 1.0/3.0);
+        float m_ = pow(max(m, 0.0), 1.0/3.0);
+        float s_ = pow(max(s, 0.0), 1.0/3.0);
+        return float3(
+            0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+            1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+            0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+        );
+    }
+
+    float3 oklab_to_srgb(float3 c) {
+        float l_ = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
+        float m_ = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
+        float s_ = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
+        float l = l_*l_*l_;
+        float m = m_*m_*m_;
+        float s = s_*s_*s_;
+        return float3(
+            4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+           -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+           -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+        );
+    }
+
+    float3 perceptualMix(float3 colA, float3 colB, float t) {
+        float3 oklabA = srgb_to_oklab(colA);
+        float3 oklabB = srgb_to_oklab(colB);
+        return oklab_to_srgb(mix(oklabA, oklabB, t));
     }
 
     float noise(float2 x) {
@@ -149,11 +183,7 @@ const val VISCOELASTIC_PAINT_SHADER = """
         return value;
     }
 
-    // Generates the sharp, striated height map for the metallic paint
     float getPaintHeight(float2 uv, float kTime, float pressure) {
-        // THE FIX: Vortex Advection. 
-        // By using sin() and cos() of time for the offsets, the fluid swirls in place
-        // and completely eliminates the linear diagonal drift.
         float2 timeOffset = float2(sin(kTime * 0.7), cos(kTime * 0.8)) * 0.5;
         
         float2 q = float2(
@@ -168,11 +198,10 @@ const val VISCOELASTIC_PAINT_SHADER = """
         
         float macroVolume = fbm(uv * 1.8 + r * 2.5);
         
-        // THE FIX: Razor-sharp flowing ridges
-        // Instead of bumpy water, we extract the flow lines as sharp physical peaks
-        float microRidges = abs(sin(macroVolume * 30.0));
+        // THE FIX 1: Removed audio shiver from the phase. 
+        // The ridges now flow continuously forward using kTime, absolutely preventing the accordion effect.
+        float microRidges = abs(sin((macroVolume * 30.0) - (kTime * 2.5)));
         
-        // Combine the deep fluid volume with the sharp surface ridges
         return macroVolume * 0.8 + microRidges * 0.2;
     }
 
@@ -185,7 +214,8 @@ const val VISCOELASTIC_PAINT_SHADER = """
         float distFromCenter = distance(uv, center);
         float centerProtect = smoothstep(0.1, 0.8, distFromCenter + 0.1);
         
-        float pressure = 1.0 + (u_macroBreath * 0.4);
+        float pressure = 1.0 + (u_macroBreath * 0.4); 
+        float shiver = u_microPulse * centerProtect; 
         float kTime = u_kineticTime * 0.3;
         
         // --- 1. FLOW-ALIGNED SURFACE NORMALS ---
@@ -194,46 +224,55 @@ const val VISCOELASTIC_PAINT_SHADER = """
         float hx = getPaintHeight(uv + e.xy, kTime, pressure) - getPaintHeight(uv - e.xy, kTime, pressure);
         float hy = getPaintHeight(uv + e.yx, kTime, pressure) - getPaintHeight(uv - e.yx, kTime, pressure);
         
-        // Deep Z-depth (0.04) ensures the lighting interacts aggressively with the ridges
         float3 normal = normalize(float3(hx, hy, 0.04));
         
-        // --- 2. LIQUID METALLIC LIGHTING MODEL ---
+        // THE FIX 2: MICRO-AMBIENT OCCLUSION
+        // Calculates how deep the current pixel is in a ridge valley.
+        // Crushes the ambient light in the valleys to create dense, physical self-shadowing.
+        float macroVolume = fbm(uv * 1.8 + float2(kTime)); // Approximation for AO depth
+        float microRidges = abs(sin((macroVolume * 30.0) - (kTime * 2.5)));
+        float ambientOcclusion = smoothstep(0.0, 0.8, microRidges + 0.2); 
+        
+        // --- 2. DUAL-LOBE STUDIO LIGHTING ---
         float3 lightDir = normalize(float3(-0.5, -0.7, 1.0));
         float3 viewDir = float3(0.0, 0.0, 1.0);
         float3 halfDir = normalize(lightDir + viewDir);
         
-        // Physical diffuse shadows anchor the volume
         float diffuse = max(dot(normal, lightDir), 0.0);
-        float ambient = 0.25; 
+        float ambient = 0.25 * ambientOcclusion; // Apply physical shadowing
         
-        // EXTREME SPECULAR FOCUS: This is what makes it look like wet paint / silk.
-        // A power of 64.0 creates incredibly tight, razor-sharp light streaks along the flow.
-        float specPower = pow(max(dot(normal, halfDir), 0.0), 64.0);
+        // Lobe 1: Base Metallic Flake
+        float baseSpec = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.5;
         
-        // The audio pulse causes the liquid metal to instantly flare up
-        float sheenIntensity = specPower * (0.8 + (u_microPulse * centerProtect * 5.0));
+        // THE FIX 3: ACOUSTIC SPECULAR SHARPENING
+        // The audio pulse tightens the clearcoat gloss, creating diamond-sharp flashes without moving the geometry.
+        float dynamicGloss = 256.0 + (shiver * 800.0);
+        float clearcoatSpec = pow(max(dot(normal, halfDir), 0.0), dynamicGloss) * (2.0 + shiver * 2.0);
         
-        // --- 3. OPAQUE MARBLING ---
-        // Smoothstep guarantees colors push each other out of the way instead of muddying
-        float rawFluid = getPaintHeight(uv, kTime, pressure);
-        half3 baseColor = mix(half3(u_mutedColor), half3(u_dominantColor), smoothstep(0.1, 0.6, rawFluid));
-        baseColor = mix(baseColor, half3(u_vibrantColor), smoothstep(0.5, 0.9, rawFluid));
+        float totalSheen = (baseSpec + clearcoatSpec);
         
-        // --- 4. FINAL COMPOSITING ---
-        // Multiply by base lighting, then physically add the pure white/colored specular reflections
-        half3 litColor = baseColor * (ambient + diffuse * 0.75);
+        // THE FIX 4: DICHROIC THIN-FILM IRIDESCENCE
+        // As the liquid curves away, the specular highlight physically shifts hue.
+        float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);
+        float3 iridescentTint = perceptualMix(float3(1.0), u_vibrantColor, fresnel * 0.8);
         
-        // The reflection is slightly tinted by the vibrant color to look like metallic anodization
-        litColor += mix(half3(1.0), half3(u_vibrantColor), 0.3) * sheenIntensity;
+        // --- 3. OKLAB MARBLING ---
+        float rawFluid = getPaintHeight(uv, kTime, pressure); 
+        float3 colorMix1 = perceptualMix(u_mutedColor, u_dominantColor, smoothstep(0.1, 0.6, rawFluid));
+        float3 baseColor = perceptualMix(colorMix1, u_vibrantColor, smoothstep(0.5, 0.9, rawFluid));
         
-        // UI Legibility Vignette
+        // --- 4. COMPOSITING ---
+        float3 litColor = baseColor * (ambient + diffuse * 0.75);
+        
+        // Apply the iridescent dichroic tint to the clearcoat reflection
+        litColor += iridescentTint * totalSheen;
+        
         litColor *= smoothstep(0.0, 0.9, distFromCenter + 0.2);
-        
-        // Smooth Tonemapping
         litColor = litColor / (1.0 + litColor * 0.15);
         
-        // Sub-pixel Dithering
-        litColor += half3((hash22(fragCoord).x - 0.5) * 0.005);
+        // OLED Primed Void
+        litColor = max(litColor, float3(0.005)); 
+        litColor += float3((hash22(fragCoord).x - 0.5) * 0.005);
         
         return half4(clamp(litColor, 0.0, 1.0), 1.0);
     }
@@ -340,25 +379,15 @@ fun ViscoelasticPaintPrototype() {
         AnimatedVisibility(visible = !isPresentationMode) {
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("VISCOELASTIC METALLIC PAINT", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text("PHYSICAL DICHROIC PAINT", color = Color.White, style = MaterialTheme.typography.titleSmall)
                     Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
                         Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 Spacer(modifier = Modifier.height(20.dp))
                 
-                TelemetryBar("SPECULAR SHEEN (PULSE)", smoothedPulse, Color(0xFFFF5722))
+                TelemetryBar("SPECULAR TENSION (PULSE)", smoothedPulse, Color(0xFFFF5722))
                 TelemetryBar("FLUID VISCOSITY (BREATH)", macroBreath, Color(0xFF00E5FF))
-                
-                Spacer(modifier = Modifier.height(24.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    FloatingActionButton(onClick = { exoPlayer.seekTo(0); exoPlayer.play() }, containerColor = Color.DarkGray, shape = CircleShape, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Refresh, null, tint = Color.White)
-                    }
-                    FloatingActionButton(onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, containerColor = Color.White, shape = CircleShape) {
-                        Icon(if (isPlaying) Icons.Default.Close else Icons.Default.PlayArrow, null, tint = Color.Black)
-                    }
-                }
             }
         }
         
