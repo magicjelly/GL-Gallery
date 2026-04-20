@@ -1,27 +1,19 @@
 package com.samsung.oneui.motion.prototype
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BitmapShader
-import android.graphics.Matrix
 import android.graphics.RuntimeShader
-import android.graphics.Shader
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +24,7 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
@@ -42,6 +35,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
+import androidx.palette.graphics.Palette
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
@@ -49,13 +43,13 @@ import kotlin.math.exp
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
-    @UnstableApi
+    @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    AnisotropicRefractionPrototype()
+                    MagnetoOpticEngine()
                 }
             }
         }
@@ -63,59 +57,64 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. ENGINE: HARDWARE-ALIGNED AUDIO DAMPING
+// 1. AUDIO DSP ENGINE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var audioGain: Float = 25.0f 
-    
     private val _macroBreath = MutableStateFlow(0f)
     val macroBreath: StateFlow<Float> = _macroBreath 
-
     private val _microPulse = MutableStateFlow(0f)
     val microPulse: StateFlow<Float> = _microPulse
-
-    private var currentAfterglow = 0f
-    private var currentPulse = 0f
-    private var prevFiltered = 0f
+    private val _spectralBalance = MutableStateFlow(0f)
+    val spectralBalance: StateFlow<Float> = _spectralBalance
+    private var prevSample = 0f
+    private var currentSpectralRatio = 0.5f
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
-        currentAfterglow = 0f; currentPulse = 0f; prevFiltered = 0f
-        _macroBreath.value = 0f; _microPulse.value = 0f
+        _macroBreath.value = 0f; _microPulse.value = 0f; _spectralBalance.value = 0.5f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
         val limit = buffer.limit()
         if (limit == 0) return
         var sumSq = 0.0
+        var highFreqSumSq = 0.0
         buffer.position(0)
         while (buffer.position() < limit - 1) {
             val raw = buffer.short.toFloat() / Short.MAX_VALUE
-            val filtered = prevFiltered + 0.05f * (raw - prevFiltered)
-            prevFiltered = filtered
-            sumSq += (filtered * filtered)
+            val highFreq = raw - prevSample
+            prevSample = raw
+            sumSq += (raw * raw)
+            highFreqSumSq += (highFreq * highFreq)
         }
-        val rawRms = sqrt(sumSq / (limit / 2)).toFloat()
-        val compressedEnergy = (1.0f - exp(-rawRms * audioGain)).coerceIn(0f, 1f)
+        val totalRms = sqrt(sumSq / (limit / 2)).toFloat()
+        val highFreqRms = sqrt(highFreqSumSq / (limit / 2)).toFloat()
+        val energy = (1.0f - exp(-totalRms * audioGain)).coerceIn(0f, 1f)
+        val balance = if (totalRms > 0.01f) (highFreqRms / totalRms).coerceIn(0f, 1f) else 0.5f
         
-        currentAfterglow = (currentAfterglow * 0.985f) + (compressedEnergy * 0.015f)
-        _macroBreath.value = currentAfterglow.coerceIn(0f, 1f)
-        
-        currentPulse = (currentPulse * 0.8f) + (compressedEnergy * 0.2f)
-        _microPulse.value = currentPulse.coerceIn(0f, 1f)
+        currentSpectralRatio = (currentSpectralRatio * 0.95f) + (balance * 0.05f)
+        _spectralBalance.value = currentSpectralRatio
+        _macroBreath.value = (_macroBreath.value * 0.9f) + (energy * 0.1f)
+        _microPulse.value = energy
     }
 }
 
 // ==========================================
-// 2. THE ANISOTROPIC REFRACTION SHADER
+// 2. AGSL SHADER: MAGNETO-OPTIC CAUSTICS
 // ==========================================
-const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
+const val MAGNETO_OPTIC_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
-    uniform float u_time;
+    uniform float u_kineticTime;
+    uniform float u_spectralBalance;
+    uniform float2 u_boxSizePx;
+    uniform float u_cornerRadiusPx;
     
-    uniform shader u_albumArt; 
+    uniform float3 u_mutedColor;
+    uniform float3 u_dominantColor;
+    uniform float3 u_vibrantColor;
 
     float2 hash22(float2 p) {
         float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
@@ -123,121 +122,113 @@ const val ANISOTROPIC_REFRACTION_SHADER_SRC = """
         return fract((p3.xx+p3.yz)*p3.zy);
     }
 
-    // Perceptual mix in linear space to prevent foggy srgb blending
+    float noise(float2 x) {
+        float2 i = floor(x);
+        float2 f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+            mix(dot(hash22(i + float2(0.0, 0.0)), f - float2(0.0, 0.0)),
+                dot(hash22(i + float2(1.0, 0.0)), f - float2(1.0, 0.0)), f.x),
+            mix(dot(hash22(i + float2(0.0, 1.0)), f - float2(0.0, 1.0)),
+                dot(hash22(i + float2(1.0, 1.0)), f - float2(1.0, 1.0)), f.x), f.y);
+    }
+
+    float fbm(float2 p) {
+        float value = 0.0; float amplitude = 0.5;
+        for (int i = 0; i < 3; i++) {
+            value += amplitude * noise(p);
+            p *= 2.0; amplitude *= 0.5;
+        }
+        return value;
+    }
+
+    float sdRoundRect(float2 p, float2 b, float r) {
+        float2 d = abs(p) - b + float2(r);
+        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    }
+
     float3 mixLinear(float3 colA, float3 colB, float t) {
-        return sqrt(mix(colA * colA, colB * colB, t));
+        return sqrt(mix(colA * colA, colB * colB, clamp(t, 0.0, 1.0)));
     }
 
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
         float2 aspectUv = float2(uv.x * aspect, uv.y);
-        
         float2 center = float2(0.5 * aspect, 0.5);
+        
+        // Anchored Origin to prevent drift
         float2 toPixel = aspectUv - center;
         
-        // THE FIX: The distance from the center is stored in 'radius' here
-        float radius = length(toPixel); 
-        float angle = atan(toPixel.y, toPixel.x);
+        // Dynamic Hardware Binding
+        float2 boxHalfSize = max((u_boxSizePx / u_resolution.y) * 0.5, float2(0.001));
+        float cornerRadius = max(u_cornerRadiusPx / u_resolution.y, 0.001);
+        float d = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
         
-        // --- 1. HARDWARE ANCHORING ---
-        // Anchor strictly to the physical boundary of the album art element in the UI
-        float artRadius = 0.28; 
+        // --- 1. MAGNETO-OPTIC FIELD ---
+        float complexity = 1.5 + (u_spectralBalance * 2.5);
+        float2 noiseUv = toPixel * complexity;
+        float flow = u_kineticTime * 0.5;
         
-        // Target the precise edge
-        float2 sampleDir = normalize(toPixel);
-        float2 sampleUv = center + sampleDir * artRadius;
+        float2 e = float2(0.02, 0.0);
+        float nx = fbm(noiseUv + e.xy - flow) - fbm(noiseUv - e.xy - flow);
+        float ny = fbm(noiseUv + e.yx - flow) - fbm(noiseUv - e.yx - flow);
         
-        sampleUv.x /= aspect;
+        // True Curl Vector
+        float2 curl = float2(ny, -nx);
         
-        // Extract the physical texture color from the UI
-        half4 edgeColor = u_albumArt.eval(sampleUv * u_resolution);
+        // --- 2. CAUSTIC FRACTURE ---
+        // Create sharp, interlocking optical lines based on the curl magnitude
+        float causticRaw = abs(fbm(toPixel * 4.0 + curl * 2.0));
+        float causticLines = smoothstep(0.01, 0.08, 0.1 - causticRaw);
         
-        // --- 2. ANISOTROPIC REFRACTION (The Missing Texture) ---
-        // High-frequency, parallel metallic threads replacing smooth gradients.
-        float complexRefraction = sin(angle * 300.0) * (sin(angle * 120.0 - u_time * 0.5) * 0.5 + 0.5);
+        // Kinetic tension snaps the caustics
+        float tension = causticLines * (1.0 + u_microPulse * 3.0);
         
-        // --- 3. DUAL-LOBE METALLIC LIGHTING (The Missing Focused Glint) ---
-        // Virtual clearcoat light anchored top-left.
-        float3 lightDir = normalize(float3(-0.6, -0.8, 1.0));
-        float3 viewDir = float3(0.0, 0.0, 1.0);
-        float3 halfDir = normalize(lightDir + viewDir);
+        // --- 3. HARDWARE-ALIGNED OPTICS ---
+        float fade = exp(-max(d, 0.0) * (3.5 - u_macroBreath * 1.5));
         
-        // We use the complex refraction pattern as a replacement for surface normals.
-        float glint = max(fract(complexRefraction * 10.0), 0.0);
-        float3 fakeNormal = normalize(float3(glint * sampleDir.x, glint * sampleDir.y, 0.15));
+        float3 deepFluid = mixLinear(u_mutedColor, u_dominantColor, fade * 0.8);
+        float3 sharpRefraction = u_vibrantColor * tension * fade;
         
-        float dotH = max(dot(fakeNormal, halfDir), 0.0);
+        float3 finalColor = deepFluid + sharpRefraction;
         
-        // Extreme, focused automotive specular gleam
-        float focusedSheen = pow(dotH, 200.0) * 1.5; 
-        // Base metallic sheen spread
-        float baseSheen = pow(dotH, 20.0) * 0.3;
-        
-        float audioLuminanceMult = 1.0 + u_microPulse * 6.0;
-        float totalGlint = (focusedSheen + baseSheen) * glint * audioLuminanceMult;
-        
-        // --- 4. DICHROIC IRIDESCENCE ---
-        // Beams traveling at steep angles curve subtly through the spectrum.
-        float iridescence = pow(1.0 - max(dot(fakeNormal, viewDir), 0.0), 3.0);
-        float3 dichroicTint = mixLinear(float3(1.0), edgeColor.rgb, 0.3 + iridescence * 0.7);
-        
-        // --- 5. COMPOSITING & HARDWARE PROTECTION ---
-        // The straight beam logic is kept, but its distance is anchored to the audio bass.
-        float bleedDistance = 0.05 + (u_macroBreath * 0.6);
-        float falloff = smoothstep(artRadius + bleedDistance, artRadius, radius);
-        
-        // Apply shadows in the crevices of the threads.
-        float selfShadowing = mix(1.0, complexRefraction, 0.4);
-        
-        half3 finalColor = edgeColor.rgb * falloff * selfShadowing;
-        finalColor += dichroicTint * totalGlint * falloff;
-        
-        // Primed OLED void guarantees perfect 120Hz response time
-        finalColor = max(finalColor, half3(0.005));
-        finalColor += half3((hash22(fragCoord).x - 0.5) * 0.005);
-        
-        // THE FIX APPLIED: Using 'radius' to protect the center from bleeding behind the UI
-        finalColor *= smoothstep(0.0, 1.0, radius + 0.3);
-        
-        // HDR Tonemapping
+        // Hardware Mask & Priming
+        finalColor *= smoothstep(0.0, 0.005, d);
+        finalColor = max(finalColor, float3(0.005));
+        finalColor += float3((hash22(fragCoord).x - 0.5) * 0.006);
         finalColor = finalColor / (1.0 + finalColor * 0.2);
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
-
 // ==========================================
-// 3. UI & STATE MANAGEMENT
+// 3. UI ARCHITECTURE (TRIPLE-LAYER BOX)
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun AnisotropicRefractionPrototype() {
+fun MagnetoOpticEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
-    var currentArtBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var mutedColor by remember { mutableStateOf(Color(0xFF040404)) }
+    var dominantColor by remember { mutableStateOf(Color(0xFF1A237E)) }
+    var vibrantColor by remember { mutableStateOf(Color(0xFF00E5FF)) }
     
-    var engineTime by remember { mutableFloatStateOf(0f) }
+    var kineticTime by remember { mutableFloatStateOf(0f) }
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
+    var pulseVelocity by remember { mutableFloatStateOf(0f) }
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
     
-    var isPresentationMode by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
-
-    val opticalShader = remember { RuntimeShader(ANISOTROPIC_REFRACTION_SHADER_SRC) }
-
-    LaunchedEffect(canvasSize) {
-        if (canvasSize != IntSize.Zero && currentArtBitmap == null) {
-            val emptyBitmap = Bitmap.createBitmap(canvasSize.width, canvasSize.height, Bitmap.Config.ARGB_8888)
-            emptyBitmap.eraseColor(android.graphics.Color.rgb(10, 10, 10))
-            val bmpShader = BitmapShader(emptyBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-            opticalShader.setInputShader("u_albumArt", bmpShader)
-        }
-    }
+    var artSizePx by remember { mutableStateOf(IntSize.Zero) }
+    
+    val targetCornerRadiusDp = 36.dp
+    val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
+    val opticalShader = remember { RuntimeShader(MAGNETO_OPTIC_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -246,21 +237,10 @@ fun AnisotropicRefractionPrototype() {
                 m.artworkData?.let { data ->
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
-                    
-                    if (canvasSize != IntSize.Zero) {
-                        val bmpShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                        val matrix = Matrix()
-                        val density = context.resources.displayMetrics.density
-                        val artPx = 280f * density
-                        
-                        val scale = artPx / Math.max(bitmap.width, bitmap.height)
-                        matrix.postScale(scale, scale)
-                        matrix.postTranslate(
-                            (canvasSize.width - (bitmap.width * scale)) / 2f,
-                            (canvasSize.height - (bitmap.height * scale)) / 2f
-                        )
-                        bmpShader.setLocalMatrix(matrix)
-                        opticalShader.setInputShader("u_albumArt", bmpShader)
+                    Palette.from(bitmap).generate { p ->
+                        mutedColor = Color(p?.getDarkMutedColor(0xFF040404.toInt()) ?: 0xFF040404.toInt())
+                        dominantColor = Color(p?.getDominantColor(0xFF1A237E.toInt()) ?: 0xFF1A237E.toInt())
+                        vibrantColor = Color(p?.getLightVibrantColor(0xFF00E5FF.toInt()) ?: 0xFF00E5FF.toInt())
                     }
                 }
             }
@@ -274,73 +254,95 @@ fun AnisotropicRefractionPrototype() {
     }
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
-
-    var activeStateAlpha by remember { mutableFloatStateOf(1f) }
+    val spectralBalance by audioEngine.spectralBalance.collectAsState()
 
     LaunchedEffect(Unit) {
         while (true) {
             withFrameNanos { frameNanos ->
                 if (lastFrameNanos == 0L) lastFrameNanos = frameNanos
-                var dt = (frameNanos - lastFrameNanos) / 1_000_000_000f
-                if (dt > 0.032f) dt = 0.016f 
+                val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
-
-                val targetMult = if (isPlaying) 1f else 0.0f
-                activeStateAlpha = (0.05f * targetMult) + (0.95f * activeStateAlpha)
                 
-                engineTime += dt * 0.5f * activeStateAlpha
-                
+                val activeAlpha = if (isPlaying) 1f else 0f
                 val targetPulse = audioEngine.microPulse.value
-                smoothedPulse += (targetPulse - smoothedPulse) * 12.0f * dt
+                val stiffness = 60f
+                val damping = 0.9f * 2f * sqrt(stiffness) 
+                
+                val force = stiffness * (targetPulse - smoothedPulse) - damping * pulseVelocity
+                pulseVelocity += force * dt
+                smoothedPulse += pulseVelocity * dt
+                
+                kineticTime += dt * (0.2f + (smoothedPulse.coerceAtLeast(0f) * 0.8f)) * activeAlpha
             }
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Box(modifier = Modifier.weight(if (isPresentationMode) 1f else 0.55f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Canvas(modifier = Modifier.fillMaxSize().onSizeChanged { canvasSize = it }) {
-                opticalShader.setFloatUniform("u_resolution", size.width, size.height)
-                opticalShader.setFloatUniform("u_time", engineTime)
-                opticalShader.setFloatUniform("u_macroBreath", macroBreath * activeStateAlpha)
-                opticalShader.setFloatUniform("u_microPulse", smoothedPulse * activeStateAlpha)
-                
-                drawRect(brush = ShaderBrush(opticalShader))
-            }
-            if (currentArtBitmap != null) {
-                Image(bitmap = currentArtBitmap!!.asImageBitmap(), contentDescription = null, 
-                    modifier = Modifier.size(280.dp).clip(RoundedCornerShape(36.dp)))
-            }
+    // TRIPLE-LAYER BOX ARCHITECTURE
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        
+        // LAYER 1: AGSL Background
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            opticalShader.setFloatUniform("u_resolution", size.width, size.height)
+            opticalShader.setFloatUniform("u_kineticTime", kineticTime)
+            opticalShader.setFloatUniform("u_macroBreath", macroBreath)
+            opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f))
+            opticalShader.setFloatUniform("u_spectralBalance", spectralBalance) 
+            opticalShader.setFloatUniform("u_boxSizePx", artSizePx.width.toFloat(), artSizePx.height.toFloat())
+            opticalShader.setFloatUniform("u_cornerRadiusPx", cornerRadiusPx)
+            opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
+            opticalShader.setFloatUniform("u_dominantColor", dominantColor.red, dominantColor.green, dominantColor.blue)
+            opticalShader.setFloatUniform("u_vibrantColor", vibrantColor.red, vibrantColor.green, vibrantColor.blue)
+            
+            drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        AnimatedVisibility(visible = !isPresentationMode) {
-            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF080808)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("ANISOTROPIC REFRACTION AURA", color = Color.White, style = MaterialTheme.typography.titleSmall)
-                    Button(onClick = { filePicker.launch("audio/*") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))) {
-                        Text("OPEN TRACK", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                Spacer(modifier = Modifier.height(20.dp))
-                
-                TelemetryBar("METALLIC GLEAM (PULSE)", smoothedPulse, Color(0xFFFF5722))
-                TelemetryBar("EXTRUSION BREATHE (BREATH)", macroBreath, Color(0xFF00E5FF))
-                
-                Spacer(modifier = Modifier.height(24.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                    FloatingActionButton(onClick = { exoPlayer.seekTo(0); exoPlayer.play() }, containerColor = Color.DarkGray, shape = CircleShape, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Refresh, null, tint = Color.White)
-                    }
-                    FloatingActionButton(onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, containerColor = Color.White, shape = CircleShape) {
-                        Icon(if (isPlaying) Icons.Default.Close else Icons.Default.PlayArrow, null, tint = Color.Black)
-                    }
-                }
-            }
+        // LAYER 2: Hardware-Aligned Album Art
+        if (currentArtBitmap != null) {
+            Image(
+                bitmap = currentArtBitmap!!.asImageBitmap(), 
+                contentDescription = null, 
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(0.65f) // Strict Constraint
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(targetCornerRadiusDp))
+                    .onSizeChanged { artSizePx = it }
+            )
         }
-        
-        Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
-            TextButton(onClick = { isPresentationMode = !isPresentationMode }) {
-                Text(if (isPresentationMode) "VIEW TUNER" else "PRESENTATION MODE", color = Color.Gray)
+
+        // LAYER 3: Persistent Controls & Telemetry
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(Color(0xD9080808))
+                .padding(24.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(), 
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("MAGNETO-OPTIC CAUSTICS", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                    ) {
+                        Text(if (isPlaying) "PAUSE" else "PLAY")
+                    }
+                    Button(
+                        onClick = { filePicker.launch("audio/*") }, 
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    ) {
+                        Text("OPEN")
+                    }
+                }
             }
+            Spacer(modifier = Modifier.height(16.dp))
+            TelemetryBar("CAUSTIC FRACTURE", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722))
+            TelemetryBar("FLUID DISPERSION", macroBreath, Color(0xFF00E5FF))
+            TelemetryBar("CURL TOPOLOGY", spectralBalance, Color(0xFFAEEA00))
         }
     }
 }
@@ -348,9 +350,10 @@ fun AnisotropicRefractionPrototype() {
 @Composable
 fun TelemetryBar(label: String, value: Float, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(260.dp))
+        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(160.dp))
         Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
-            drawRect(color = Color.DarkGray); drawRect(color = color, size = size.copy(width = size.width * value))
+            drawRect(color = Color.DarkGray)
+            drawRect(color = color, size = size.copy(width = size.width * value))
         }
     }
 }
