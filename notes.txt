@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -57,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AUDIO DSP ENGINE
+// 1. AUDIO DSP ENGINE (RMS, PULSE, TIMBRE)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -280,7 +281,7 @@ fun MagnetoOpticEngine() {
     // TRIPLE-LAYER BOX ARCHITECTURE
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // LAYER 1: AGSL Background
+        // LAYER 1: AGSL Background (Bottom)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime)
@@ -296,21 +297,29 @@ fun MagnetoOpticEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Hardware-Aligned Album Art
+        // LAYER 2: Hardware-Aligned Album Art (Center - CRITICAL FIX FOR UI OCCLUSION)
         if (currentArtBitmap != null) {
-            Image(
-                bitmap = currentArtBitmap!!.asImageBitmap(), 
-                contentDescription = null, 
+            Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth(0.65f) // Strict Constraint
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(targetCornerRadiusDp))
-                    .onSizeChanged { artSizePx = it }
-            )
+                    .align(Alignment.Center) // Center the whole assembly
+                    .fillMaxHeight(0.65f) // Limit height so aura has room (Fixes the bloat seen in video)
+                    .aspectRatio(1f), // Keep it square
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = currentArtBitmap!!.asImageBitmap(), 
+                    contentDescription = null, 
+                    // Make the image fill its containing constrained Box, but apply clipping and size hook here
+                    modifier = Modifier
+                        .fillMaxSize() 
+                        .clip(RoundedCornerShape(targetCornerRadiusDp))
+                        .onSizeChanged { artSizePx = it }, // Hooks actual render size to shader
+                    contentScale = ContentScale.Crop // Ensure image covers the clipped squircle
+                )
+            }
         }
 
-        // LAYER 3: Persistent Controls & Telemetry
+        // LAYER 3: Persistent Controls & Telemetry (Top/Bottom)
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
