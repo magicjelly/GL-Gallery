@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    MagnetoOpticEngine()
+                    ChromodynamicAcrylicEngine()
                 }
             }
         }
@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AUDIO DSP ENGINE (RMS, PULSE, TIMBRE)
+// 1. AUDIO DSP ENGINE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -102,9 +102,9 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: MAGNETO-OPTIC CAUSTICS
+// 2. AGSL SHADER: ROTATIONAL ADVECTION ACRYLIC
 // ==========================================
-const val MAGNETO_OPTIC_SRC = """
+const val EDGE_LIT_ACRYLIC_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -158,45 +158,50 @@ const val MAGNETO_OPTIC_SRC = """
         float2 aspectUv = float2(uv.x * aspect, uv.y);
         float2 center = float2(0.5 * aspect, 0.5);
         
-        // Anchored Origin to prevent drift
+        // Anchored Origin
         float2 toPixel = aspectUv - center;
         
-        // Dynamic Hardware Binding
+        // Hardware Binding
         float2 boxHalfSize = max((u_boxSizePx / u_resolution.y) * 0.5, float2(0.001));
         float cornerRadius = max(u_cornerRadiusPx / u_resolution.y, 0.001);
+        
         float d = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
         
-        // --- 1. MAGNETO-OPTIC FIELD ---
-        float complexity = 1.5 + (u_spectralBalance * 2.5);
+        // --- 1. ROTATIONAL CURL DYNAMICS (THE PIVOT) ---
+        float complexity = 1.0 + (u_spectralBalance * 2.0);
         float2 noiseUv = toPixel * complexity;
-        float flow = u_kineticTime * 0.5;
+        float flow = u_kineticTime * 0.8;
         
-        float2 e = float2(0.02, 0.0);
-        float nx = fbm(noiseUv + e.xy - flow) - fbm(noiseUv - e.xy - flow);
-        float ny = fbm(noiseUv + e.yx - flow) - fbm(noiseUv - e.yx - flow);
+        // Swirl Vector: Traverses the noise domain in a continuous circle around the UI.
+        // This restores the continuous rolling whites of the previous version without diagonal drift.
+        float2 swirlVector = normalize(float2(-toPixel.y, toPixel.x) + float2(0.001));
+        float2 advect = swirlVector * flow;
         
-        // True Curl Vector
+        float2 e = float2(0.03, 0.0);
+        float nx = fbm(noiseUv + e.xy + advect) - fbm(noiseUv - e.xy + advect);
+        float ny = fbm(noiseUv + e.yx + advect) - fbm(noiseUv - e.yx + advect);
         float2 curl = float2(ny, -nx);
         
-        // --- 2. CAUSTIC FRACTURE ---
-        // Create sharp, interlocking optical lines based on the curl magnitude
-        float causticRaw = abs(fbm(toPixel * 4.0 + curl * 2.0));
-        float causticLines = smoothstep(0.01, 0.08, 0.1 - causticRaw);
+        // --- 2. ACRYLIC FRACTURE ---
+        float warpStrength = 0.1 + (u_microPulse * 0.2);
+        float2 fracturedPixel = toPixel + (curl * warpStrength);
         
-        // Kinetic tension snaps the caustics
-        float tension = causticLines * (1.0 + u_microPulse * 3.0);
+        float shatteredSDF = abs(sdRoundRect(fracturedPixel, boxHalfSize, cornerRadius));
+        float edgeGlow = 0.003 / (shatteredSDF + 0.001);
         
-        // --- 3. HARDWARE-ALIGNED OPTICS ---
-        float fade = exp(-max(d, 0.0) * (3.5 - u_macroBreath * 1.5));
+        float organicBreakup = fbm(toPixel * 5.0 + u_kineticTime);
+        float causticTension = edgeGlow * organicBreakup * (1.0 + u_microPulse * 4.0);
         
-        float3 deepFluid = mixLinear(u_mutedColor, u_dominantColor, fade * 0.8);
-        float3 sharpRefraction = u_vibrantColor * tension * fade;
+        // --- 3. PURE ADDITIVE LIGHTING ---
+        float opticalFade = exp(-max(d, 0.0) * (3.5 - u_macroBreath * 1.5));
+        float3 deepAcrylic = mixLinear(u_mutedColor, u_dominantColor, opticalFade * 0.9);
+        float3 ignitedEdges = u_vibrantColor * causticTension * opticalFade;
         
-        float3 finalColor = deepFluid + sharpRefraction;
+        float3 finalColor = deepAcrylic + ignitedEdges;
         
         // Hardware Mask & Priming
-        finalColor *= smoothstep(0.0, 0.005, d);
-        finalColor = max(finalColor, float3(0.005));
+        finalColor *= smoothstep(-0.005, 0.0, d);
+        finalColor = max(finalColor, float3(0.004)); 
         finalColor += float3((hash22(fragCoord).x - 0.5) * 0.006);
         finalColor = finalColor / (1.0 + finalColor * 0.2);
         
@@ -205,19 +210,19 @@ const val MAGNETO_OPTIC_SRC = """
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE (TRIPLE-LAYER BOX)
+// 3. UI ARCHITECTURE (STRICT 320dp LOCK)
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun MagnetoOpticEngine() {
+fun ChromodynamicAcrylicEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF040404)) }
-    var dominantColor by remember { mutableStateOf(Color(0xFF1A237E)) }
-    var vibrantColor by remember { mutableStateOf(Color(0xFF00E5FF)) }
+    var mutedColor by remember { mutableStateOf(Color(0xFF0A0A0A)) }
+    var dominantColor by remember { mutableStateOf(Color(0xFF1E1E1E)) }
+    var vibrantColor by remember { mutableStateOf(Color(0xFF888888)) }
     
     var kineticTime by remember { mutableFloatStateOf(0f) }
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
@@ -227,9 +232,10 @@ fun MagnetoOpticEngine() {
     var isPlaying by remember { mutableStateOf(false) }
     var artSizePx by remember { mutableStateOf(IntSize.Zero) }
     
+    val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
     val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(MAGNETO_OPTIC_SRC) }
+    val opticalShader = remember { RuntimeShader(EDGE_LIT_ACRYLIC_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -239,9 +245,14 @@ fun MagnetoOpticEngine() {
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap
                     Palette.from(bitmap).generate { p ->
-                        mutedColor = Color(p?.getDarkMutedColor(0xFF040404.toInt()) ?: 0xFF040404.toInt())
-                        dominantColor = Color(p?.getDominantColor(0xFF1A237E.toInt()) ?: 0xFF1A237E.toInt())
-                        vibrantColor = Color(p?.getLightVibrantColor(0xFF00E5FF.toInt()) ?: 0xFF00E5FF.toInt())
+                        val fallback = 0xFF444444.toInt()
+                        val dom = p?.getDominantColor(fallback) ?: fallback
+                        val mut = p?.getDarkMutedColor(dom) ?: dom
+                        val vib = p?.getLightVibrantColor(p.getVibrantColor(dom)) ?: dom
+                        
+                        mutedColor = Color(mut)
+                        dominantColor = Color(dom)
+                        vibrantColor = Color(vib)
                     }
                 }
             }
@@ -273,15 +284,14 @@ fun MagnetoOpticEngine() {
                 pulseVelocity += force * dt
                 smoothedPulse += pulseVelocity * dt
                 
-                kineticTime += dt * (0.2f + (smoothedPulse.coerceAtLeast(0f) * 0.8f)) * activeAlpha
+                kineticTime += dt * (0.2f + (smoothedPulse.coerceAtLeast(0f) * 1.5f)) * activeAlpha
             }
         }
     }
 
-    // TRIPLE-LAYER BOX ARCHITECTURE
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // LAYER 1: AGSL Background (Bottom)
+        // LAYER 1: AGSL Background
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime)
@@ -297,29 +307,27 @@ fun MagnetoOpticEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Hardware-Aligned Album Art (Center - CRITICAL FIX FOR UI OCCLUSION)
+        // LAYER 2: Hardware-Aligned Album Art
         if (currentArtBitmap != null) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.Center) // Center the whole assembly
-                    .fillMaxHeight(0.65f) // Limit height so aura has room (Fixes the bloat seen in video)
-                    .aspectRatio(1f), // Keep it square
+                    .align(Alignment.Center)
+                    .size(targetSizeDp), // STRICT 320dp LOCK
                 contentAlignment = Alignment.Center
             ) {
                 Image(
                     bitmap = currentArtBitmap!!.asImageBitmap(), 
                     contentDescription = null, 
-                    // Make the image fill its containing constrained Box, but apply clipping and size hook here
                     modifier = Modifier
                         .fillMaxSize() 
                         .clip(RoundedCornerShape(targetCornerRadiusDp))
-                        .onSizeChanged { artSizePx = it }, // Hooks actual render size to shader
-                    contentScale = ContentScale.Crop // Ensure image covers the clipped squircle
+                        .onSizeChanged { artSizePx = it },
+                    contentScale = ContentScale.Crop
                 )
             }
         }
 
-        // LAYER 3: Persistent Controls & Telemetry (Top/Bottom)
+        // LAYER 3: Persistent Controls & Telemetry
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -332,7 +340,7 @@ fun MagnetoOpticEngine() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("MAGNETO-OPTIC CAUSTICS", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                Text("EDGE-LIT ACRYLIC", color = Color.White, style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
@@ -349,9 +357,9 @@ fun MagnetoOpticEngine() {
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
-            TelemetryBar("CAUSTIC FRACTURE", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722))
-            TelemetryBar("FLUID DISPERSION", macroBreath, Color(0xFF00E5FF))
-            TelemetryBar("CURL TOPOLOGY", spectralBalance, Color(0xFFAEEA00))
+            TelemetryBar("FRACTURE IGNITION", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722))
+            TelemetryBar("OPTICAL DENSITY", macroBreath, Color(0xFF00E5FF))
+            TelemetryBar("SHEAR STRESS", spectralBalance, Color(0xFFAEEA00))
         }
     }
 }
