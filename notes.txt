@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
-    private var rollingRms: Float = 0.05f // Auto-Gain Control baseline
+    private var rollingRms: Float = 0.05f 
     
     private val _macroBreath = MutableStateFlow(0f)
     val macroBreath: StateFlow<Float> = _macroBreath 
@@ -220,7 +220,7 @@ const val PRISMATIC_OBSIDIAN_SRC = """
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE 
+// 3. UI ARCHITECTURE & V6.0 DIAGNOSTIC MATRIX
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
@@ -253,7 +253,6 @@ fun PrismaticObsidianEngine() {
             override fun onIsPlayingChanged(p: Boolean) { isPlaying = p }
             override fun onMediaMetadataChanged(m: MediaMetadata) {
                 m.artworkData?.let { data ->
-                    // Decode off the main thread to prevent UI stutter on high-res art
                     coroutineScope.launch(Dispatchers.IO) {
                         val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                         Palette.from(bitmap).generate { p ->
@@ -287,8 +286,10 @@ fun PrismaticObsidianEngine() {
     val volatility by audioEngine.volatility.collectAsState()
     val roughness by audioEngine.roughness.collectAsState()
 
-    // Suspend-aware render loop. Stops draining battery if paused and settled.
-    LaunchedEffect(isPlaying, microPulse) {
+    var radarX by remember { mutableFloatStateOf(0.5f) }
+    var radarY by remember { mutableFloatStateOf(0.5f) }
+
+    LaunchedEffect(Unit) {
         while (true) {
             withFrameNanos { frameNanos ->
                 if (lastFrameNanos == 0L) lastFrameNanos = frameNanos
@@ -301,15 +302,22 @@ fun PrismaticObsidianEngine() {
                 pulseVelocity += force * dt
                 smoothedPulse += pulseVelocity * dt
                 
-                if (isPlaying) {
-                    kineticTime += dt * 0.5f 
-                }
+                val activeAlpha = if (isPlaying) 1f else 0f
+                kineticTime += dt * 0.5f * activeAlpha
+                
+                // Affective radar smoothing
+                val targetX = (spectralBalance * 0.7f) + ((1f - (roughness * 5f).coerceIn(0f, 1f)) * 0.3f)
+                val targetY = (macroBreath * 0.6f) + (volatility * 0.4f)
+                
+                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.03f 
+                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.03f
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
+        // LAYER 1: AGSL Background
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
@@ -327,6 +335,7 @@ fun PrismaticObsidianEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
+        // LAYER 2: Strict Album Art Anchor (320dp)
         if (currentArtBitmap != null) {
             Box(
                 modifier = Modifier
@@ -346,30 +355,100 @@ fun PrismaticObsidianEngine() {
             }
         }
 
+        // LAYER 3: V6.0 Diagnostic Matrix
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .background(Color(0xD9080808))
+                .padding(24.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Button(
-                    onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF), contentColor = Color.White),
-                    elevation = ButtonDefaults.buttonElevation(0.dp)
-                ) {
-                    Text(if (isPlaying) "PAUSE" else "PLAY", fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), 
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("PRISMATIC OBSIDIAN MANIFOLD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Crucible v6.0 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                 }
-                Button(
-                    onClick = { filePicker.launch("audio/*") }, 
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xAAFFFFFF), contentColor = Color.Black),
-                    elevation = ButtonDefaults.buttonElevation(0.dp)
-                ) {
-                    Text("OPEN AUDIO", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                    ) {
+                        Text(if (isPlaying) "PAUSE" else "PLAY")
+                    }
+                    Button(
+                        onClick = { filePicker.launch("audio/*") }, 
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    ) {
+                        Text("OPEN TRACK")
+                    }
+                }
+            }
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
+                
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    
+                    Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Spatial Plate Shear")
+                    
+                    Spacer(modifier = Modifier.height(2.dp))
+                    
+                    Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Matte Diffusion")
+                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Specular Catch-Light")
+                    
+                    Spacer(modifier = Modifier.height(2.dp))
+                    
+                    Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Terrace Expansion")
+                    TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Light Sweep Phase")
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
+    Box(
+        modifier = Modifier
+            .size(160.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF161616))
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            drawLine(Color(0xFF333333), Offset(w/2, 0f), Offset(w/2, h), strokeWidth = 2f)
+            drawLine(Color(0xFF333333), Offset(0f, h/2), Offset(w, h/2), strokeWidth = 2f)
+            
+            val dotX = xCoord * w
+            val dotY = (1f - yCoord) * h
+            drawCircle(color = dotColor.copy(alpha = 0.4f), radius = 12.dp.toPx(), center = Offset(dotX, dotY))
+            drawCircle(color = dotColor, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
+        }
+
+        Text("SPARSE / RIGID", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+        Text("DENSE / VIBRANT", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
+        Text("DEEP / ACTIVE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
+        Text("CALM / SHALLOW", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
+    }
+}
+
+@Composable
+fun TranslationBar(audioLabel: String, value: Float, color: Color, visualResultLabel: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(audioLabel, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(90.dp))
+        Canvas(modifier = Modifier.height(4.dp).weight(1f).clip(RoundedCornerShape(2.dp))) {
+            drawRect(color = Color(0xFF222222))
+            drawRect(color = color, size = size.copy(width = size.width * value.coerceIn(0f, 1f)))
+        }
+        Text("→ $visualResultLabel", color = Color.Gray, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.width(130.dp).padding(start = 8.dp))
     }
 }
 
