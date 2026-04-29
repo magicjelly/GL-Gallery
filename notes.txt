@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    AnisotropicSilkEngine()
+                    TranscendentManifoldEngine()
                 }
             }
         }
@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE (Strict Filtering)
+// 1. AFFECTIVE DSP ENGINE (Strict Separation of Time & Audio)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -119,22 +119,23 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         
         currentSpectralRatio = (currentSpectralRatio * 0.99f) + (balance * 0.01f)
         _spectralBalance.value = currentSpectralRatio
+        
+        // Heavy filtering to ensure all audio variables are smooth
         _macroBreath.value = (_macroBreath.value * 0.95f) + (energy * 0.05f) 
         _microPulse.value = energy 
-        _volatility.value = (_volatility.value * 0.90f) + ((rawFlux * 12f).coerceIn(0f, 1f) * 0.10f)
+        _volatility.value = (_volatility.value * 0.92f) + ((rawFlux * 12f).coerceIn(0f, 1f) * 0.08f)
         _roughness.value = (_roughness.value * 0.95f) + (rawZcr * 0.05f)
     }
 }
 
 // ==========================================
-// 2. AGSL SHADER: ANISOTROPIC LUMINOUS SILK
+// 2. AGSL SHADER: QUANTUM INTERFERENCE MANIFOLD
 // ==========================================
-// Enforces absolute geometric anchoring (Zero Gap) and Anisotropic 3D Lighting (Z-Axis)
-const val ANISOTROPIC_SILK_SRC = """
+const val QUANTUM_LATTICE_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
-    uniform float u_kineticTime;
+    uniform float u_kineticTime; // LAW 4: Strictly continuous, monotonic time
     uniform float u_spectralBalance;
     uniform float u_volatility; 
     uniform float u_roughness;  
@@ -148,33 +149,7 @@ const val ANISOTROPIC_SILK_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    float2 hash22(float2 p) {
-        float3 p3 = fract(float3(p.xyx) * float3(.1031, .1030, .0973));
-        p3 += dot(p3, p3.yzx + 33.33);
-        return fract((p3.xx+p3.yz)*p3.zy);
-    }
-
-    float noise(float2 x) {
-        float2 i = floor(x);
-        float2 f = fract(x);
-        f = f * f * (3.0 - 2.0 * f);
-        return mix(
-            mix(dot(hash22(i + float2(0.0, 0.0)), f - float2(0.0, 0.0)),
-                dot(hash22(i + float2(1.0, 0.0)), f - float2(1.0, 0.0)), f.x),
-            mix(dot(hash22(i + float2(0.0, 1.0)), f - float2(0.0, 1.0)),
-                dot(hash22(i + float2(1.0, 1.0)), f - float2(1.0, 1.0)), f.x), f.y);
-    }
-
-    float fbm(float2 p) {
-        float value = 0.0; float amplitude = 0.5;
-        for (int i = 0; i < 3; i++) {
-            value += amplitude * noise(p);
-            p *= 2.0; amplitude *= 0.5;
-        }
-        return value;
-    }
-
-    // LAW 1: Strict Signed Distance Field
+    // LAW 3: Strict SDF Anchoring
     float sdRoundRect(float2 p, float2 b, float r) {
         float2 d = abs(p) - b + float2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -184,6 +159,16 @@ const val ANISOTROPIC_SILK_SRC = """
         return sqrt(mix(colA * colA, colB * colB, clamp(t, 0.0, 1.0)));
     }
 
+    // LAW 5: Optical Crispness (Razor-Sharp Topologies)
+    // Instead of returning a soft volumetric cloud, this returns razor-sharp contour lines
+    float getCrispContour(float3 p) {
+        float field = dot(sin(p), cos(p.yzx));
+        // The absolute value isoline extracts exactly the zero-crossings of the field.
+        // A tight threshold (0.05) guarantees sharp lines with zero mush.
+        float edge = abs(field);
+        return smoothstep(0.08, 0.0, edge);
+    }
+
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
@@ -191,84 +176,68 @@ const val ANISOTROPIC_SILK_SRC = """
         float2 center = float2(0.5 * aspect, 0.5);
         float2 toPixel = aspectUv - center;
         
-        // Exact hardware bounds (320dp)
         float2 boxHalfSize = max((u_boxSizePx / u_resolution.y) * 0.5, float2(0.001));
         float cornerRadius = max(u_cornerRadiusPx / u_resolution.y, 0.001);
-        
-        // BASE GEOMETRY: This is strictly preserved.
         float trueD = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
         
-        // --- 1. INTERNAL SHEAR WARPING (LAW 4) ---
-        // Transients do NOT change size or brightness. They shear the internal threads.
-        float activeTime = u_kineticTime * (0.05 + u_moodArousal * 0.1);
-        float2 lightUv = toPixel * 2.0;
+        float3 finalColor = float3(0.0);
         
-        float2 acousticShear = float2(
-            fbm(lightUv * 1.5 + float2(activeTime, 0.0)),
-            fbm(lightUv * 1.5 - float2(0.0, activeTime))
-        ) * 2.0 - 1.0;
+        // --- LAW 2: Z-AXIS DIMENSIONALITY ---
+        const float SLICES = 4.0;
         
-        // Transient impact (Micro Pulse) tightens the shear instantly
-        acousticShear *= (0.02 + u_microPulse * 0.05 * u_volatility);
+        for(float i = 0.0; i < SLICES; i++) {
+            // Z-Depth scaling (MacroBreath expands the space deeply)
+            float zDepth = 1.0 + (i * (0.35 + u_macroBreath * 0.5)); 
+            
+            // LAW 4: Audio reactivity applied PURELY as spatial offset.
+            // Transients (u_microPulse) shear the coordinates outward like a shockwave.
+            float2 radialDir = normalize(toPixel + float2(0.001));
+            float transientShear = u_microPulse * 0.2 * (1.0 - i * 0.15);
+            float2 warpedPixel = toPixel + (radialDir * transientShear);
+            
+            // Construct 3D space: XY relies on warped pixels, Z replies on continuous time
+            float scale = 4.0 + u_roughness * 2.0;
+            float3 p = float3(warpedPixel * (scale * zDepth), u_kineticTime * 0.6 + i * 1.5);
+            
+            // LAW 5: Extract the crisp, sharp geometric interference line
+            float crispLine = getCrispContour(p);
+            
+            // Color Mapping
+            float chromaticPhase = clamp((i / SLICES) + u_moodValence * 0.5, 0.0, 1.0);
+            float3 sliceColor = mixLinear(u_dominantColor, u_vibrantColor, chromaticPhase);
+            sliceColor = mixLinear(u_mutedColor, sliceColor, exp(-i * 0.5));
+            
+            // Depth Extinction: Fade far layers
+            float extinction = exp(-i * 0.6);
+            
+            // Accumulate sharp light
+            finalColor += sliceColor * crispLine * extinction * (0.8 + u_volatility * 0.5);
+        }
         
-        float warpD = sdRoundRect(toPixel + acousticShear, boxHalfSize, cornerRadius);
+        // --- LAW 3: STRICT SDF ANCHORING ---
+        // Excludes the album art completely. The mask begins immediately at the border.
+        // A tight negative start ensures absolutely zero black gap.
+        float mask = smoothstep(-0.01, 0.02, trueD); 
         
-        // --- 2. THE Z-AXIS BREAK: ANISOTROPIC NORMALS (LAW 3) ---
-        // Generate high-frequency concentric silk threads
-        float threadDensity = 100.0 + (u_moodArousal * 50.0);
-        float rawThread = sin(warpD * threadDensity - activeTime * 5.0);
+        // Global exponential falloff anchoring it to the center
+        float globalGlow = exp(-max(trueD, 0.0) * (3.5 - u_macroBreath * 1.0)); 
         
-        // Calculate tangent vector for Anisotropic lighting
-        // The tangent runs perpendicular to the SDF gradient
-        float2 grad2D = normalize(toPixel); 
-        float3 tangent = normalize(float3(-grad2D.y, grad2D.x, 0.0));
+        finalColor *= mask * globalGlow;
         
-        // Virtual light setup
-        float3 lightDir = normalize(float3(0.0, -1.0, 0.5)); // Light from top
-        float3 viewDir = float3(0.0, 0.0, 1.0);
-        float3 halfVector = normalize(lightDir + viewDir);
-        
-        // Anisotropic Specular Highlight (Silk/Brushed Metal Equation)
-        float dotTH = dot(tangent, halfVector);
-        float sinTH = sqrt(1.0 - dotTH * dotTH);
-        float glossiness = mix(16.0, 64.0, u_moodValence); // Brightness makes silk glossier
-        float anisotropicSpec = pow(sinTH, glossiness) * (0.5 + u_moodValence * 0.5);
-        
-        // --- 3. OPTICAL GLOW PRESSURE (Macro Breath) ---
-        // Dispersion is kept tight to physically frame the album art
-        float dispersionBase = 6.0 - (u_macroBreath * 1.5);
-        float opticalGlow = exp(-max(warpD, 0.0) * dispersionBase);
-        
-        // --- 4. CHROMODYNAMIC BLEND ---
-        float chromaticShift = clamp(0.3 + (u_moodValence * 0.4) + (u_macroBreath * 0.3), 0.0, 1.0);
-        float3 coldState = mixLinear(u_mutedColor, u_dominantColor, opticalGlow);
-        float3 hotState = mixLinear(u_dominantColor, u_vibrantColor, opticalGlow);
-        
-        float3 silkBaseColor = mixLinear(coldState, hotState, chromaticShift * opticalGlow);
-        
-        // Combine diffuse base with anisotropic specular highlight
-        float threadMask = smoothstep(0.3, 0.8, abs(rawThread));
-        float3 finalSilk = (silkBaseColor * (0.4 + threadMask * 0.6)) + (u_vibrantColor * anisotropicSpec * opticalGlow);
-        
-        // --- 5. STRICT ZERO-GAP MASKING (LAW 1) ---
-        // HARD FIX: Draw the effect inwards slightly (-0.01) to guarantee it sits under the album art.
-        // This eliminates the black gap permanently.
-        float mask = smoothstep(-0.01, 0.002, trueD); 
-        
-        float3 finalColor = finalSilk * mask;
-        finalColor = max(finalColor, float3(0.002)); // OLED floor
-        finalColor = finalColor / (1.0 + finalColor * 0.1); // Tone mapping
+        // Tone Mapping (HDR preservation)
+        finalColor = 1.0 - exp(-finalColor * 2.0); 
+        finalColor = max(finalColor, float3(0.002)); 
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE & V3.0 DIAGNOSTIC MATRIX
+// 3. UI ARCHITECTURE & V6.0 DIAGNOSTIC MATRIX
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun AnisotropicSilkEngine() {
+fun TranscendentManifoldEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
@@ -278,7 +247,10 @@ fun AnisotropicSilkEngine() {
     var dominantColor by remember { mutableStateOf(Color(0xFF1E1E1E)) }
     var vibrantColor by remember { mutableStateOf(Color(0xFF888888)) }
     
+    // LAW 4: Base kinetic time accumulator (Strictly isolated from audio spikes)
     var kineticTime by remember { mutableFloatStateOf(0f) }
+    
+    // Critically damped spring for spatial shearing (Micro Response)
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
     var pulseVelocity by remember { mutableFloatStateOf(0f) }
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
@@ -286,11 +258,11 @@ fun AnisotropicSilkEngine() {
     var isPlaying by remember { mutableStateOf(false) }
     var artSizePx by remember { mutableStateOf(IntSize.Zero) }
     
-    // STRICT 320dp CONSTRAINT
+    // LAW 3: STRICT 320dp CONSTRAINT
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
     val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(ANISOTROPIC_SILK_SRC) }
+    val opticalShader = remember { RuntimeShader(QUANTUM_LATTICE_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -339,31 +311,36 @@ fun AnisotropicSilkEngine() {
                 val activeAlpha = if (isPlaying) 1f else 0f
                 val targetPulse = microPulse
                 
-                // Critically Damped Hardware Spring
-                val stiffness = 40f
+                // KINETICS: Heavy, Critically Damped Spring for Elegant Spatial Shear (k=30)
+                val stiffness = 30f
                 val damping = 1.0f * 2f * sqrt(stiffness) 
                 val force = stiffness * (targetPulse - smoothedPulse) - damping * pulseVelocity
                 pulseVelocity += force * dt
                 smoothedPulse += pulseVelocity * dt
-                kineticTime += dt * activeAlpha 
                 
+                // LAW 4 FIX: Constant Base Velocity. NEVER multiply dt by audio volatility.
+                // This guarantees flawlessly smooth, continuous temporal evolution.
+                val constantBaseSpeed = 0.5f 
+                kineticTime += dt * constantBaseSpeed * activeAlpha 
+                
+                // Affective radar smoothing
                 val targetX = (spectralBalance * 0.7f) + ((1f - (roughness * 5f).coerceIn(0f, 1f)) * 0.3f)
                 val targetY = (macroBreath * 0.6f) + (volatility * 0.4f)
                 
-                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.05f 
-                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.05f
+                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.03f 
+                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.03f
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // LAYER 1: AGSL Background 
+        // LAYER 1: AGSL Background (Razor-Sharp Z-Axis Slicing)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
-            opticalShader.setFloatUniform("u_kineticTime", kineticTime)
+            opticalShader.setFloatUniform("u_kineticTime", kineticTime) // Isolated continuous time
             opticalShader.setFloatUniform("u_macroBreath", macroBreath)
-            opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f))
+            opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f)) // Used strictly for spatial offset
             opticalShader.setFloatUniform("u_spectralBalance", spectralBalance) 
             opticalShader.setFloatUniform("u_volatility", volatility) 
             opticalShader.setFloatUniform("u_roughness", roughness) 
@@ -398,7 +375,7 @@ fun AnisotropicSilkEngine() {
             }
         }
 
-        // LAYER 3: V3.0 Diagnostic Matrix
+        // LAYER 3: V6.0 Diagnostic Matrix
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -412,8 +389,8 @@ fun AnisotropicSilkEngine() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("ANISOTROPIC LUMINOUS SILK", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Crucible v3.0 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                    Text("QUANTUM INTERFERENCE MANIFOLD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Crucible v6.0 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -432,24 +409,24 @@ fun AnisotropicSilkEngine() {
             }
             
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                AffectiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
+                ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
                 
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     
-                    Text("MICRO (INTERNAL WARP)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Shear Tension")
+                    Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Spatial Lattice Shear")
                     
                     Spacer(modifier = Modifier.height(2.dp))
                     
-                    Text("MESO (MATERIAL STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Thread Density")
-                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Anisotropic Gloss")
+                    Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Lattice Complexity")
+                    TranslationBar("Volatility", volatility, Color(0xFFAEEA00), "Energy Saturation")
                     
                     Spacer(modifier = Modifier.height(2.dp))
                     
-                    Text("MACRO (EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Glow Pressure")
-                    TranslationBar("Volatility", volatility, Color(0xFFFFC107), "Kinetic Speed")
+                    Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Z-Axis Expansion")
+                    TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Continuous Flow")
                 }
             }
         }
@@ -457,7 +434,7 @@ fun AnisotropicSilkEngine() {
 }
 
 @Composable
-fun AffectiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
+fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
     Box(
         modifier = Modifier
             .size(160.dp)
@@ -476,10 +453,10 @@ fun AffectiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
             drawCircle(color = dotColor, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
         }
 
-        Text("DENSE / MATTE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
-        Text("SHARP / GLOSSY", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
-        Text("HEAVY / DEEP", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
-        Text("CALM / STABLE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
+        Text("SPARSE / RIGID", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+        Text("DENSE / VIBRANT", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
+        Text("DEEP / ACTIVE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
+        Text("CALM / SHALLOW", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
     }
 }
 
