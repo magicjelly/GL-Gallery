@@ -48,10 +48,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.TeeAudioProcessor
 import androidx.palette.graphics.Palette
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import kotlin.math.abs
 import kotlin.math.exp
@@ -72,7 +70,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE (WITH AGC)
+// 1. AFFECTIVE DSP ENGINE (AGC-TUNED)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -225,13 +223,12 @@ const val AETHERIUM_HALO_SRC = """
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE & DIAGNOSTIC MATRIX
+// 3. UI ARCHITECTURE
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
 fun AetheriumHaloEngine() {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
@@ -247,7 +244,7 @@ fun AetheriumHaloEngine() {
     
     var isPlaying by remember { mutableStateOf(false) }
     var artSizePx by remember { mutableStateOf(IntSize.Zero) }
-    var showDashboard by remember { mutableStateOf(true) } // Dashboard toggle state
+    var showDashboard by remember { mutableStateOf(true) }
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
@@ -258,22 +255,19 @@ fun AetheriumHaloEngine() {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(p: Boolean) { isPlaying = p }
             override fun onMediaMetadataChanged(m: MediaMetadata) {
+                // EXACT ORIGINAL IMPLEMENTATION RESTORED
                 m.artworkData?.let { data ->
-                    coroutineScope.launch(Dispatchers.IO) {
-                        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
-                        Palette.from(bitmap).generate { p ->
-                            val fallback = 0xFF444444.toInt()
-                            val dom = p?.getDominantColor(fallback) ?: fallback
-                            val mut = p?.getDarkMutedColor(dom) ?: dom
-                            val vib = p?.getLightVibrantColor(p.getVibrantColor(dom)) ?: dom
-                            
-                            launch(Dispatchers.Main) {
-                                currentArtBitmap = bitmap
-                                mutedColor = Color(mut)
-                                dominantColor = Color(dom)
-                                vibrantColor = Color(vib)
-                            }
-                        }
+                    val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+                    currentArtBitmap = bitmap // Assigned instantly!
+                    Palette.from(bitmap).generate { p ->
+                        val fallback = 0xFF444444.toInt()
+                        val dom = p?.getDominantColor(fallback) ?: fallback
+                        val mut = p?.getDarkMutedColor(dom) ?: dom
+                        val vib = p?.getLightVibrantColor(p.getVibrantColor(dom)) ?: dom
+                        
+                        mutedColor = Color(mut)
+                        dominantColor = Color(dom)
+                        vibrantColor = Color(vib)
                     }
                 }
             }
@@ -320,7 +314,7 @@ fun AetheriumHaloEngine() {
         }
     }
 
-    // Outer Box intercepts double taps to toggle the dashboard
+    // Intercepts double taps to toggle dashboard
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -350,23 +344,26 @@ fun AetheriumHaloEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Strict Album Art Anchor (320dp, Centered)
-        if (currentArtBitmap != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(targetSizeDp), 
-                contentAlignment = Alignment.Center
-            ) {
+        // LAYER 2: Strict Album Art Anchor (Bulletproofed sizing)
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(targetSizeDp)
+                .onSizeChanged { artSizePx = it }, // Anchors shader even if image is null
+            contentAlignment = Alignment.Center
+        ) {
+            if (currentArtBitmap != null) {
                 Image(
                     bitmap = currentArtBitmap!!.asImageBitmap(), 
                     contentDescription = null, 
                     modifier = Modifier
                         .fillMaxSize() 
-                        .clip(RoundedCornerShape(targetCornerRadiusDp))
-                        .onSizeChanged { artSizePx = it },
+                        .clip(RoundedCornerShape(targetCornerRadiusDp)),
                     contentScale = ContentScale.Crop
                 )
+            } else {
+                // Sleek placeholder while loading
+                Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(targetCornerRadiusDp)).background(Color(0xFF1E1E1E)))
             }
         }
 
@@ -390,7 +387,7 @@ fun AetheriumHaloEngine() {
                 ) {
                     Column {
                         Text("THE AETHERIUM HALO ENGINE", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Crucible v6.0 Diagnostic Matrix (Double-Tap to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Text("Crucible v7.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
