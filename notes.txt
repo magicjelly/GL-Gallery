@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    PhotonicGlassEngine()
+                    AnisotropicSilkEngine()
                 }
             }
         }
@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE
+// 1. AFFECTIVE DSP ENGINE (Strict Filtering)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -117,7 +117,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         prevHighFreqRms = highFreqRms
         val rawZcr = zeroCrossings.toFloat() / (limit / 2).toFloat()
         
-        currentSpectralRatio = (currentSpectralRatio * 0.98f) + (balance * 0.02f)
+        currentSpectralRatio = (currentSpectralRatio * 0.99f) + (balance * 0.01f)
         _spectralBalance.value = currentSpectralRatio
         _macroBreath.value = (_macroBreath.value * 0.95f) + (energy * 0.05f) 
         _microPulse.value = energy 
@@ -127,9 +127,10 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: VISCOELASTIC PHOTONIC GLASS
+// 2. AGSL SHADER: ANISOTROPIC LUMINOUS SILK
 // ==========================================
-const val PHOTONIC_GLASS_SRC = """
+// Enforces absolute geometric anchoring (Zero Gap) and Anisotropic 3D Lighting (Z-Axis)
+const val ANISOTROPIC_SILK_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -173,6 +174,7 @@ const val PHOTONIC_GLASS_SRC = """
         return value;
     }
 
+    // LAW 1: Strict Signed Distance Field
     float sdRoundRect(float2 p, float2 b, float r) {
         float2 d = abs(p) - b + float2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -182,15 +184,6 @@ const val PHOTONIC_GLASS_SRC = """
         return sqrt(mix(colA * colA, colB * colB, clamp(t, 0.0, 1.0)));
     }
 
-    // --- VISCOELASTIC VOLUME (HEIGHT MAP) ---
-    float getGlassCurvature(float2 uv, float d, float activeTime) {
-        float baseExtrusion = exp(-max(d, 0.0) * 3.0);
-        float2 fluidUv = uv * (1.5 + u_roughness) + float2(activeTime * 0.5, -activeTime * 0.3);
-        float viscoelasticFlow = fbm(fluidUv);
-        float internalPressure = fbm(uv * 8.0 - activeTime) * u_microPulse * 0.1;
-        return baseExtrusion * (0.7 + viscoelasticFlow * 0.6 * u_macroBreath) + internalPressure;
-    }
-
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
@@ -198,64 +191,84 @@ const val PHOTONIC_GLASS_SRC = """
         float2 center = float2(0.5 * aspect, 0.5);
         float2 toPixel = aspectUv - center;
         
+        // Exact hardware bounds (320dp)
         float2 boxHalfSize = max((u_boxSizePx / u_resolution.y) * 0.5, float2(0.001));
         float cornerRadius = max(u_cornerRadiusPx / u_resolution.y, 0.001);
+        
+        // BASE GEOMETRY: This is strictly preserved.
         float trueD = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
         
+        // --- 1. INTERNAL SHEAR WARPING (LAW 4) ---
+        // Transients do NOT change size or brightness. They shear the internal threads.
         float activeTime = u_kineticTime * (0.05 + u_moodArousal * 0.1);
+        float2 lightUv = toPixel * 2.0;
         
-        // --- 1. OPTICAL REFRACTION (IoR CALCULATIONS) ---
-        // Calculate the physical slope of the glass to bend the light
-        float eps = 0.008; 
-        float h  = getGlassCurvature(toPixel, trueD, activeTime);
-        float hX = getGlassCurvature(toPixel + float2(eps, 0.0), trueD, activeTime);
-        float hY = getGlassCurvature(toPixel + float2(0.0, eps), trueD, activeTime);
+        float2 acousticShear = float2(
+            fbm(lightUv * 1.5 + float2(activeTime, 0.0)),
+            fbm(lightUv * 1.5 - float2(0.0, activeTime))
+        ) * 2.0 - 1.0;
         
-        float3 normal = normalize(float3(-(hX - h), -(hY - h), eps));
+        // Transient impact (Micro Pulse) tightens the shear instantly
+        acousticShear *= (0.02 + u_microPulse * 0.05 * u_volatility);
         
-        // The light from the album art is refracted (bent) based on the glass normal
-        // This permanently anchors the visual effect to the center geometry
-        float refractionStrength = 0.15 + (u_macroBreath * 0.1);
-        float2 refractedPixel = toPixel + normal.xy * refractionStrength * h;
+        float warpD = sdRoundRect(toPixel + acousticShear, boxHalfSize, cornerRadius);
         
-        float refractedD = sdRoundRect(refractedPixel, boxHalfSize, cornerRadius);
+        // --- 2. THE Z-AXIS BREAK: ANISOTROPIC NORMALS (LAW 3) ---
+        // Generate high-frequency concentric silk threads
+        float threadDensity = 100.0 + (u_moodArousal * 50.0);
+        float rawThread = sin(warpD * threadDensity - activeTime * 5.0);
         
-        // --- 2. PHOTONIC DISPERSION ---
-        // The deeper the light travels through the glass, the more it fades into the muted palette
-        float opticalDensity = 4.0 - (h * 1.5) + (u_roughness * 2.0);
-        float opticalFade = exp(-max(refractedD, 0.0) * opticalDensity);
+        // Calculate tangent vector for Anisotropic lighting
+        // The tangent runs perpendicular to the SDF gradient
+        float2 grad2D = normalize(toPixel); 
+        float3 tangent = normalize(float3(-grad2D.y, grad2D.x, 0.0));
         
-        // --- 3. CHROMODYNAMIC BLEND ---
-        // Heat is generated internally by transients, trapped beneath the glass
-        float internalHeat = clamp(u_microPulse * 0.6 * h, 0.0, 1.0);
-        float chromaticShift = clamp(0.2 + (u_moodValence * 0.3) + internalHeat, 0.0, 1.0);
+        // Virtual light setup
+        float3 lightDir = normalize(float3(0.0, -1.0, 0.5)); // Light from top
+        float3 viewDir = float3(0.0, 0.0, 1.0);
+        float3 halfVector = normalize(lightDir + viewDir);
         
-        float3 coldState = mixLinear(u_mutedColor, u_dominantColor, opticalFade);
-        float3 hotState = mixLinear(u_dominantColor, u_vibrantColor, opticalFade * (0.5 + h));
-        float3 glassGlow = mixLinear(coldState, hotState, chromaticShift * opticalFade);
+        // Anisotropic Specular Highlight (Silk/Brushed Metal Equation)
+        float dotTH = dot(tangent, halfVector);
+        float sinTH = sqrt(1.0 - dotTH * dotTH);
+        float glossiness = mix(16.0, 64.0, u_moodValence); // Brightness makes silk glossier
+        float anisotropicSpec = pow(sinTH, glossiness) * (0.5 + u_moodValence * 0.5);
         
-        // --- 4. MATERIAL GROUNDING (NO PLASTIC) ---
-        // Remove all fake white specular highlights. Add physical density grain.
-        float grainIntensity = 0.01 + (u_roughness * 0.03);
-        float staticGrain = (hash22(fragCoord * 1.5).x - 0.5) * grainIntensity;
+        // --- 3. OPTICAL GLOW PRESSURE (Macro Breath) ---
+        // Dispersion is kept tight to physically frame the album art
+        float dispersionBase = 6.0 - (u_macroBreath * 1.5);
+        float opticalGlow = exp(-max(warpD, 0.0) * dispersionBase);
         
-        float3 finalColor = glassGlow + float3(staticGrain);
+        // --- 4. CHROMODYNAMIC BLEND ---
+        float chromaticShift = clamp(0.3 + (u_moodValence * 0.4) + (u_macroBreath * 0.3), 0.0, 1.0);
+        float3 coldState = mixLinear(u_mutedColor, u_dominantColor, opticalGlow);
+        float3 hotState = mixLinear(u_dominantColor, u_vibrantColor, opticalGlow);
         
-        // Hardware Mask & Tone Mapping
-        finalColor *= smoothstep(-0.015, 0.0, trueD); 
-        finalColor = max(finalColor, float3(0.002)); 
-        finalColor = finalColor / (1.0 + finalColor * 0.15); 
+        float3 silkBaseColor = mixLinear(coldState, hotState, chromaticShift * opticalGlow);
+        
+        // Combine diffuse base with anisotropic specular highlight
+        float threadMask = smoothstep(0.3, 0.8, abs(rawThread));
+        float3 finalSilk = (silkBaseColor * (0.4 + threadMask * 0.6)) + (u_vibrantColor * anisotropicSpec * opticalGlow);
+        
+        // --- 5. STRICT ZERO-GAP MASKING (LAW 1) ---
+        // HARD FIX: Draw the effect inwards slightly (-0.01) to guarantee it sits under the album art.
+        // This eliminates the black gap permanently.
+        float mask = smoothstep(-0.01, 0.002, trueD); 
+        
+        float3 finalColor = finalSilk * mask;
+        finalColor = max(finalColor, float3(0.002)); // OLED floor
+        finalColor = finalColor / (1.0 + finalColor * 0.1); // Tone mapping
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE & DIAGNOSTIC MATRIX
+// 3. UI ARCHITECTURE & V3.0 DIAGNOSTIC MATRIX
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun PhotonicGlassEngine() {
+fun AnisotropicSilkEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
@@ -273,10 +286,11 @@ fun PhotonicGlassEngine() {
     var isPlaying by remember { mutableStateOf(false) }
     var artSizePx by remember { mutableStateOf(IntSize.Zero) }
     
+    // STRICT 320dp CONSTRAINT
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
     val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(PHOTONIC_GLASS_SRC) }
+    val opticalShader = remember { RuntimeShader(ANISOTROPIC_SILK_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -326,8 +340,8 @@ fun PhotonicGlassEngine() {
                 val targetPulse = microPulse
                 
                 // Critically Damped Hardware Spring
-                val stiffness = 30f
-                val damping = 1.1f * 2f * sqrt(stiffness) 
+                val stiffness = 40f
+                val damping = 1.0f * 2f * sqrt(stiffness) 
                 val force = stiffness * (targetPulse - smoothedPulse) - damping * pulseVelocity
                 pulseVelocity += force * dt
                 smoothedPulse += pulseVelocity * dt
@@ -344,6 +358,7 @@ fun PhotonicGlassEngine() {
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
+        // LAYER 1: AGSL Background 
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime)
@@ -363,6 +378,7 @@ fun PhotonicGlassEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
+        // LAYER 2: Strict Album Art Anchor (320dp)
         if (currentArtBitmap != null) {
             Box(
                 modifier = Modifier
@@ -382,6 +398,7 @@ fun PhotonicGlassEngine() {
             }
         }
 
+        // LAYER 3: V3.0 Diagnostic Matrix
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -395,8 +412,8 @@ fun PhotonicGlassEngine() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("VISCOELASTIC PHOTONIC GLASS", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Crucible v2.1 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                    Text("ANISOTROPIC LUMINOUS SILK", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Crucible v3.0 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -415,24 +432,24 @@ fun PhotonicGlassEngine() {
             }
             
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
+                AffectiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
                 
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     
-                    Text("MICRO RESPONSE (INTERNAL STRESS)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "IoR Fractures")
+                    Text("MICRO (INTERNAL WARP)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Shear Tension")
                     
                     Spacer(modifier = Modifier.height(2.dp))
                     
-                    Text("MESO RESPONSE (MATERIAL STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Chromatic Bleed")
-                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Optical Density")
+                    Text("MESO (MATERIAL STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Thread Density")
+                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Anisotropic Gloss")
                     
                     Spacer(modifier = Modifier.height(2.dp))
                     
-                    Text("MACRO RESPONSE (EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Glass Curvature")
-                    TranslationBar("Volatility", volatility, Color(0xFFFFC107), "Flow Speed")
+                    Text("MACRO (EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Glow Pressure")
+                    TranslationBar("Volatility", volatility, Color(0xFFFFC107), "Kinetic Speed")
                 }
             }
         }
@@ -440,7 +457,7 @@ fun PhotonicGlassEngine() {
 }
 
 @Composable
-fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
+fun AffectiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
     Box(
         modifier = Modifier
             .size(160.dp)
@@ -459,10 +476,10 @@ fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
             drawCircle(color = dotColor, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
         }
 
-        Text("DENSE / OPAQUE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
-        Text("CLEAR / RADIANT", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
+        Text("DENSE / MATTE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+        Text("SHARP / GLOSSY", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
         Text("HEAVY / DEEP", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
-        Text("CALM / FLUID", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
+        Text("CALM / STABLE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
     }
 }
 
