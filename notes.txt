@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
@@ -26,8 +27,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -40,6 +44,7 @@ import androidx.palette.graphics.Palette
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.nio.ByteBuffer
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.sqrt
 
@@ -50,7 +55,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    ChromodynamicAcrylicEngine()
+                    PhotonicGlassEngine()
                 }
             }
         }
@@ -58,22 +63,30 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AUDIO DSP ENGINE
+// 1. AFFECTIVE DSP ENGINE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
     var audioGain: Float = 25.0f 
+    
     private val _macroBreath = MutableStateFlow(0f)
     val macroBreath: StateFlow<Float> = _macroBreath 
     private val _microPulse = MutableStateFlow(0f)
     val microPulse: StateFlow<Float> = _microPulse
     private val _spectralBalance = MutableStateFlow(0f)
     val spectralBalance: StateFlow<Float> = _spectralBalance
+    private val _volatility = MutableStateFlow(0f) 
+    val volatility: StateFlow<Float> = _volatility
+    private val _roughness = MutableStateFlow(0f)  
+    val roughness: StateFlow<Float> = _roughness
+
     private var prevSample = 0f
+    private var prevHighFreqRms = 0f
     private var currentSpectralRatio = 0.5f
 
     override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
         _macroBreath.value = 0f; _microPulse.value = 0f; _spectralBalance.value = 0.5f
+        _volatility.value = 0f; _roughness.value = 0f
     }
 
     override fun handleBuffer(buffer: ByteBuffer) {
@@ -81,37 +94,54 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         if (limit == 0) return
         var sumSq = 0.0
         var highFreqSumSq = 0.0
+        var zeroCrossings = 0
+        var prevSign = 0f
+        
         buffer.position(0)
         while (buffer.position() < limit - 1) {
             val raw = buffer.short.toFloat() / Short.MAX_VALUE
             val highFreq = raw - prevSample
+            if (raw * prevSign < 0) zeroCrossings++
             prevSample = raw
+            prevSign = raw
             sumSq += (raw * raw)
             highFreqSumSq += (highFreq * highFreq)
         }
+        
         val totalRms = sqrt(sumSq / (limit / 2)).toFloat()
         val highFreqRms = sqrt(highFreqSumSq / (limit / 2)).toFloat()
         val energy = (1.0f - exp(-totalRms * audioGain)).coerceIn(0f, 1f)
         val balance = if (totalRms > 0.01f) (highFreqRms / totalRms).coerceIn(0f, 1f) else 0.5f
         
-        currentSpectralRatio = (currentSpectralRatio * 0.95f) + (balance * 0.05f)
+        val rawFlux = abs(highFreqRms - prevHighFreqRms)
+        prevHighFreqRms = highFreqRms
+        val rawZcr = zeroCrossings.toFloat() / (limit / 2).toFloat()
+        
+        currentSpectralRatio = (currentSpectralRatio * 0.98f) + (balance * 0.02f)
         _spectralBalance.value = currentSpectralRatio
-        _macroBreath.value = (_macroBreath.value * 0.9f) + (energy * 0.1f)
-        _microPulse.value = energy
+        _macroBreath.value = (_macroBreath.value * 0.95f) + (energy * 0.05f) 
+        _microPulse.value = energy 
+        _volatility.value = (_volatility.value * 0.90f) + ((rawFlux * 12f).coerceIn(0f, 1f) * 0.10f)
+        _roughness.value = (_roughness.value * 0.95f) + (rawZcr * 0.05f)
     }
 }
 
 // ==========================================
-// 2. AGSL SHADER: ROTATIONAL ADVECTION ACRYLIC
+// 2. AGSL SHADER: VISCOELASTIC PHOTONIC GLASS
 // ==========================================
-const val EDGE_LIT_ACRYLIC_SRC = """
+const val PHOTONIC_GLASS_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
     uniform float u_kineticTime;
     uniform float u_spectralBalance;
+    uniform float u_volatility; 
+    uniform float u_roughness;  
     uniform float2 u_boxSizePx;
     uniform float u_cornerRadiusPx;
+    
+    uniform float u_moodValence;
+    uniform float u_moodArousal;
     
     uniform float3 u_mutedColor;
     uniform float3 u_dominantColor;
@@ -152,69 +182,80 @@ const val EDGE_LIT_ACRYLIC_SRC = """
         return sqrt(mix(colA * colA, colB * colB, clamp(t, 0.0, 1.0)));
     }
 
+    // --- VISCOELASTIC VOLUME (HEIGHT MAP) ---
+    float getGlassCurvature(float2 uv, float d, float activeTime) {
+        float baseExtrusion = exp(-max(d, 0.0) * 3.0);
+        float2 fluidUv = uv * (1.5 + u_roughness) + float2(activeTime * 0.5, -activeTime * 0.3);
+        float viscoelasticFlow = fbm(fluidUv);
+        float internalPressure = fbm(uv * 8.0 - activeTime) * u_microPulse * 0.1;
+        return baseExtrusion * (0.7 + viscoelasticFlow * 0.6 * u_macroBreath) + internalPressure;
+    }
+
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution;
         float aspect = u_resolution.x / u_resolution.y;
         float2 aspectUv = float2(uv.x * aspect, uv.y);
         float2 center = float2(0.5 * aspect, 0.5);
-        
-        // Anchored Origin
         float2 toPixel = aspectUv - center;
         
-        // Hardware Binding
         float2 boxHalfSize = max((u_boxSizePx / u_resolution.y) * 0.5, float2(0.001));
         float cornerRadius = max(u_cornerRadiusPx / u_resolution.y, 0.001);
+        float trueD = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
         
-        float d = sdRoundRect(toPixel, boxHalfSize, cornerRadius);
+        float activeTime = u_kineticTime * (0.05 + u_moodArousal * 0.1);
         
-        // --- 1. ROTATIONAL CURL DYNAMICS (THE PIVOT) ---
-        float complexity = 1.0 + (u_spectralBalance * 2.0);
-        float2 noiseUv = toPixel * complexity;
-        float flow = u_kineticTime * 0.8;
+        // --- 1. OPTICAL REFRACTION (IoR CALCULATIONS) ---
+        // Calculate the physical slope of the glass to bend the light
+        float eps = 0.008; 
+        float h  = getGlassCurvature(toPixel, trueD, activeTime);
+        float hX = getGlassCurvature(toPixel + float2(eps, 0.0), trueD, activeTime);
+        float hY = getGlassCurvature(toPixel + float2(0.0, eps), trueD, activeTime);
         
-        // Swirl Vector: Traverses the noise domain in a continuous circle around the UI.
-        // This restores the continuous rolling whites of the previous version without diagonal drift.
-        float2 swirlVector = normalize(float2(-toPixel.y, toPixel.x) + float2(0.001));
-        float2 advect = swirlVector * flow;
+        float3 normal = normalize(float3(-(hX - h), -(hY - h), eps));
         
-        float2 e = float2(0.03, 0.0);
-        float nx = fbm(noiseUv + e.xy + advect) - fbm(noiseUv - e.xy + advect);
-        float ny = fbm(noiseUv + e.yx + advect) - fbm(noiseUv - e.yx + advect);
-        float2 curl = float2(ny, -nx);
+        // The light from the album art is refracted (bent) based on the glass normal
+        // This permanently anchors the visual effect to the center geometry
+        float refractionStrength = 0.15 + (u_macroBreath * 0.1);
+        float2 refractedPixel = toPixel + normal.xy * refractionStrength * h;
         
-        // --- 2. ACRYLIC FRACTURE ---
-        float warpStrength = 0.1 + (u_microPulse * 0.2);
-        float2 fracturedPixel = toPixel + (curl * warpStrength);
+        float refractedD = sdRoundRect(refractedPixel, boxHalfSize, cornerRadius);
         
-        float shatteredSDF = abs(sdRoundRect(fracturedPixel, boxHalfSize, cornerRadius));
-        float edgeGlow = 0.003 / (shatteredSDF + 0.001);
+        // --- 2. PHOTONIC DISPERSION ---
+        // The deeper the light travels through the glass, the more it fades into the muted palette
+        float opticalDensity = 4.0 - (h * 1.5) + (u_roughness * 2.0);
+        float opticalFade = exp(-max(refractedD, 0.0) * opticalDensity);
         
-        float organicBreakup = fbm(toPixel * 5.0 + u_kineticTime);
-        float causticTension = edgeGlow * organicBreakup * (1.0 + u_microPulse * 4.0);
+        // --- 3. CHROMODYNAMIC BLEND ---
+        // Heat is generated internally by transients, trapped beneath the glass
+        float internalHeat = clamp(u_microPulse * 0.6 * h, 0.0, 1.0);
+        float chromaticShift = clamp(0.2 + (u_moodValence * 0.3) + internalHeat, 0.0, 1.0);
         
-        // --- 3. PURE ADDITIVE LIGHTING ---
-        float opticalFade = exp(-max(d, 0.0) * (3.5 - u_macroBreath * 1.5));
-        float3 deepAcrylic = mixLinear(u_mutedColor, u_dominantColor, opticalFade * 0.9);
-        float3 ignitedEdges = u_vibrantColor * causticTension * opticalFade;
+        float3 coldState = mixLinear(u_mutedColor, u_dominantColor, opticalFade);
+        float3 hotState = mixLinear(u_dominantColor, u_vibrantColor, opticalFade * (0.5 + h));
+        float3 glassGlow = mixLinear(coldState, hotState, chromaticShift * opticalFade);
         
-        float3 finalColor = deepAcrylic + ignitedEdges;
+        // --- 4. MATERIAL GROUNDING (NO PLASTIC) ---
+        // Remove all fake white specular highlights. Add physical density grain.
+        float grainIntensity = 0.01 + (u_roughness * 0.03);
+        float staticGrain = (hash22(fragCoord * 1.5).x - 0.5) * grainIntensity;
         
-        // Hardware Mask & Priming
-        finalColor *= smoothstep(-0.005, 0.0, d);
-        finalColor = max(finalColor, float3(0.004)); 
-        finalColor += float3((hash22(fragCoord).x - 0.5) * 0.006);
-        finalColor = finalColor / (1.0 + finalColor * 0.2);
+        float3 finalColor = glassGlow + float3(staticGrain);
+        
+        // Hardware Mask & Tone Mapping
+        finalColor *= smoothstep(-0.015, 0.0, trueD); 
+        finalColor = max(finalColor, float3(0.002)); 
+        finalColor = finalColor / (1.0 + finalColor * 0.15); 
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE (STRICT 320dp LOCK)
+// 3. UI ARCHITECTURE & DIAGNOSTIC MATRIX
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun ChromodynamicAcrylicEngine() {
+fun PhotonicGlassEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
@@ -235,7 +276,7 @@ fun ChromodynamicAcrylicEngine() {
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
     val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(EDGE_LIT_ACRYLIC_SRC) }
+    val opticalShader = remember { RuntimeShader(PHOTONIC_GLASS_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -266,7 +307,13 @@ fun ChromodynamicAcrylicEngine() {
     }
 
     val macroBreath by audioEngine.macroBreath.collectAsState()
+    val microPulse by audioEngine.microPulse.collectAsState()
     val spectralBalance by audioEngine.spectralBalance.collectAsState()
+    val volatility by audioEngine.volatility.collectAsState()
+    val roughness by audioEngine.roughness.collectAsState()
+
+    var radarX by remember { mutableFloatStateOf(0.5f) }
+    var radarY by remember { mutableFloatStateOf(0.5f) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -276,28 +323,37 @@ fun ChromodynamicAcrylicEngine() {
                 lastFrameNanos = frameNanos
                 
                 val activeAlpha = if (isPlaying) 1f else 0f
-                val targetPulse = audioEngine.microPulse.value
-                val stiffness = 60f
-                val damping = 0.9f * 2f * sqrt(stiffness) 
+                val targetPulse = microPulse
                 
+                // Critically Damped Hardware Spring
+                val stiffness = 30f
+                val damping = 1.1f * 2f * sqrt(stiffness) 
                 val force = stiffness * (targetPulse - smoothedPulse) - damping * pulseVelocity
                 pulseVelocity += force * dt
                 smoothedPulse += pulseVelocity * dt
+                kineticTime += dt * activeAlpha 
                 
-                kineticTime += dt * (0.2f + (smoothedPulse.coerceAtLeast(0f) * 1.5f)) * activeAlpha
+                val targetX = (spectralBalance * 0.7f) + ((1f - (roughness * 5f).coerceIn(0f, 1f)) * 0.3f)
+                val targetY = (macroBreath * 0.6f) + (volatility * 0.4f)
+                
+                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.05f 
+                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.05f
             }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // LAYER 1: AGSL Background
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime)
             opticalShader.setFloatUniform("u_macroBreath", macroBreath)
             opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f))
             opticalShader.setFloatUniform("u_spectralBalance", spectralBalance) 
+            opticalShader.setFloatUniform("u_volatility", volatility) 
+            opticalShader.setFloatUniform("u_roughness", roughness) 
+            opticalShader.setFloatUniform("u_moodValence", radarX) 
+            opticalShader.setFloatUniform("u_moodArousal", radarY) 
             opticalShader.setFloatUniform("u_boxSizePx", artSizePx.width.toFloat(), artSizePx.height.toFloat())
             opticalShader.setFloatUniform("u_cornerRadiusPx", cornerRadiusPx)
             opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
@@ -307,12 +363,11 @@ fun ChromodynamicAcrylicEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Hardware-Aligned Album Art
         if (currentArtBitmap != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .size(targetSizeDp), // STRICT 320dp LOCK
+                    .size(targetSizeDp), 
                 contentAlignment = Alignment.Center
             ) {
                 Image(
@@ -327,7 +382,6 @@ fun ChromodynamicAcrylicEngine() {
             }
         }
 
-        // LAYER 3: Persistent Controls & Telemetry
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -336,11 +390,14 @@ fun ChromodynamicAcrylicEngine() {
                 .padding(24.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(), 
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), 
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("EDGE-LIT ACRYLIC", color = Color.White, style = MaterialTheme.typography.titleSmall)
+                Column {
+                    Text("VISCOELASTIC PHOTONIC GLASS", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Crucible v2.1 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
@@ -352,26 +409,72 @@ fun ChromodynamicAcrylicEngine() {
                         onClick = { filePicker.launch("audio/*") }, 
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
                     ) {
-                        Text("OPEN")
+                        Text("OPEN TRACK")
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            TelemetryBar("FRACTURE IGNITION", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722))
-            TelemetryBar("OPTICAL DENSITY", macroBreath, Color(0xFF00E5FF))
-            TelemetryBar("SHEAR STRESS", spectralBalance, Color(0xFFAEEA00))
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
+                
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    
+                    Text("MICRO RESPONSE (INTERNAL STRESS)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "IoR Fractures")
+                    
+                    Spacer(modifier = Modifier.height(2.dp))
+                    
+                    Text("MESO RESPONSE (MATERIAL STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Chromatic Bleed")
+                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Optical Density")
+                    
+                    Spacer(modifier = Modifier.height(2.dp))
+                    
+                    Text("MACRO RESPONSE (EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Glass Curvature")
+                    TranslationBar("Volatility", volatility, Color(0xFFFFC107), "Flow Speed")
+                }
+            }
         }
     }
 }
 
 @Composable
-fun TelemetryBar(label: String, value: Float, color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(label, color = Color.Gray, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(160.dp))
-        Canvas(modifier = Modifier.height(8.dp).weight(1f).clip(RoundedCornerShape(4.dp))) {
-            drawRect(color = Color.DarkGray)
-            drawRect(color = color, size = size.copy(width = size.width * value))
+fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
+    Box(
+        modifier = Modifier
+            .size(160.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF161616))
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            drawLine(Color(0xFF333333), Offset(w/2, 0f), Offset(w/2, h), strokeWidth = 2f)
+            drawLine(Color(0xFF333333), Offset(0f, h/2), Offset(w, h/2), strokeWidth = 2f)
+            
+            val dotX = xCoord * w
+            val dotY = (1f - yCoord) * h
+            drawCircle(color = dotColor.copy(alpha = 0.4f), radius = 12.dp.toPx(), center = Offset(dotX, dotY))
+            drawCircle(color = dotColor, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
         }
+
+        Text("DENSE / OPAQUE", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+        Text("CLEAR / RADIANT", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopEnd).padding(6.dp))
+        Text("HEAVY / DEEP", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
+        Text("CALM / FLUID", color = Color(0xFF555555), fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
+    }
+}
+
+@Composable
+fun TranslationBar(audioLabel: String, value: Float, color: Color, visualResultLabel: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(audioLabel, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(90.dp))
+        Canvas(modifier = Modifier.height(4.dp).weight(1f).clip(RoundedCornerShape(2.dp))) {
+            drawRect(color = Color(0xFF222222))
+            drawRect(color = color, size = size.copy(width = size.width * value.coerceIn(0f, 1f)))
+        }
+        Text("→ $visualResultLabel", color = Color.Gray, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.width(130.dp).padding(start = 8.dp))
     }
 }
 
