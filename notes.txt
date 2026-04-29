@@ -9,9 +9,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -23,6 +29,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -57,7 +64,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    PrismaticObsidianEngine()
+                    AetheriumHaloEngine()
                 }
             }
         }
@@ -65,7 +72,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE (WITH AGC PRO-TUNING)
+// 1. AFFECTIVE DSP ENGINE (WITH AGC)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -113,7 +120,6 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         val totalRms = sqrt(sumSq / (limit / 2)).toFloat()
         val highFreqRms = sqrt(highFreqSumSq / (limit / 2)).toFloat()
         
-        // Auto-Gain Control: Adapts to the track's master volume seamlessly
         rollingRms = (rollingRms * 0.995f) + (totalRms * 0.005f)
         val dynamicGain = (1.0f / (rollingRms.coerceAtLeast(0.001f))) * 0.6f
         
@@ -134,9 +140,9 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: PRISMATIC OBSIDIAN MANIFOLD
+// 2. AGSL SHADER: THE AETHERIUM HALO
 // ==========================================
-const val PRISMATIC_OBSIDIAN_SRC = """
+const val AETHERIUM_HALO_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -151,7 +157,7 @@ const val PRISMATIC_OBSIDIAN_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // LAW 3: Strict SDF Anchoring
+    // Strict SDF Anchoring
     float sdRoundRect(float2 p, float2 b, float r) {
         float2 d = abs(p) - b + float2(r);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
@@ -164,67 +170,66 @@ const val PRISMATIC_OBSIDIAN_SRC = """
         float2 boxHalfSize = max(u_boxSizePx * 0.5, float2(0.001));
         float trueD = sdRoundRect(p, boxHalfSize, u_cornerRadiusPx);
         
-        // Exclude internal album art perfectly. Zero bleed.
+        // Exclude internal album art perfectly.
         if (trueD < 0.0) return half4(0.0);
         
         float theta = atan(p.y, p.x);
+        float3 finalColor = float3(0.01); // OLED Black floor
         
-        // OLED Black floor
-        float3 finalColor = float3(0.01); 
+        // Continuous Kinetic Light Sweep.
+        float lightSweepBase = u_kineticTime * 0.8;
         
-        // LAW 4: Continuous Kinetic Light Sweep. Never stutters, never reverses.
-        float lightSweepBase = u_kineticTime * 0.6;
+        const float RINGS = 6.0;
         
-        const float PLATES = 5.0;
-        
-        for(float i = PLATES; i > 0.0; i -= 1.0) {
-            // Bass energy pushes the glass plates outward
-            float plateSpacing = 45.0 + (u_macroBreath * 20.0);
-            float plateOffset = i * plateSpacing;
+        for(float i = RINGS; i > 0.0; i -= 1.0) {
+            // Bass energy pushes the rings outward
+            float spacing = 28.0 + (u_macroBreath * 12.0);
             
-            // MicroPulse causes bounded spatial shear to the geometry, NOT time distortion.
-            float shear = u_microPulse * 12.0 * sin(theta * 6.0 + (i * 1.5));
-            float plateD = trueD - plateOffset + shear;
+            // MicroPulse causes spatial shear (bounded displacement)
+            float shear = u_microPulse * 8.0 * sin(theta * 4.0 + (i * 2.0));
+            float targetCenter = (i * spacing) + shear;
             
-            // LAW 5: Razor sharp cuts. 0.5 to -0.5 pixel threshold ensures anti-aliased perfection.
-            float isPlate = smoothstep(0.5, -0.5, plateD);
+            // Absolute distance from the center line of the ring
+            float ringD = abs(trueD - targetCenter);
             
-            // Z-AXIS: Absolute deep drop shadow cast beneath the plate
-            float shadow = smoothstep(25.0, -5.0, plateD);
-            finalColor = mix(finalColor, float3(0.0), shadow * 0.95);
+            // Ring thickness based on roughness (structural complexity)
+            float thickness = 2.0 + u_roughness * 4.0;
             
-            // The Apple Flagship touch: A 1.5 pixel razor-sharp specular bevel on the edge
-            float bevel = smoothstep(1.5, 0.0, abs(plateD));
+            // Razor sharp cut for the band itself
+            float isRing = smoothstep(thickness + 0.5, thickness - 0.5, ringD);
             
-            // Kinetic light sweeping across the precise geometry
-            float highlight = sin(theta * (2.0 + i * 0.5) + lightSweepBase) * 0.5 + 0.5;
-            // High exponent specular power mimics polished glass/titanium
-            float spec = pow(highlight, 12.0) * bevel;
+            // Deep drop shadow cast from the inner edge
+            float shadow = smoothstep(12.0, -2.0, trueD - targetCenter);
+            finalColor = mix(finalColor, float3(0.0), shadow * 0.85);
             
-            // Material definition: Dark frosted body, vibrant razor edge
-            float3 plateColor = mix(u_mutedColor * 0.15, u_dominantColor, 0.2);
-            plateColor += u_vibrantColor * spec * (2.0 + u_volatility * 3.0);
-            plateColor += mix(u_dominantColor, u_vibrantColor, u_spectralBalance) * bevel * 0.8;
+            // 1-pixel razor-sharp specular bevel on the very edge
+            float bevel = smoothstep(thickness + 0.5, thickness, ringD) * smoothstep(thickness - 1.5, thickness - 0.5, ringD);
             
-            finalColor = mix(finalColor, plateColor, isPlate);
+            // Specular light sweeping across the geometry
+            float highlight = sin(theta * (1.0 + i * 0.3) + lightSweepBase) * 0.5 + 0.5;
+            float spec = pow(highlight, 24.0); // Mimics machined titanium
+            
+            // Material definition
+            float3 ringColor = mix(u_mutedColor * 0.2, u_dominantColor, 0.3);
+            ringColor += u_vibrantColor * spec * (1.5 + u_volatility * 2.5);
+            ringColor += mix(u_dominantColor, u_vibrantColor, u_spectralBalance) * bevel * 1.5;
+            
+            finalColor = mix(finalColor, ringColor, isRing);
         }
         
-        // Final SDF global bounds mask
         finalColor *= smoothstep(0.0, 1.0, trueD);
-        
-        // Premium HDR Tone Mapping
-        finalColor = 1.0 - exp(-finalColor * 2.5); 
+        finalColor = 1.0 - exp(-finalColor * 2.5); // Premium HDR Tone Mapping
         
         return half4(clamp(finalColor, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE & V6.0 DIAGNOSTIC MATRIX
+// 3. UI ARCHITECTURE & DIAGNOSTIC MATRIX
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun PrismaticObsidianEngine() {
+fun AetheriumHaloEngine() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val audioEngine = remember { AudioTrendEngine() }
@@ -242,11 +247,12 @@ fun PrismaticObsidianEngine() {
     
     var isPlaying by remember { mutableStateOf(false) }
     var artSizePx by remember { mutableStateOf(IntSize.Zero) }
+    var showDashboard by remember { mutableStateOf(true) } // Dashboard toggle state
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
     val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(PRISMATIC_OBSIDIAN_SRC) }
+    val opticalShader = remember { RuntimeShader(AETHERIUM_HALO_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -305,7 +311,6 @@ fun PrismaticObsidianEngine() {
                 val activeAlpha = if (isPlaying) 1f else 0f
                 kineticTime += dt * 0.5f * activeAlpha
                 
-                // Affective radar smoothing
                 val targetX = (spectralBalance * 0.7f) + ((1f - (roughness * 5f).coerceIn(0f, 1f)) * 0.3f)
                 val targetY = (macroBreath * 0.6f) + (volatility * 0.4f)
                 
@@ -315,9 +320,19 @@ fun PrismaticObsidianEngine() {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    // Outer Box intercepts double taps to toggle the dashboard
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = { showDashboard = !showDashboard }
+                )
+            }
+    ) {
         
-        // LAYER 1: AGSL Background
+        // LAYER 1: AGSL Background (The Aetherium Halo)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
@@ -335,7 +350,7 @@ fun PrismaticObsidianEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Strict Album Art Anchor (320dp)
+        // LAYER 2: Strict Album Art Anchor (320dp, Centered)
         if (currentArtBitmap != null) {
             Box(
                 modifier = Modifier
@@ -355,58 +370,64 @@ fun PrismaticObsidianEngine() {
             }
         }
 
-        // LAYER 3: V6.0 Diagnostic Matrix
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(Color(0xD9080808))
-                .padding(24.dp)
+        // LAYER 3: Animated V6.0 Diagnostic Matrix
+        AnimatedVisibility(
+            visible = showDashboard,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), 
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xD9080808))
+                    .padding(24.dp)
             ) {
-                Column {
-                    Text("PRISMATIC OBSIDIAN MANIFOLD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Crucible v6.0 Diagnostic Matrix", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
-                    ) {
-                        Text(if (isPlaying) "PAUSE" else "PLAY")
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), 
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("THE AETHERIUM HALO ENGINE", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("Crucible v6.0 Diagnostic Matrix (Double-Tap to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
-                    Button(
-                        onClick = { filePicker.launch("audio/*") }, 
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-                    ) {
-                        Text("OPEN TRACK")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)
+                        ) {
+                            Text(if (isPlaying) "PAUSE" else "PLAY")
+                        }
+                        Button(
+                            onClick = { filePicker.launch("audio/*") }, 
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                        ) {
+                            Text("OPEN TRACK")
+                        }
                     }
                 }
-            }
-            
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
                 
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    ExecutiveRadar(xCoord = radarX, yCoord = radarY, dotColor = vibrantColor)
                     
-                    Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Spatial Plate Shear")
-                    
-                    Spacer(modifier = Modifier.height(2.dp))
-                    
-                    Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Matte Diffusion")
-                    TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Specular Catch-Light")
-                    
-                    Spacer(modifier = Modifier.height(2.dp))
-                    
-                    Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Terrace Expansion")
-                    TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Light Sweep Phase")
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        
+                        Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Band Shear")
+                        
+                        Spacer(modifier = Modifier.height(2.dp))
+                        
+                        Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Band Thickness")
+                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Specular Bevel")
+                        
+                        Spacer(modifier = Modifier.height(2.dp))
+                        
+                        Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Ring Spacing")
+                        TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Light Sweep Phase")
+                    }
                 }
             }
         }
