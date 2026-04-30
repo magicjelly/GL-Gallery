@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    CupertinoFrostedEngine()
+                    LiquidSilkEngine()
                 }
             }
         }
@@ -138,25 +138,28 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: CUPERTINO FROSTED FLUID
+// 2. AGSL SHADER: VOLUMETRIC LIQUID SILK
 // ==========================================
-const val CUPERTINO_FROSTED_SRC = """
+const val LIQUID_SILK_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
     uniform float u_kineticTime; 
     uniform float u_spectralBalance;
-    uniform float u_volatility; 
-    uniform float u_roughness;  
     
     uniform float3 u_mutedColor;
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Fluid blending function
-    float smin(float a, float b, float k) {
-        float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-        return mix(b, a, h) - k * h * (1.0 - h);
+    // Generates a perfectly continuous, non-intersecting fluid manifold
+    float getFluid(float2 p, float time) {
+        float2 q = p;
+        // Layered trigonometric domain warping
+        q.x += 0.5 * sin(p.y * 1.5 + time * 0.7);
+        q.y += 0.5 * cos(p.x * 1.2 - time * 0.5);
+        q.x += 0.3 * sin(p.y * 2.2 - time * 0.9);
+        q.y += 0.3 * cos(p.x * 1.8 + time * 0.6);
+        return sin(q.x * 1.5) * cos(q.y * 1.5) * 0.5 + 0.5;
     }
 
     half4 main(float2 fragCoord) {
@@ -164,57 +167,43 @@ const val CUPERTINO_FROSTED_SRC = """
         float aspect = u_resolution.x / u_resolution.y;
         float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        float time = u_kineticTime * 0.12; // Extremely slow, calm base time
+        // Scale controls how "macro" or "zoomed in" the silk folds are
+        p *= 2.5; 
         
-        // --- LAYER 1: BASE GRADIENT ---
-        // Deep, stable emotional anchor
-        float3 col = mix(u_mutedColor * 0.1, u_mutedColor * 0.4, uv.y);
+        // Incredibly slow base movement
+        float time = u_kineticTime * 0.12; 
         
-        // --- LAYER 2: DIFFUSED MOTION FIELD (Subsurface Fluid) ---
-        // We use smooth distance fields combined with domain warping
-        float2 warpedP = p;
-        warpedP.x += sin(p.y * 2.0 + time) * 0.1;
-        warpedP.y += cos(p.x * 2.5 + time * 0.8) * 0.1;
+        // --- 1. VOLUMETRIC SHADING ---
+        // Calculate the fluid value at the current pixel
+        float v1 = getFluid(p, time);
         
-        // Core Fluid Mass (Expands softly with macroBreath)
-        float d1 = length(warpedP - float2(sin(time * 0.5)*0.2, 0.2));
-        float d2 = length(warpedP - float2(cos(time * 0.7)*0.3, -0.1));
-        float fluidField = smin(d1, d2, 0.4); // Smooth min creates gooey liquid merge
+        // Calculate the fluid value at a slightly offset pixel
+        // The microPulse shifts this offset, simulating light refracting through the fluid
+        float2 lightDir = float2(0.08, 0.08) + (u_microPulse * 0.02);
+        float v2 = getFluid(p + lightDir, time);
         
-        // Map fluid to dominant color, fading out softly
-        float fluidAlpha = smoothstep(0.7 + u_macroBreath * 0.15, 0.1, fluidField);
-        col = mix(col, u_dominantColor * 0.8, fluidAlpha);
+        // The difference between the two creates physical "crests" and "valleys"
+        float gradient = max(0.0, v1 - v2) * 2.5; 
+        
+        // --- 2. COLOR MAPPING ---
+        // Valleys use the muted base color
+        float3 col = mix(u_mutedColor * 0.4, u_dominantColor, v1 * 0.8);
+        
+        // Crests catch the vibrant light (simulated subsurface scattering)
+        float highlightPower = smoothstep(0.1, 0.8, gradient);
+        col = mix(col, u_vibrantColor, highlightPower * (0.6 + u_macroBreath * 0.4));
+        
+        // Add a secondary ambient glow from the center
+        float centerGlow = smoothstep(2.0, 0.0, length(p));
+        col += u_dominantColor * centerGlow * 0.3;
 
-        // --- LAYER 3: SPARSE GLOW ACCENTS (Macro Bokeh) ---
-        // Instead of tiny debris, we use massive, ultra-faint, out-of-focus light pools
-        // They drift in the extreme foreground, adding massive depth
+        // --- 3. UI PROTECTION & POLISH ---
+        // Subtle vertical gradient to ground the UI
+        float bottomMask = smoothstep(-1.5, 0.5, p.y);
+        col = mix(col * 0.2, col, bottomMask);
         
-        float2 bokehPos1 = float2(sin(time * 1.1) * 0.5, cos(time * 0.8) * 0.4);
-        float bokeh1 = smoothstep(0.6, 0.0, length(p - bokehPos1));
-        
-        // MicroPulse slightly nudges the second bokeh highlight
-        float2 bokehPos2 = float2(cos(time * 0.9 - u_microPulse * 0.1) * 0.4, sin(time * 1.3) * 0.3);
-        float bokeh2 = smoothstep(0.5, 0.0, length(p - bokehPos2));
-        
-        // Additive blend for light pools
-        col += u_vibrantColor * bokeh1 * (0.15 + u_spectralBalance * 0.1);
-        col += mix(u_dominantColor, u_vibrantColor, 0.5) * bokeh2 * 0.15;
-
-        // --- LAYER 4: GLASS / MATERIAL TREATMENT ---
-        // 1. Frosted Glass Diffusion (Noise matrix)
-        // This microscopic noise breaks up color banding and simulates light passing through physical frosted glass
-        float noise = fract(sin(dot(uv + time * 0.01, float2(12.9898, 78.233))) * 43758.5453);
-        col += (noise - 0.5) * 0.02 * u_dominantColor; // Subtle structural diffusion
-        
-        // 2. UI Protection Masks (Vignette & Bottom Fade)
-        float vig = smoothstep(1.3, 0.3, length(p));
-        col *= vig;
-        
-        float bottomMask = smoothstep(-0.5, 0.2, p.y);
-        col = mix(col * 0.15, col, bottomMask); // Deeper fade for playback controls
-        
-        // 3. Apple-Grade HDR Tone Compression
-        col = 1.0 - exp(-col * 2.5);
+        // Premium tone mapping to prevent color blowout (OLED safe)
+        col = 1.0 - exp(-col * 2.0);
         
         return half4(clamp(col, 0.0, 1.0), 1.0);
     }
@@ -225,32 +214,28 @@ const val CUPERTINO_FROSTED_SRC = """
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun CupertinoFrostedEngine() {
+fun LiquidSilkEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF081018)) } 
-    var dominantColor by remember { mutableStateOf(Color(0xFF1A3A4A)) } 
-    var vibrantColor by remember { mutableStateOf(Color(0xFF4A8A9A)) } 
+    var mutedColor by remember { mutableStateOf(Color(0xFF0A0A0A)) } 
+    var dominantColor by remember { mutableStateOf(Color(0xFF111111)) } 
+    var vibrantColor by remember { mutableStateOf(Color(0xFF222222)) } 
     
     var kineticTime by remember { mutableFloatStateOf(0f) }
-    
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
     var pulseVelocity by remember { mutableFloatStateOf(0f) }
-    
-    // ASYMMETRIC ENVELOPE FOR BREATHING
     var smoothedBreath by remember { mutableFloatStateOf(0f) } 
     
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
-    
     var isPlaying by remember { mutableStateOf(false) }
     var showDashboard by remember { mutableStateOf(true) }
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
-    val opticalShader = remember { RuntimeShader(CUPERTINO_FROSTED_SRC) }
+    val opticalShader = remember { RuntimeShader(LIQUID_SILK_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -260,10 +245,12 @@ fun CupertinoFrostedEngine() {
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap 
                     Palette.from(bitmap).generate { p ->
-                        val fallback = 0xFF444444.toInt()
-                        val dom = p?.getDominantColor(fallback) ?: fallback
-                        val mut = p?.getDarkMutedColor(dom) ?: dom
-                        val vib = p?.getLightVibrantColor(dom) ?: dom 
+                        val fallback = 0xFF222222.toInt()
+                        
+                        // Extracting a rich, Apple-style palette hierarchy
+                        var dom = p?.getDominantColor(fallback) ?: fallback
+                        var mut = p?.getDarkMutedColor(dom) ?: dom
+                        var vib = p?.getVibrantColor(dom) ?: dom 
                         
                         mutedColor = Color(mut)
                         dominantColor = Color(dom)
@@ -296,20 +283,18 @@ fun CupertinoFrostedEngine() {
                 val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
                 
-                // SPRING 1: Transients
+                // Transients (MicroPulse) - Drives the subsurface light scattering shift
                 val stiffMicro = 4f 
                 val dampMicro = 2f * sqrt(stiffMicro) 
                 pulseVelocity += (stiffMicro * (microPulse - smoothedPulse) - dampMicro * pulseVelocity) * dt
                 smoothedPulse += pulseVelocity * dt
                 
-                // THE COUGHING FIX: ASYMMETRIC ENVELOPE EASING
+                // Breathing (MacroBreath) - Asymmetric Envelope Easing (Zero Stutter)
                 val targetBreath = macroBreath
                 if (targetBreath > smoothedBreath) {
-                    // INHALE (Attack): Soft 1.5 second swell
-                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt
+                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt // Inhale
                 } else {
-                    // EXHALE (Release): Incredibly slow 4-second recession
-                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt
+                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt // Exhale
                 }
                 
                 val activeAlpha = if (isPlaying) 1f else 0f
@@ -331,15 +316,14 @@ fun CupertinoFrostedEngine() {
             .pointerInput(Unit) { detectTapGestures(onDoubleTap = { showDashboard = !showDashboard }) }
     ) {
         
-        // LAYER 1-4: AGSL Background (Cupertino Frosted Volumetrics)
+        // LAYER 1-4: AGSL Background (Volumetric Liquid Silk)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
             opticalShader.setFloatUniform("u_macroBreath", smoothedBreath.coerceAtLeast(0f)) 
             opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f)) 
             opticalShader.setFloatUniform("u_spectralBalance", spectralBalance) 
-            opticalShader.setFloatUniform("u_volatility", volatility) 
-            opticalShader.setFloatUniform("u_roughness", roughness) 
+            
             opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
             opticalShader.setFloatUniform("u_dominantColor", dominantColor.red, dominantColor.green, dominantColor.blue)
             opticalShader.setFloatUniform("u_vibrantColor", vibrantColor.red, vibrantColor.green, vibrantColor.blue)
@@ -387,7 +371,7 @@ fun CupertinoFrostedEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("CUPERTINO FROSTED VOLUMETRICS", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("LIQUID SILK MANIFOLD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -412,19 +396,19 @@ fun CupertinoFrostedEngine() {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         
                         Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Bokeh Nudge")
+                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Subsurface Shift")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Vignette Diffusion")
-                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Bokeh Opacity")
+                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Highlight Opacity")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Bass Energy", smoothedBreath.coerceAtLeast(0f), Color(0xFF00E5FF), "Fluid Core Swell")
-                        TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Convection Sweep")
+                        TranslationBar("Bass Energy", smoothedBreath.coerceAtLeast(0f), Color(0xFF00E5FF), "Volumetric Swell")
+                        TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Continuous Flow")
                     }
                 }
             }
