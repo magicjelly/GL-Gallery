@@ -139,7 +139,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: OPTICAL AURORA
+// 2. AGSL SHADER: CALIBRATED OPTICAL AURORA
 // ==========================================
 const val OPTICAL_AURORA_SRC = """
     uniform float2 u_resolution;
@@ -155,14 +155,12 @@ const val OPTICAL_AURORA_SRC = """
     // Anisotropic fluid field: biased to create long sweeping folds
     float getAurora(float2 p, float time) {
         float2 q = p;
-        // Diagonal biasing breaks up cellular blobs into sweeping curtains
         q.x += 0.5 * sin(p.y * 1.2 + time * 0.5);
         q.y += 0.5 * cos(p.x * 0.8 - time * 0.4);
         
         q.x += 0.3 * sin(p.y * 2.0 - time * 0.7);
         q.y += 0.3 * cos(p.x * 1.5 + time * 0.6);
         
-        // Final sweep with stretched frequency
         return sin(q.x * 1.0 + q.y * 0.5) * cos(q.y * 1.2 - q.x * 0.5) * 0.5 + 0.5;
     }
 
@@ -171,8 +169,8 @@ const val OPTICAL_AURORA_SRC = """
         float aspect = u_resolution.x / u_resolution.y;
         float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        // Scale: Wide enough for "broad soft shapes", tight enough to see the sweeping folds
-        p *= 1.8; 
+        // MACRO SCALING: Zoomed in to ensure shapes are broad, soft, and luxurious
+        p *= 1.4; 
         
         // Incredibly slow, graceful movement
         float time = u_kineticTime * 0.15; 
@@ -182,34 +180,35 @@ const val OPTICAL_AURORA_SRC = """
         
         // --- 2. THE OPTICAL SHIFT (SUBSURFACE LIGHT) ---
         // Offset driven gently by transients
-        float2 lightDir = float2(0.12, 0.15) + (u_microPulse * 0.03);
+        float2 lightDir = float2(0.15, 0.15) + (u_microPulse * 0.05);
         float v2 = getAurora(p + lightDir, time);
         
-        // The gradient creates the soft folds, simulating light caught inside the fluid
-        float gradient = max(0.0, v1 - v2) * 2.5; 
+        // Amplified gradient to ensure the folds catch the light properly
+        float gradient = max(0.0, v1 - v2) * 3.5; 
         
         // --- 3. COLOR FLOODING ---
-        // Base is a rich flood of the muted and dominant colors. No black voids.
-        float3 col = mix(u_mutedColor * 0.3, u_dominantColor * 0.7, v1);
+        // Restored luminance! The Kotlin layer handles the darkness. 
+        // We let the rich dominant and muted colors flood the valleys.
+        float3 col = mix(u_mutedColor * 0.6, u_dominantColor * 0.9, v1);
         
-        // --- 4. TRANSLUCENT ILLUMINATION (ANTI-PLASTIC) ---
-        // Wide, soft smoothstep to prevent rigid surface highlights
-        float lightPower = smoothstep(0.1, 1.0, gradient);
+        // --- 4. TRANSLUCENT ILLUMINATION ---
+        // Lowered the smoothstep floor to 0.0 so every gentle curve catches the glowing light
+        float lightPower = smoothstep(0.0, 0.8, gradient);
         // Exponential falloff for luxurious softness
         lightPower = pow(lightPower, 1.2); 
         
         // Light intensity swells gently with bass
         float3 light = u_vibrantColor * lightPower * (1.2 + u_macroBreath * 0.6);
         
-        // Translucent Blend (Soft Screen-like behavior to preserve saturation, prevent pure white)
-        col = col + light - (col * light * 0.3); 
+        // Additive Blend for a true, deep subsurface glow
+        col += light; 
         
         // Ambient core glow
         float centerGlow = smoothstep(2.0, 0.0, length(p));
-        col += u_dominantColor * centerGlow * 0.3;
+        col += mix(u_dominantColor, u_vibrantColor, 0.3) * centerGlow * 0.4;
 
         // --- 5. INVISIBLE OPTICAL DITHER ---
-        // Prevents banding but remains invisible to the eye (flawless optical glass)
+        // Prevents banding but remains invisible to the eye
         float noise = fract(sin(dot(uv + time, float2(12.9898, 78.233))) * 43758.5453);
         col += (noise - 0.5) * 0.015;
 
@@ -218,7 +217,7 @@ const val OPTICAL_AURORA_SRC = """
         col = mix(col * 0.2, col, bottomMask);
         
         // OLED-safe Tone Mapping
-        col = 1.0 - exp(-col * 2.2);
+        col = 1.0 - exp(-col * 2.0);
         
         return half4(clamp(col, 0.0, 1.0), 1.0);
     }
@@ -262,7 +261,6 @@ fun OpticalAuroraEngine() {
                     Palette.from(bitmap).generate { p ->
                         val fallback = 0xFF111111.toInt()
                         
-                        // THE GREY-GUARD: Guarantees rich, deep material colors even on white/grey album art
                         val dominantSwatch = p?.dominantSwatch
                         val vibrantSwatch = p?.vibrantSwatch ?: p?.lightVibrantSwatch ?: p?.darkVibrantSwatch ?: dominantSwatch
                         val mutedSwatch = p?.darkMutedSwatch ?: p?.mutedSwatch ?: dominantSwatch
@@ -274,23 +272,25 @@ fun OpticalAuroraEngine() {
                         val hsl = FloatArray(3)
                         ColorUtils.colorToHSL(vib, hsl)
                         
-                        // If extracted color is muddy grey/brown, override with a premium Apple Music Teal
+                        // Guard against muddy greys
                         if (hsl[1] < 0.15f) {
-                            hsl[0] = 190f // Crisp Cyan/Teal
-                            hsl[1] = 0.6f // High Saturation
+                            hsl[0] = 190f 
+                            hsl[1] = 0.6f 
                         } else if (hsl[1] < 0.4f) {
-                            hsl[1] = 0.5f // Boost if it has *some* color but is weak
+                            hsl[1] = 0.5f 
                         }
                         
-                        if (hsl[2] > 0.45f) hsl[2] = 0.35f // Cap lightness to prevent pure white blowouts
+                        // Ensure the vibrant color is bright enough to glow, but capped to avoid white blowouts
+                        if (hsl[2] < 0.3f) hsl[2] = 0.4f 
+                        if (hsl[2] > 0.55f) hsl[2] = 0.45f
                         vib = ColorUtils.HSLToColor(hsl)
                         
                         ColorUtils.colorToHSL(dom, hsl)
-                        if (hsl[2] > 0.3f) hsl[2] = 0.2f // Force base shadow to be deep
+                        if (hsl[2] > 0.3f) hsl[2] = 0.2f 
                         dom = ColorUtils.HSLToColor(hsl)
 
                         ColorUtils.colorToHSL(mut, hsl)
-                        hsl[2] = Math.min(hsl[2], 0.15f) // Deepest shadow
+                        hsl[2] = Math.min(hsl[2], 0.15f) 
                         mut = ColorUtils.HSLToColor(hsl)
                         
                         mutedColor = Color(mut)
@@ -324,18 +324,16 @@ fun OpticalAuroraEngine() {
                 val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
                 
-                // Transients (MicroPulse)
                 val stiffMicro = 4f 
                 val dampMicro = 2f * sqrt(stiffMicro) 
                 pulseVelocity += (stiffMicro * (microPulse - smoothedPulse) - dampMicro * pulseVelocity) * dt
                 smoothedPulse += pulseVelocity * dt
                 
-                // Breathing (MacroBreath) - Asymmetric Envelope Easing (Zero Stutter)
                 val targetBreath = macroBreath
                 if (targetBreath > smoothedBreath) {
-                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt // Inhale
+                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt 
                 } else {
-                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt // Exhale
+                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt 
                 }
                 
                 val activeAlpha = if (isPlaying) 1f else 0f
@@ -412,7 +410,7 @@ fun OpticalAuroraEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("OPTICAL AURORA ENGINE", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("OPTICAL AURORA ENGINE v2", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
