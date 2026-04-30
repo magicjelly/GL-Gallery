@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    TrueSilkEngine()
+                    OpticalAuroraEngine()
                 }
             }
         }
@@ -139,9 +139,9 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: TRUE SILK MANIFOLD
+// 2. AGSL SHADER: OPTICAL AURORA
 // ==========================================
-const val TRUE_SILK_SRC = """
+const val OPTICAL_AURORA_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -152,20 +152,18 @@ const val TRUE_SILK_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Restored the deep volumetric manifold from 153.jpg, but added a 3rd warp layer
-    // to break up the "tubular" geometry into organic, swirling pools.
-    float getFluid(float2 p, float time) {
+    // Anisotropic fluid field: biased to create long sweeping folds
+    float getAurora(float2 p, float time) {
         float2 q = p;
-        q.x += 0.6 * sin(p.y * 1.8 + time * 0.7);
-        q.y += 0.6 * cos(p.x * 1.5 - time * 0.5);
-        q.x += 0.4 * sin(p.y * 2.5 - time * 0.9);
-        q.y += 0.4 * cos(p.x * 2.0 + time * 0.6);
-        // 3rd layer of warping to prevent straight lines
-        q.x += 0.25 * sin(p.y * 0.8 + time * 1.2);
-        q.y += 0.25 * cos(p.x * 0.9 - time * 1.1);
+        // Diagonal biasing breaks up cellular blobs into sweeping curtains
+        q.x += 0.5 * sin(p.y * 1.2 + time * 0.5);
+        q.y += 0.5 * cos(p.x * 0.8 - time * 0.4);
         
-        // Restored the 1.5 multiplier to bring back the crisp 3D folds
-        return sin(q.x * 1.5) * cos(q.y * 1.5) * 0.5 + 0.5;
+        q.x += 0.3 * sin(p.y * 2.0 - time * 0.7);
+        q.y += 0.3 * cos(p.x * 1.5 + time * 0.6);
+        
+        // Final sweep with stretched frequency
+        return sin(q.x * 1.0 + q.y * 0.5) * cos(q.y * 1.2 - q.x * 0.5) * 0.5 + 0.5;
     }
 
     half4 main(float2 fragCoord) {
@@ -173,36 +171,53 @@ const val TRUE_SILK_SRC = """
         float aspect = u_resolution.x / u_resolution.y;
         float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        p *= 2.0; 
+        // Scale: Wide enough for "broad soft shapes", tight enough to see the sweeping folds
+        p *= 1.8; 
         
+        // Incredibly slow, graceful movement
         float time = u_kineticTime * 0.15; 
         
-        // --- 1. VOLUMETRIC SHADING ---
-        float v1 = getFluid(p, time);
+        // --- 1. THE FLUID DEPTH (DENSITY) ---
+        float v1 = getAurora(p, time);
         
-        float2 lightDir = float2(0.12, 0.12) + (u_microPulse * 0.04);
-        float v2 = getFluid(p + lightDir, time);
+        // --- 2. THE OPTICAL SHIFT (SUBSURFACE LIGHT) ---
+        // Offset driven gently by transients
+        float2 lightDir = float2(0.12, 0.15) + (u_microPulse * 0.03);
+        float v2 = getAurora(p + lightDir, time);
         
-        // Restored sharp gradient multiplier to ensure shadows exist
-        float gradient = max(0.0, v1 - v2) * 3.5; 
+        // The gradient creates the soft folds, simulating light caught inside the fluid
+        float gradient = max(0.0, v1 - v2) * 2.5; 
         
-        // --- 2. COLOR MAPPING (ADDITIVE ILLUMINATION) ---
-        float3 col = mix(u_mutedColor * 0.2, u_dominantColor * 0.8, v1);
+        // --- 3. COLOR FLOODING ---
+        // Base is a rich flood of the muted and dominant colors. No black voids.
+        float3 col = mix(u_mutedColor * 0.3, u_dominantColor * 0.7, v1);
         
-        // Use an exponential curve (pow) to make the light roll off the crests beautifully
-        float highlightPower = smoothstep(0.05, 0.9, gradient);
-        highlightPower = pow(highlightPower, 1.5); 
+        // --- 4. TRANSLUCENT ILLUMINATION (ANTI-PLASTIC) ---
+        // Wide, soft smoothstep to prevent rigid surface highlights
+        float lightPower = smoothstep(0.1, 1.0, gradient);
+        // Exponential falloff for luxurious softness
+        lightPower = pow(lightPower, 1.2); 
         
-        float3 luminousCatchLight = u_vibrantColor * highlightPower * (1.5 + u_macroBreath * 0.8);
-        col += luminousCatchLight; 
+        // Light intensity swells gently with bass
+        float3 light = u_vibrantColor * lightPower * (1.2 + u_macroBreath * 0.6);
         
-        float centerGlow = smoothstep(1.8, 0.0, length(p));
-        col += u_dominantColor * centerGlow * 0.4;
+        // Translucent Blend (Soft Screen-like behavior to preserve saturation, prevent pure white)
+        col = col + light - (col * light * 0.3); 
+        
+        // Ambient core glow
+        float centerGlow = smoothstep(2.0, 0.0, length(p));
+        col += u_dominantColor * centerGlow * 0.3;
 
-        // --- 3. UI PROTECTION & POLISH ---
+        // --- 5. INVISIBLE OPTICAL DITHER ---
+        // Prevents banding but remains invisible to the eye (flawless optical glass)
+        float noise = fract(sin(dot(uv + time, float2(12.9898, 78.233))) * 43758.5453);
+        col += (noise - 0.5) * 0.015;
+
+        // --- 6. UI PROTECTION & POLISH ---
         float bottomMask = smoothstep(-1.5, 0.5, p.y);
-        col = mix(col * 0.15, col, bottomMask);
+        col = mix(col * 0.2, col, bottomMask);
         
+        // OLED-safe Tone Mapping
         col = 1.0 - exp(-col * 2.2);
         
         return half4(clamp(col, 0.0, 1.0), 1.0);
@@ -214,7 +229,7 @@ const val TRUE_SILK_SRC = """
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun TrueSilkEngine() {
+fun OpticalAuroraEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
@@ -235,7 +250,7 @@ fun TrueSilkEngine() {
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
-    val opticalShader = remember { RuntimeShader(TRUE_SILK_SRC) }
+    val opticalShader = remember { RuntimeShader(OPTICAL_AURORA_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -247,6 +262,7 @@ fun TrueSilkEngine() {
                     Palette.from(bitmap).generate { p ->
                         val fallback = 0xFF111111.toInt()
                         
+                        // THE GREY-GUARD: Guarantees rich, deep material colors even on white/grey album art
                         val dominantSwatch = p?.dominantSwatch
                         val vibrantSwatch = p?.vibrantSwatch ?: p?.lightVibrantSwatch ?: p?.darkVibrantSwatch ?: dominantSwatch
                         val mutedSwatch = p?.darkMutedSwatch ?: p?.mutedSwatch ?: dominantSwatch
@@ -258,9 +274,7 @@ fun TrueSilkEngine() {
                         val hsl = FloatArray(3)
                         ColorUtils.colorToHSL(vib, hsl)
                         
-                        // THE "GREY-GUARD" FIX:
-                        // If the extracted color is muddy grey/brown (low saturation), we do NOT boost it.
-                        // We override it with a premium Apple Music Teal (Hue 190) to force a luxury aesthetic.
+                        // If extracted color is muddy grey/brown, override with a premium Apple Music Teal
                         if (hsl[1] < 0.15f) {
                             hsl[0] = 190f // Crisp Cyan/Teal
                             hsl[1] = 0.6f // High Saturation
@@ -268,11 +282,11 @@ fun TrueSilkEngine() {
                             hsl[1] = 0.5f // Boost if it has *some* color but is weak
                         }
                         
-                        if (hsl[2] > 0.45f) hsl[2] = 0.35f // Cap lightness
+                        if (hsl[2] > 0.45f) hsl[2] = 0.35f // Cap lightness to prevent pure white blowouts
                         vib = ColorUtils.HSLToColor(hsl)
                         
                         ColorUtils.colorToHSL(dom, hsl)
-                        if (hsl[2] > 0.3f) hsl[2] = 0.2f // Force base shadow
+                        if (hsl[2] > 0.3f) hsl[2] = 0.2f // Force base shadow to be deep
                         dom = ColorUtils.HSLToColor(hsl)
 
                         ColorUtils.colorToHSL(mut, hsl)
@@ -310,16 +324,18 @@ fun TrueSilkEngine() {
                 val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
                 
+                // Transients (MicroPulse)
                 val stiffMicro = 4f 
                 val dampMicro = 2f * sqrt(stiffMicro) 
                 pulseVelocity += (stiffMicro * (microPulse - smoothedPulse) - dampMicro * pulseVelocity) * dt
                 smoothedPulse += pulseVelocity * dt
                 
+                // Breathing (MacroBreath) - Asymmetric Envelope Easing (Zero Stutter)
                 val targetBreath = macroBreath
                 if (targetBreath > smoothedBreath) {
-                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt
+                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt // Inhale
                 } else {
-                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt
+                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt // Exhale
                 }
                 
                 val activeAlpha = if (isPlaying) 1f else 0f
@@ -341,7 +357,7 @@ fun TrueSilkEngine() {
             .pointerInput(Unit) { detectTapGestures(onDoubleTap = { showDashboard = !showDashboard }) }
     ) {
         
-        // LAYER 1-4: AGSL Background (True Silk Manifold)
+        // LAYER 1-4: AGSL Background (Optical Aurora)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
@@ -396,7 +412,7 @@ fun TrueSilkEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("TRUE SILK MANIFOLD v3", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("OPTICAL AURORA ENGINE", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
