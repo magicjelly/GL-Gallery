@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    CupertinoMeshEngine()
+                    LuminousSilkEngine()
                 }
             }
         }
@@ -139,9 +139,9 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: CUPERTINO FLUID MESH
+// 2. AGSL SHADER: LUMINOUS SILK MANIFOLD
 // ==========================================
-const val CUPERTINO_MESH_SRC = """
+const val LUMINOUS_SILK_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -152,53 +152,57 @@ const val CUPERTINO_MESH_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
+    // Generates a perfectly continuous, volumetric fluid manifold
+    float getFluid(float2 p, float time) {
+        float2 q = p;
+        q.x += 0.6 * sin(p.y * 1.8 + time * 0.7);
+        q.y += 0.6 * cos(p.x * 1.5 - time * 0.5);
+        q.x += 0.4 * sin(p.y * 2.5 - time * 0.9);
+        q.y += 0.4 * cos(p.x * 2.0 + time * 0.6);
+        return sin(q.x * 1.5) * cos(q.y * 1.5) * 0.5 + 0.5;
+    }
+
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution.xy;
         float aspect = u_resolution.x / u_resolution.y;
         float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        // Fluid, subconscious time scale
-        float t = u_kineticTime * 0.15; 
+        // MACRO-FOLD SCALE: 1.6 guarantees large, luxurious folds. Visible, but not busy.
+        p *= 1.6; 
         
-        // --- 1. DOMAIN WARPING ---
-        // Gently twists the coordinate space so the orbs deform organically like liquid
-        float2 warp = p;
-        warp.x += sin(p.y * 2.0 + t) * 0.15;
-        warp.y += cos(p.x * 2.0 - t * 0.8) * 0.15;
+        // Incredibly slow base movement
+        float time = u_kineticTime * 0.15; 
         
-        // --- 2. BASE CANVAS ---
-        // Deep, muted anchor to ensure it never blows out to white
-        float3 col = u_mutedColor * 0.3;
+        // --- 1. VOLUMETRIC SHADING ---
+        float v1 = getFluid(p, time);
         
-        // --- 3. THE FLUID MESH ORBS ---
-        // Orb 1: The Dominant Mass (Top Right, moves slowly)
-        float2 pos1 = float2(sin(t * 0.6) * 0.4, cos(t * 0.5) * 0.3);
-        float w1 = smoothstep(1.2, 0.0, length(warp - pos1)); // Extreme blur radius
-        col = mix(col, u_dominantColor, w1 * 0.8);
+        // Offset simulates physical light hitting the crests of the fluid
+        float2 lightDir = float2(0.12, 0.12) + (u_microPulse * 0.04);
+        float v2 = getFluid(p + lightDir, time);
         
-        // Orb 2: The Vibrant Core (Bottom Left, orbits center)
-        float2 pos2 = float2(cos(t * 0.7) * 0.5, sin(t * 0.6) * 0.4);
-        float w2 = smoothstep(1.0, 0.0, length(warp - pos2));
-        col = mix(col, u_vibrantColor, w2 * (0.6 + u_macroBreath * 0.3)); // Softly reacts to bass
+        // Calculates the physical slope of the silk
+        float gradient = max(0.0, v1 - v2) * 3.5; 
         
-        // Orb 3: The Blending Accent (Top Left, shifts with transients)
-        float2 shift3 = float2(sin(t * 1.5), cos(t * 1.5)) * (u_microPulse * 0.1);
-        float2 pos3 = float2(sin(t * 0.4 - 2.0) * 0.4, cos(t * 0.8 + 1.0) * 0.4) + shift3;
-        float w3 = smoothstep(1.1, 0.0, length(warp - pos3));
-        float3 mixColor = mix(u_dominantColor, u_vibrantColor, 0.5);
-        col = mix(col, mixColor, w3 * 0.7);
+        // --- 2. COLOR MAPPING (ADDITIVE ILLUMINATION) ---
+        // Base structure uses the deeply anchored dominant and muted tones
+        float3 col = mix(u_mutedColor * 0.2, u_dominantColor * 0.8, v1);
+        
+        // Folds act as light emitters
+        float highlightPower = smoothstep(0.05, 0.9, gradient);
+        float3 luminousCatchLight = u_vibrantColor * highlightPower * (1.5 + u_macroBreath * 0.8);
+        col += luminousCatchLight; 
+        
+        // Subsurface ambient glow
+        float centerGlow = smoothstep(1.8, 0.0, length(p));
+        col += u_dominantColor * centerGlow * 0.4;
 
-        // --- 4. UI PROTECTION & DEPTH ---
-        // Global deep vignette to ground the composition and protect edges
-        float vig = smoothstep(1.2, 0.2, length(p));
-        col *= vig;
-        
-        // Bottom mask to ensure playback controls are always readable
-        float bottomMask = smoothstep(-0.8, 0.2, p.y);
+        // --- 3. UI PROTECTION & POLISH ---
+        // Subtle vertical gradient to ground the UI
+        float bottomMask = smoothstep(-1.5, 0.5, p.y);
         col = mix(col * 0.15, col, bottomMask);
         
-        // Premium tone mapping (OLED safe)
-        col = 1.0 - exp(-col * 2.0);
+        // Premium tone mapping to prevent color blowout
+        col = 1.0 - exp(-col * 2.2);
         
         return half4(clamp(col, 0.0, 1.0), 1.0);
     }
@@ -209,13 +213,13 @@ const val CUPERTINO_MESH_SRC = """
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun CupertinoMeshEngine() {
+fun LuminousSilkEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF050505)) } 
+    var mutedColor by remember { mutableStateOf(Color(0xFF0A0A0A)) } 
     var dominantColor by remember { mutableStateOf(Color(0xFF111111)) } 
     var vibrantColor by remember { mutableStateOf(Color(0xFF222222)) } 
     
@@ -230,7 +234,7 @@ fun CupertinoMeshEngine() {
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
-    val opticalShader = remember { RuntimeShader(CUPERTINO_MESH_SRC) }
+    val opticalShader = remember { RuntimeShader(LUMINOUS_SILK_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
@@ -240,31 +244,30 @@ fun CupertinoMeshEngine() {
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
                     currentArtBitmap = bitmap 
                     Palette.from(bitmap).generate { p ->
-                        val fallback = android.graphics.Color.DKGRAY
+                        val fallback = 0xFF111111.toInt()
                         
-                        var dom = p?.dominantSwatch?.rgb ?: fallback
-                        // Aggressively hunt for color over grey
-                        var vib = p?.vibrantSwatch?.rgb ?: p?.lightVibrantSwatch?.rgb ?: p?.mutedSwatch?.rgb ?: dom 
-                        var mut = p?.darkMutedSwatch?.rgb ?: p?.darkVibrantSwatch?.rgb ?: dom
-
-                        // --- THE APPLE COLOR OVERRIDE LOGIC ---
-                        // Force the colors to be deep and rich, completely preventing the "Grey Wall" bug
+                        // AGGRESSIVE COLOR HUNTING
+                        // Guarantees rich, deep material colors even on white/grey album art
+                        val dominantSwatch = p?.dominantSwatch
+                        val vibrantSwatch = p?.vibrantSwatch ?: p?.lightVibrantSwatch ?: p?.darkVibrantSwatch ?: dominantSwatch
+                        val mutedSwatch = p?.darkMutedSwatch ?: p?.mutedSwatch ?: dominantSwatch
+                        
+                        var dom = dominantSwatch?.rgb ?: fallback
+                        var mut = mutedSwatch?.rgb ?: fallback
+                        var vib = vibrantSwatch?.rgb ?: dom 
+                        
                         val hsl = FloatArray(3)
-                        
-                        // Fix Vibrant Color (The Teal)
                         ColorUtils.colorToHSL(vib, hsl)
-                        if (hsl[1] < 0.25f) hsl[1] = 0.4f // FORCE minimum saturation (no pure greys)
-                        if (hsl[2] > 0.45f) hsl[2] = 0.35f // CRUSH lightness (prevent blown out white)
+                        if (hsl[1] < 0.25f) hsl[1] = 0.4f // Force saturation
+                        if (hsl[2] > 0.45f) hsl[2] = 0.35f // Cap lightness to prevent zebra stripes
                         vib = ColorUtils.HSLToColor(hsl)
                         
-                        // Fix Dominant Color (The Base)
                         ColorUtils.colorToHSL(dom, hsl)
-                        if (hsl[2] > 0.3f) hsl[2] = 0.2f // Force base to be dark and moody
+                        if (hsl[2] > 0.3f) hsl[2] = 0.2f // Force base shadow
                         dom = ColorUtils.HSLToColor(hsl)
 
-                        // Fix Muted Color (The Shadows)
                         ColorUtils.colorToHSL(mut, hsl)
-                        hsl[2] = Math.min(hsl[2], 0.15f) // Force shadows to be almost black
+                        hsl[2] = Math.min(hsl[2], 0.15f) // Deepest shadow
                         mut = ColorUtils.HSLToColor(hsl)
                         
                         mutedColor = Color(mut)
@@ -331,7 +334,7 @@ fun CupertinoMeshEngine() {
             .pointerInput(Unit) { detectTapGestures(onDoubleTap = { showDashboard = !showDashboard }) }
     ) {
         
-        // LAYER 1-4: AGSL Background (Fluid Mesh)
+        // LAYER 1-4: AGSL Background (Luminous Silk Manifold)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
@@ -386,7 +389,7 @@ fun CupertinoMeshEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("CUPERTINO FLUID MESH", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("LUMINOUS SILK MANIFOLD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -411,18 +414,18 @@ fun CupertinoMeshEngine() {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         
                         Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Fluid Shift")
+                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Subsurface Shift")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Vignette Diffusion")
-                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Mesh Opacity")
+                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Highlight Opacity")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Bass Energy", smoothedBreath.coerceAtLeast(0f), Color(0xFF00E5FF), "Fluid Swell")
+                        TranslationBar("Bass Energy", smoothedBreath.coerceAtLeast(0f), Color(0xFF00E5FF), "Volumetric Swell")
                         TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Continuous Flow")
                     }
                 }
