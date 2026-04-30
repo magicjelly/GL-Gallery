@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE (ULTRA-SMOOTHED)
+// 1. AFFECTIVE DSP ENGINE
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -139,7 +139,7 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
 }
 
 // ==========================================
-// 2. AGSL SHADER: CALIBRATED OPTICAL AURORA
+// 2. AGSL SHADER: MULTI-PHASE FIELD BLEND
 // ==========================================
 const val OPTICAL_AURORA_SRC = """
     uniform float2 u_resolution;
@@ -152,72 +152,60 @@ const val OPTICAL_AURORA_SRC = """
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Anisotropic fluid field: biased to create long sweeping folds
-    float getAurora(float2 p, float time) {
-        float2 q = p;
-        q.x += 0.5 * sin(p.y * 1.2 + time * 0.5);
-        q.y += 0.5 * cos(p.x * 0.8 - time * 0.4);
-        
-        q.x += 0.3 * sin(p.y * 2.0 - time * 0.7);
-        q.y += 0.3 * cos(p.x * 1.5 + time * 0.6);
-        
-        return sin(q.x * 1.0 + q.y * 0.5) * cos(q.y * 1.2 - q.x * 0.5) * 0.5 + 0.5;
-    }
-
     half4 main(float2 fragCoord) {
         float2 uv = fragCoord / u_resolution.xy;
         float aspect = u_resolution.x / u_resolution.y;
         float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        // MACRO SCALING: Zoomed in to ensure shapes are broad, soft, and luxurious
-        p *= 1.4; 
+        // Massive coordinate scaling for luxurious, broad gradients
+        p *= 1.3; 
         
         // Incredibly slow, graceful movement
-        float time = u_kineticTime * 0.15; 
+        float t = u_kineticTime * 0.12; 
         
-        // --- 1. THE FLUID DEPTH (DENSITY) ---
-        float v1 = getAurora(p, time);
+        // --- 1. DOMAIN WARPING ---
+        // Organic, slow-twisting coordinate space
+        float2 q = p;
+        q.x += sin(p.y * 1.5 + t) * 0.4;
+        q.y += cos(p.x * 1.2 - t * 0.8) * 0.4;
         
-        // --- 2. THE OPTICAL SHIFT (SUBSURFACE LIGHT) ---
-        // Offset driven gently by transients
-        float2 lightDir = float2(0.15, 0.15) + (u_microPulse * 0.05);
-        float v2 = getAurora(p + lightDir, time);
+        // --- 2. INDEPENDENT DIFFUSED FIELDS ---
+        // Generating distinct, overlapping sweeps of light mathematically
+        float field1 = sin(q.x * 1.8 + t * 0.5) * cos(q.y * 1.4 - t * 0.3) * 0.5 + 0.5;
+        float field2 = sin(q.x * 1.2 - t * 0.6) * cos(q.y * 1.9 + t * 0.4) * 0.5 + 0.5;
         
-        // Amplified gradient to ensure the folds catch the light properly
-        float gradient = max(0.0, v1 - v2) * 3.5; 
+        // MicroPulse slightly shifts the 3rd layer for subtle transient response
+        float2 shift = float2(0.1) * u_microPulse;
+        float field3 = sin((q.x + shift.x) * 1.5 + t) * cos((q.y + shift.y) * 1.5) * 0.5 + 0.5;
         
-        // --- 3. COLOR FLOODING ---
-        // Restored luminance! The Kotlin layer handles the darkness. 
-        // We let the rich dominant and muted colors flood the valleys.
-        float3 col = mix(u_mutedColor * 0.6, u_dominantColor * 0.9, v1);
+        // --- 3. APPLE-GRADE ANALOGOUS BLENDING ---
+        // Base atmosphere sweeps smoothly between the deep and dominant tones
+        float3 col = mix(u_mutedColor, u_dominantColor, smoothstep(0.1, 0.9, field1));
         
-        // --- 4. TRANSLUCENT ILLUMINATION ---
-        // Lowered the smoothstep floor to 0.0 so every gentle curve catches the glowing light
-        float lightPower = smoothstep(0.0, 0.8, gradient);
-        // Exponential falloff for luxurious softness
-        lightPower = pow(lightPower, 1.2); 
+        // Layer 2: The vibrant aurora fold. Screen-blended to preserve rich color without clipping.
+        // MacroBreath gently swells the intensity of this fold.
+        float3 vibrantLayer = u_vibrantColor * smoothstep(0.2, 0.9, field2) * (0.8 + u_macroBreath * 0.4);
+        col = col + vibrantLayer - (col * vibrantLayer); // Screen Blend
         
-        // Light intensity swells gently with bass
-        float3 light = u_vibrantColor * lightPower * (1.2 + u_macroBreath * 0.6);
-        
-        // Additive Blend for a true, deep subsurface glow
-        col += light; 
-        
-        // Ambient core glow
-        float centerGlow = smoothstep(2.0, 0.0, length(p));
-        col += mix(u_dominantColor, u_vibrantColor, 0.3) * centerGlow * 0.4;
+        // Layer 3: A tertiary bridging fold to add complex depth
+        float3 highlightLayer = mix(u_dominantColor, u_vibrantColor, 0.5) * smoothstep(0.6, 1.0, field3) * 0.4;
+        col = col + highlightLayer - (col * highlightLayer); 
 
-        // --- 5. INVISIBLE OPTICAL DITHER ---
-        // Prevents banding but remains invisible to the eye
-        float noise = fract(sin(dot(uv + time, float2(12.9898, 78.233))) * 43758.5453);
+        // --- 4. INVISIBLE OPTICAL DITHER ---
+        float noise = fract(sin(dot(uv + t, float2(12.9898, 78.233))) * 43758.5453);
         col += (noise - 0.5) * 0.015;
 
-        // --- 6. UI PROTECTION & POLISH ---
-        float bottomMask = smoothstep(-1.5, 0.5, p.y);
-        col = mix(col * 0.2, col, bottomMask);
+        // --- 5. UI PROTECTION & POLISH ---
+        // Heavy edge framing
+        float vig = smoothstep(1.4, 0.2, length(p));
+        col *= vig;
+        
+        // Bottom mask to anchor UI
+        float bottomMask = smoothstep(-1.2, 0.4, p.y);
+        col = mix(col * 0.15, col, bottomMask);
         
         // OLED-safe Tone Mapping
-        col = 1.0 - exp(-col * 2.0);
+        col = 1.0 - exp(-col * 2.2);
         
         return half4(clamp(col, 0.0, 1.0), 1.0);
     }
@@ -269,29 +257,32 @@ fun OpticalAuroraEngine() {
                         var mut = mutedSwatch?.rgb ?: fallback
                         var vib = vibrantSwatch?.rgb ?: dom 
                         
-                        val hsl = FloatArray(3)
-                        ColorUtils.colorToHSL(vib, hsl)
+                        val hslDom = FloatArray(3)
+                        val hslVib = FloatArray(3)
+                        val hslMut = FloatArray(3)
                         
-                        // Guard against muddy greys
-                        if (hsl[1] < 0.15f) {
-                            hsl[0] = 190f 
-                            hsl[1] = 0.6f 
-                        } else if (hsl[1] < 0.4f) {
-                            hsl[1] = 0.5f 
+                        ColorUtils.colorToHSL(dom, hslDom)
+                        ColorUtils.colorToHSL(vib, hslVib)
+                        ColorUtils.colorToHSL(mut, hslMut)
+                        
+                        // THE ANALOGOUS HUE INJECTION
+                        // Forcibly separates the vibrant hue from the dominant hue to ensure 
+                        // Apple-style color mixing (e.g., Green blending with Cyan/Teal).
+                        val hueDiff = abs(hslVib[0] - hslDom[0])
+                        if (hueDiff < 20f || hueDiff > 340f) {
+                            hslVib[0] = (hslVib[0] + 30f) % 360f // Add a 30 degree luxury hue shift
                         }
                         
-                        // Ensure the vibrant color is bright enough to glow, but capped to avoid white blowouts
-                        if (hsl[2] < 0.3f) hsl[2] = 0.4f 
-                        if (hsl[2] > 0.55f) hsl[2] = 0.45f
-                        vib = ColorUtils.HSLToColor(hsl)
+                        // Strict Saturation & Luminance Locks
+                        hslVib[1] = Math.max(hslVib[1], 0.5f) // Force highly saturated light
+                        hslVib[2] = hslVib[2].coerceIn(0.35f, 0.55f) // Cap lightness to prevent pure white blowouts
+                        vib = ColorUtils.HSLToColor(hslVib)
                         
-                        ColorUtils.colorToHSL(dom, hsl)
-                        if (hsl[2] > 0.3f) hsl[2] = 0.2f 
-                        dom = ColorUtils.HSLToColor(hsl)
+                        hslDom[2] = Math.min(hslDom[2], 0.25f) // Deepen base shadow
+                        dom = ColorUtils.HSLToColor(hslDom)
 
-                        ColorUtils.colorToHSL(mut, hsl)
-                        hsl[2] = Math.min(hsl[2], 0.15f) 
-                        mut = ColorUtils.HSLToColor(hsl)
+                        hslMut[2] = Math.min(hslMut[2], 0.12f) // Deepest, near-black shadow floor
+                        mut = ColorUtils.HSLToColor(hslMut)
                         
                         mutedColor = Color(mut)
                         dominantColor = Color(dom)
@@ -324,11 +315,13 @@ fun OpticalAuroraEngine() {
                 val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
                 
+                // Transients (MicroPulse)
                 val stiffMicro = 4f 
                 val dampMicro = 2f * sqrt(stiffMicro) 
                 pulseVelocity += (stiffMicro * (microPulse - smoothedPulse) - dampMicro * pulseVelocity) * dt
                 smoothedPulse += pulseVelocity * dt
                 
+                // Breathing (MacroBreath) - Asymmetric Envelope Easing (Zero Stutter)
                 val targetBreath = macroBreath
                 if (targetBreath > smoothedBreath) {
                     smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt 
@@ -410,7 +403,7 @@ fun OpticalAuroraEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("OPTICAL AURORA ENGINE v2", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("MULTI-PHASE OPTICAL AURORA", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
