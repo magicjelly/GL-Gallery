@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
-                    AetheriumHaloEngine()
+                    SpectralLavaEngine()
                 }
             }
         }
@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ==========================================
-// 1. AFFECTIVE DSP ENGINE (AGC-TUNED)
+// 1. AFFECTIVE DSP ENGINE (ULTRA-SMOOTHED)
 // ==========================================
 @UnstableApi
 class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
@@ -118,8 +118,9 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         val totalRms = sqrt(sumSq / (limit / 2)).toFloat()
         val highFreqRms = sqrt(highFreqSumSq / (limit / 2)).toFloat()
         
-        rollingRms = (rollingRms * 0.995f) + (totalRms * 0.005f)
-        val dynamicGain = (1.0f / (rollingRms.coerceAtLeast(0.001f))) * 0.6f
+        // Slower rolling RMS prevents sudden spikes from corrupting the baseline
+        rollingRms = (rollingRms * 0.998f) + (totalRms * 0.002f)
+        val dynamicGain = (1.0f / (rollingRms.coerceAtLeast(0.001f))) * 0.5f
         
         val energy = (1.0f - exp(-totalRms * dynamicGain)).coerceIn(0f, 1f)
         val balance = if (totalRms > 0.01f) (highFreqRms / totalRms).coerceIn(0f, 1f) else 0.5f
@@ -130,17 +131,19 @@ class AudioTrendEngine : TeeAudioProcessor.AudioBufferSink {
         
         currentSpectralRatio = (currentSpectralRatio * 0.99f) + (balance * 0.01f)
         _spectralBalance.value = currentSpectralRatio
-        _macroBreath.value = (_macroBreath.value * 0.92f) + (energy * 0.08f) 
+        
+        // Massive smoothing at the DSP layer to strip out high-frequency drum stutters
+        _macroBreath.value = (_macroBreath.value * 0.98f) + (energy * 0.02f) 
         _microPulse.value = energy 
-        _volatility.value = (_volatility.value * 0.90f) + ((rawFlux * dynamicGain * 5f).coerceIn(0f, 1f) * 0.10f)
-        _roughness.value = (_roughness.value * 0.95f) + (rawZcr * 0.05f)
+        _volatility.value = (_volatility.value * 0.95f) + ((rawFlux * dynamicGain * 5f).coerceIn(0f, 1f) * 0.05f)
+        _roughness.value = (_roughness.value * 0.96f) + (rawZcr * 0.04f)
     }
 }
 
 // ==========================================
-// 2. AGSL SHADER: THE AETHERIUM HALO
+// 2. AGSL SHADER: PURE SPECTRAL LAVA FIELD
 // ==========================================
-const val AETHERIUM_HALO_SRC = """
+const val SPECTRAL_LAVA_SRC = """
     uniform float2 u_resolution;
     uniform float u_macroBreath; 
     uniform float u_microPulse;  
@@ -148,122 +151,110 @@ const val AETHERIUM_HALO_SRC = """
     uniform float u_spectralBalance;
     uniform float u_volatility; 
     uniform float u_roughness;  
-    uniform float2 u_boxSizePx;
-    uniform float u_cornerRadiusPx;
     
     uniform float3 u_mutedColor;
     uniform float3 u_dominantColor;
     uniform float3 u_vibrantColor;
 
-    // Strict SDF Anchoring
-    float sdRoundRect(float2 p, float2 b, float r) {
-        float2 d = abs(p) - b + float2(r);
-        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
+    float blob(float2 p, float2 pos, float radius) {
+        float d = length(p - pos);
+        return exp(-(d * d) / (radius * radius));
     }
 
     half4 main(float2 fragCoord) {
-        float2 center = u_resolution * 0.5;
-        float2 p = fragCoord - center;
+        float2 uv = fragCoord / u_resolution.xy;
+        float aspect = u_resolution.x / u_resolution.y;
+        float2 p = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         
-        float2 boxHalfSize = max(u_boxSizePx * 0.5, float2(0.001));
-        float trueD = sdRoundRect(p, boxHalfSize, u_cornerRadiusPx);
+        float time = u_kineticTime * 0.15;
         
-        // Exclude internal album art perfectly.
-        if (trueD < 0.0) return half4(0.0);
+        // 1. Organic Space Distortion (Fluid Convection)
+        float2 warpedP = p;
+        warpedP.x += sin(p.y * 3.0 + time) * 0.08;
+        warpedP.y += cos(p.x * 3.0 + time * 1.2) * 0.08;
         
-        float theta = atan(p.y, p.x);
-        float3 finalColor = float3(0.01); // OLED Black floor
+        // 2. The Lava Metaballs
+        // Blob 1: The Heavy Core (Anchored at bottom, expands softly with smoothed bass)
+        float2 pos1 = float2(sin(time * 0.4) * 0.15, 0.35);
+        float w1 = blob(warpedP, pos1, 0.35 + u_macroBreath * 0.12);
         
-        // Continuous Kinetic Light Sweep.
-        float lightSweepBase = u_kineticTime * 0.8;
+        // Blob 2: The Slow Drifter (Orbits the center continuously)
+        float2 pos2 = float2(cos(time * 0.6) * 0.3, sin(time * 0.5) * 0.1);
+        float w2 = blob(warpedP, pos2, 0.25);
         
-        const float RINGS = 6.0;
+        // Blob 3: The Transient Flare 
+        float flareY = 0.1 - (u_microPulse * 0.2) + cos(time * 0.8) * 0.15;
+        float2 pos3 = float2(sin(time * 0.9) * 0.25, flareY);
+        float w3 = blob(warpedP, pos3, 0.2 + u_volatility * 0.05);
         
-        for(float i = RINGS; i > 0.0; i -= 1.0) {
-            // Bass energy pushes the rings outward
-            float spacing = 28.0 + (u_macroBreath * 12.0);
-            
-            // MicroPulse causes spatial shear (bounded displacement)
-            float shear = u_microPulse * 8.0 * sin(theta * 4.0 + (i * 2.0));
-            float targetCenter = (i * spacing) + shear;
-            
-            // Absolute distance from the center line of the ring
-            float ringD = abs(trueD - targetCenter);
-            
-            // Ring thickness based on roughness (structural complexity)
-            float thickness = 2.0 + u_roughness * 4.0;
-            
-            // Razor sharp cut for the band itself
-            float isRing = smoothstep(thickness + 0.5, thickness - 0.5, ringD);
-            
-            // Deep drop shadow cast from the inner edge
-            float shadow = smoothstep(12.0, -2.0, trueD - targetCenter);
-            finalColor = mix(finalColor, float3(0.0), shadow * 0.85);
-            
-            // 1-pixel razor-sharp specular bevel on the very edge
-            float bevel = smoothstep(thickness + 0.5, thickness, ringD) * smoothstep(thickness - 1.5, thickness - 0.5, ringD);
-            
-            // Specular light sweeping across the geometry
-            float highlight = sin(theta * (1.0 + i * 0.3) + lightSweepBase) * 0.5 + 0.5;
-            float spec = pow(highlight, 24.0); // Mimics machined titanium
-            
-            // Material definition
-            float3 ringColor = mix(u_mutedColor * 0.2, u_dominantColor, 0.3);
-            ringColor += u_vibrantColor * spec * (1.5 + u_volatility * 2.5);
-            ringColor += mix(u_dominantColor, u_vibrantColor, u_spectralBalance) * bevel * 1.5;
-            
-            finalColor = mix(finalColor, ringColor, isRing);
-        }
+        float field = w1 + w2 + w3;
         
-        finalColor *= smoothstep(0.0, 1.0, trueD);
-        finalColor = 1.0 - exp(-finalColor * 2.5); // Premium HDR Tone Mapping
+        // 3. Apple-Grade Soft Color Mapping
+        float3 col = mix(u_mutedColor * 0.15, u_mutedColor * 0.4, uv.y);
         
-        return half4(clamp(finalColor, 0.0, 1.0), 1.0);
+        float bodyAlpha = smoothstep(0.3, 1.2, field);
+        col = mix(col, u_dominantColor, bodyAlpha * 0.85);
+        
+        float coreAlpha = smoothstep(0.9, 1.8, field);
+        col = mix(col, mix(u_dominantColor, u_vibrantColor, 0.6), coreAlpha);
+        
+        // 4. Strict UI Protection
+        float vig = smoothstep(1.2, 0.4, length(p));
+        col *= vig;
+        
+        float bottomMask = smoothstep(-0.5, 0.2, p.y);
+        col = mix(col * 0.2, col, bottomMask);
+        
+        col = 1.0 - exp(-col * 2.2);
+        
+        return half4(clamp(col, 0.0, 1.0), 1.0);
     }
 """
 
 // ==========================================
-// 3. UI ARCHITECTURE
+// 3. UI ARCHITECTURE & DASHBOARD
 // ==========================================
 @OptIn(UnstableApi::class)
 @Composable
-fun AetheriumHaloEngine() {
+fun SpectralLavaEngine() {
     val context = LocalContext.current
     val audioEngine = remember { AudioTrendEngine() }
     val exoPlayer = remember { setupExoPlayer(context, audioEngine) }
     
     var currentArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var mutedColor by remember { mutableStateOf(Color(0xFF0F0F0F)) }
-    var dominantColor by remember { mutableStateOf(Color(0xFF2A2A2A)) }
-    var vibrantColor by remember { mutableStateOf(Color(0xFFE0E0E0)) }
+    var mutedColor by remember { mutableStateOf(Color(0xFF081018)) } 
+    var dominantColor by remember { mutableStateOf(Color(0xFF1A3A4A)) } 
+    var vibrantColor by remember { mutableStateOf(Color(0xFF4A8A9A)) } 
     
     var kineticTime by remember { mutableFloatStateOf(0f) }
+    
     var smoothedPulse by remember { mutableFloatStateOf(0f) } 
     var pulseVelocity by remember { mutableFloatStateOf(0f) }
+    
+    // REPLACED SPRING WITH ASYMMETRIC ENVELOPE FOR BREATHING
+    var smoothedBreath by remember { mutableFloatStateOf(0f) } 
+    
     var lastFrameNanos by remember { mutableLongStateOf(0L) }
     
     var isPlaying by remember { mutableStateOf(false) }
-    var artSizePx by remember { mutableStateOf(IntSize.Zero) }
     var showDashboard by remember { mutableStateOf(true) }
     
     val targetSizeDp = 320.dp
     val targetCornerRadiusDp = 36.dp
-    val cornerRadiusPx = with(LocalDensity.current) { targetCornerRadiusDp.toPx() }
-    val opticalShader = remember { RuntimeShader(AETHERIUM_HALO_SRC) }
+    val opticalShader = remember { RuntimeShader(SPECTRAL_LAVA_SRC) }
 
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(p: Boolean) { isPlaying = p }
             override fun onMediaMetadataChanged(m: MediaMetadata) {
-                // EXACT ORIGINAL IMPLEMENTATION RESTORED
                 m.artworkData?.let { data ->
                     val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
-                    currentArtBitmap = bitmap // Assigned instantly!
+                    currentArtBitmap = bitmap 
                     Palette.from(bitmap).generate { p ->
                         val fallback = 0xFF444444.toInt()
                         val dom = p?.getDominantColor(fallback) ?: fallback
                         val mut = p?.getDarkMutedColor(dom) ?: dom
-                        val vib = p?.getLightVibrantColor(p.getVibrantColor(dom)) ?: dom
+                        val vib = p?.getMutedColor(dom) ?: dom 
                         
                         mutedColor = Color(mut)
                         dominantColor = Color(dom)
@@ -296,47 +287,51 @@ fun AetheriumHaloEngine() {
                 val dt = ((frameNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.033f)
                 lastFrameNanos = frameNanos
                 
-                val stiffness = 35f
-                val damping = 2f * sqrt(stiffness) 
-                val force = stiffness * (microPulse - smoothedPulse) - damping * pulseVelocity
-                pulseVelocity += force * dt
+                // SPRING 1: Transients (Fluid drifting, unaffected by the coughing fix)
+                val stiffMicro = 4f 
+                val dampMicro = 2f * sqrt(stiffMicro) 
+                pulseVelocity += (stiffMicro * (microPulse - smoothedPulse) - dampMicro * pulseVelocity) * dt
                 smoothedPulse += pulseVelocity * dt
                 
+                // THE COUGHING FIX: ASYMMETRIC ENVELOPE EASING
+                // Separates the "Inhale" speed from the "Exhale" speed.
+                val targetBreath = macroBreath
+                if (targetBreath > smoothedBreath) {
+                    // INHALE (Attack): Soft, elegant 1.5 second swell when bass hits
+                    smoothedBreath += (targetBreath - smoothedBreath) * 1.5f * dt
+                } else {
+                    // EXHALE (Release): Incredibly slow, 4-second recession when bass stops
+                    smoothedBreath += (targetBreath - smoothedBreath) * 0.3f * dt
+                }
+                
                 val activeAlpha = if (isPlaying) 1f else 0f
-                kineticTime += dt * 0.5f * activeAlpha
+                kineticTime += dt * activeAlpha
                 
                 val targetX = (spectralBalance * 0.7f) + ((1f - (roughness * 5f).coerceIn(0f, 1f)) * 0.3f)
                 val targetY = (macroBreath * 0.6f) + (volatility * 0.4f)
                 
-                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.03f 
-                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.03f
+                radarX += (targetX.coerceIn(0f, 1f) - radarX) * 0.015f 
+                radarY += (targetY.coerceIn(0f, 1f) - radarY) * 0.015f
             }
         }
     }
 
-    // Intercepts double taps to toggle dashboard
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onDoubleTap = { showDashboard = !showDashboard }
-                )
-            }
+            .pointerInput(Unit) { detectTapGestures(onDoubleTap = { showDashboard = !showDashboard }) }
     ) {
         
-        // LAYER 1: AGSL Background (The Aetherium Halo)
+        // LAYER 1: AGSL Background (Pure Spectral Lava)
         Canvas(modifier = Modifier.fillMaxSize()) {
             opticalShader.setFloatUniform("u_resolution", size.width, size.height)
             opticalShader.setFloatUniform("u_kineticTime", kineticTime) 
-            opticalShader.setFloatUniform("u_macroBreath", macroBreath)
+            opticalShader.setFloatUniform("u_macroBreath", smoothedBreath.coerceAtLeast(0f)) 
             opticalShader.setFloatUniform("u_microPulse", smoothedPulse.coerceAtLeast(0f)) 
             opticalShader.setFloatUniform("u_spectralBalance", spectralBalance) 
             opticalShader.setFloatUniform("u_volatility", volatility) 
             opticalShader.setFloatUniform("u_roughness", roughness) 
-            opticalShader.setFloatUniform("u_boxSizePx", artSizePx.width.toFloat(), artSizePx.height.toFloat())
-            opticalShader.setFloatUniform("u_cornerRadiusPx", cornerRadiusPx)
             opticalShader.setFloatUniform("u_mutedColor", mutedColor.red, mutedColor.green, mutedColor.blue)
             opticalShader.setFloatUniform("u_dominantColor", dominantColor.red, dominantColor.green, dominantColor.blue)
             opticalShader.setFloatUniform("u_vibrantColor", vibrantColor.red, vibrantColor.green, vibrantColor.blue)
@@ -344,12 +339,11 @@ fun AetheriumHaloEngine() {
             drawRect(brush = ShaderBrush(opticalShader))
         }
 
-        // LAYER 2: Strict Album Art Anchor (Bulletproofed sizing)
+        // LAYER 2: Strict Album Art Anchor 
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .size(targetSizeDp)
-                .onSizeChanged { artSizePx = it }, // Anchors shader even if image is null
+                .size(targetSizeDp),
             contentAlignment = Alignment.Center
         ) {
             if (currentArtBitmap != null) {
@@ -362,12 +356,11 @@ fun AetheriumHaloEngine() {
                     contentScale = ContentScale.Crop
                 )
             } else {
-                // Sleek placeholder while loading
-                Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(targetCornerRadiusDp)).background(Color(0xFF1E1E1E)))
+                Box(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(targetCornerRadiusDp)).background(Color(0xFF141416)))
             }
         }
 
-        // LAYER 3: Animated V6.0 Diagnostic Matrix
+        // LAYER 3: Animated V8.0 Diagnostic Matrix
         AnimatedVisibility(
             visible = showDashboard,
             enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
@@ -386,8 +379,8 @@ fun AetheriumHaloEngine() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("THE AETHERIUM HALO ENGINE", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Crucible v7.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                        Text("PURE SPECTRAL LAVA FIELD", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("Crucible v8.0 Matrix (Double-Tap screen to Hide)", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
@@ -411,19 +404,19 @@ fun AetheriumHaloEngine() {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         
                         Text("MICRO (INTERNAL AGITATION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Band Shear")
+                        TranslationBar("Transients", smoothedPulse.coerceAtLeast(0f), Color(0xFFFF5722), "Transient Ascend Flare")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MESO (FIELD STATE)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Band Thickness")
-                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Specular Bevel")
+                        TranslationBar("Roughness", roughness, Color(0xFFE040FB), "Vignette Diffusion")
+                        TranslationBar("Brightness", spectralBalance, Color(0xFFAEEA00), "Lava Viscosity Core")
                         
                         Spacer(modifier = Modifier.height(2.dp))
                         
                         Text("MACRO (VOLUMETRIC EVOLUTION)", color = Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        TranslationBar("Bass Energy", macroBreath, Color(0xFF00E5FF), "Ring Spacing")
-                        TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Light Sweep Phase")
+                        TranslationBar("Bass Energy", smoothedBreath.coerceAtLeast(0f), Color(0xFF00E5FF), "Fluid Core Swell")
+                        TranslationBar("Kinetic Time", (kineticTime % 1.0f), Color(0xFFFFFFFF), "Convection Sweep")
                     }
                 }
             }
@@ -437,7 +430,7 @@ fun ExecutiveRadar(xCoord: Float, yCoord: Float, dotColor: Color) {
         modifier = Modifier
             .size(160.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF161616))
+            .background(Color(0xFF111111))
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
